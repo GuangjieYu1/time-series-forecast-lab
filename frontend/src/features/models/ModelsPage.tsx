@@ -47,36 +47,42 @@ interface GraphEdge {
 const timelineLanes = ["基线模型", "统计模型", "机器学习", "深度学习", "Transformer", "基础模型"];
 const timelineYears = [1900, 1957, 1960, 1970, 2001, 2016, 2017, 2019, 2021, 2022, 2023, 2024];
 const recommendedPath = new Set(["seasonal_naive", "ets", "prophet", "lightgbm", "patchtst", "timesfm"]);
+const timelineLeft = 178;
+const timelineTop = 96;
+const timelineYearGap = 156;
+const timelineLaneGap = 200;
+const timelineWidth = 2160;
+const timelineHeight = 1280;
 
 const visualNodes: VisualNodeBase[] = [
-  { id: "moving_average", name: "Moving Average", category: "Baseline", lane: "基线模型", year: 1900, tier: "normal", x: 86, y: 354, summary: "早期平滑思想，用最近窗口平均值构造稳定基线。" },
-  { id: "linear_trend", name: "Linear Trend", category: "Baseline", lane: "基线模型", year: 1960, tier: "small", x: 78, y: 520, summary: "线性趋势外推，是解释性强但表达力有限的基线扩展。" },
-  { id: "naive", name: "Naive", category: "Baseline", lane: "基线模型", year: 1960, tier: "normal", x: 126, y: 170, summary: "未来值等于最近一次观测，是所有复杂模型的最低基准。" },
-  { id: "seasonal_naive", name: "Seasonal Naive", category: "Baseline", lane: "基线模型", year: 1960, tier: "normal", x: 184, y: 292, summary: "复用上一周期同位置值，适合强季节性序列。", recommended: true },
-  { id: "lag_features", name: "Lag Features", category: "Machine Learning", lane: "机器学习", year: 2001, tier: "small", x: 318, y: 428, summary: "把历史滞后、滚动统计和日历信息转成机器学习特征。" },
+  { id: "moving_average", name: "Moving Average", category: "Baseline", lane: "基线模型", year: 1900, tier: "normal", x: 150, y: 54, summary: "早期平滑思想，用最近窗口平均值构造稳定基线。" },
+  { id: "linear_trend", name: "Linear Trend", category: "Baseline", lane: "基线模型", year: 1960, tier: "small", x: 1032, y: 56, summary: "线性趋势外推，是解释性强但表达力有限的基线扩展。" },
+  { id: "naive", name: "Naive", category: "Baseline", lane: "基线模型", year: 1960, tier: "normal", x: 450, y: 54, summary: "未来值等于最近一次观测，是所有复杂模型的最低基准。" },
+  { id: "seasonal_naive", name: "Seasonal Naive", category: "Baseline", lane: "基线模型", year: 1960, tier: "normal", x: 668, y: 50, summary: "复用上一周期同位置值，适合强季节性序列。", recommended: true },
+  { id: "lag_features", name: "Lag Features", category: "Machine Learning", lane: "机器学习", year: 2001, tier: "small", x: 170, y: 196, summary: "把历史滞后、滚动统计和日历信息转成机器学习特征。" },
 
-  { id: "arima", name: "ARIMA", category: "Statistical", lane: "统计模型", year: 1970, tier: "normal", x: 370, y: 154, summary: "用自回归、差分和移动平均描述序列自相关结构。" },
-  { id: "ets", name: "ETS", category: "Statistical", lane: "统计模型", year: 1957, tier: "normal", x: 414, y: 304, summary: "指数平滑模型族，建模误差、趋势和季节性。", recommended: true },
-  { id: "sarima", name: "SARIMA", category: "Statistical", lane: "统计模型", year: 1975, tier: "small", x: 548, y: 96, summary: "ARIMA 的季节性扩展，适合固定季节周期。" },
-  { id: "theta", name: "Theta", category: "Statistical", lane: "统计模型", year: 2000, tier: "small", x: 570, y: 260, summary: "通过 Theta 线分解趋势和短期波动的统计模型。" },
-  { id: "tbats", name: "TBATS", category: "Statistical", lane: "统计模型", year: 2011, tier: "small", x: 568, y: 394, summary: "面向复杂多季节性的指数平滑扩展。" },
-  { id: "prophet", name: "Prophet", category: "Statistical", lane: "统计模型", year: 2017, tier: "core", x: 664, y: 282, summary: "可解释的可加模型，强调趋势、季节性和节假日效应。", recommended: true },
+  { id: "arima", name: "ARIMA", category: "Statistical", lane: "统计模型", year: 1970, tier: "normal", x: 430, y: 186, summary: "用自回归、差分和移动平均描述序列自相关结构。" },
+  { id: "ets", name: "ETS", category: "Statistical", lane: "统计模型", year: 1957, tier: "normal", x: 668, y: 184, summary: "指数平滑模型族，建模误差、趋势和季节性。", recommended: true },
+  { id: "sarima", name: "SARIMA", category: "Statistical", lane: "统计模型", year: 1975, tier: "small", x: 352, y: 324, summary: "ARIMA 的季节性扩展，适合固定季节周期。" },
+  { id: "theta", name: "Theta", category: "Statistical", lane: "统计模型", year: 2000, tier: "small", x: 510, y: 326, summary: "通过 Theta 线分解趋势和短期波动的统计模型。" },
+  { id: "tbats", name: "TBATS", category: "Statistical", lane: "统计模型", year: 2011, tier: "small", x: 934, y: 326, summary: "面向复杂多季节性的指数平滑扩展。" },
+  { id: "prophet", name: "Prophet", category: "Statistical", lane: "统计模型", year: 2017, tier: "core", x: 656, y: 318, summary: "可解释的可加模型，强调趋势、季节性和节假日效应。", recommended: true },
 
-  { id: "random_forest", name: "Random Forest", category: "Machine Learning", lane: "机器学习", year: 2001, tier: "normal", x: 628, y: 520, summary: "集成树模型，依赖滞后特征和滚动窗口做递归预测。" },
-  { id: "xgboost", name: "XGBoost", category: "Machine Learning", lane: "机器学习", year: 2016, tier: "core", x: 792, y: 442, summary: "高性能 GBDT，对结构化时序特征非常强。" },
-  { id: "lightgbm", name: "LightGBM", category: "Machine Learning", lane: "机器学习", year: 2017, tier: "core", x: 842, y: 278, summary: "更轻量高效的 GBDT，是工业预测中常用强基线。", recommended: true },
-  { id: "catboost", name: "CatBoost", category: "Machine Learning", lane: "机器学习", year: 2017, tier: "small", x: 842, y: 606, summary: "梯度提升树路线的扩展节点，适合类别特征较多的业务表。" },
+  { id: "random_forest", name: "Random Forest", category: "Machine Learning", lane: "机器学习", year: 2001, tier: "normal", x: 96, y: 466, summary: "集成树模型，依赖滞后特征和滚动窗口做递归预测。" },
+  { id: "xgboost", name: "XGBoost", category: "Machine Learning", lane: "机器学习", year: 2016, tier: "core", x: 358, y: 458, summary: "高性能 GBDT，对结构化时序特征非常强。" },
+  { id: "lightgbm", name: "LightGBM", category: "Machine Learning", lane: "机器学习", year: 2017, tier: "core", x: 656, y: 456, summary: "更轻量高效的 GBDT，是工业预测中常用强基线。", recommended: true },
+  { id: "catboost", name: "CatBoost", category: "Machine Learning", lane: "机器学习", year: 2017, tier: "small", x: 1000, y: 476, summary: "梯度提升树路线的扩展节点，适合类别特征较多的业务表。" },
 
-  { id: "nbeats", name: "N-BEATS", category: "Deep Learning", lane: "深度学习", year: 2019, tier: "normal", x: 880, y: 106, summary: "神经基展开模型，强调可解释分解和单变量预测能力。" },
-  { id: "nhits", name: "N-HiTS", category: "Deep Learning", lane: "深度学习", year: 2022, tier: "normal", x: 1064, y: 104, summary: "层级插值深度模型，面向长预测步长。" },
-  { id: "deepar", name: "DeepAR", category: "Deep Learning", lane: "深度学习", year: 2017, tier: "small", x: 960, y: 668, summary: "概率深度预测模型，适合批量相关序列。" },
-  { id: "tft", name: "TFT", category: "Deep Learning", lane: "Transformer", year: 2021, tier: "small", x: 1100, y: 596, summary: "Temporal Fusion Transformer，强调可解释多变量预测。" },
-  { id: "patchtst", name: "PatchTST", category: "Deep Learning", lane: "Transformer", year: 2023, tier: "core", x: 1094, y: 352, summary: "Patch 化 Transformer，把长时序切片后建模。", recommended: true },
+  { id: "nbeats", name: "N-BEATS", category: "Deep Learning", lane: "深度学习", year: 2019, tier: "normal", x: 82, y: 606, summary: "神经基展开模型，强调可解释分解和单变量预测能力。" },
+  { id: "nhits", name: "N-HiTS", category: "Deep Learning", lane: "深度学习", year: 2022, tier: "normal", x: 82, y: 742, summary: "层级插值深度模型，面向长预测步长。" },
+  { id: "deepar", name: "DeepAR", category: "Deep Learning", lane: "深度学习", year: 2017, tier: "small", x: 1000, y: 610, summary: "概率深度预测模型，适合批量相关序列。" },
+  { id: "tft", name: "TFT", category: "Deep Learning", lane: "Transformer", year: 2021, tier: "small", x: 1000, y: 742, summary: "Temporal Fusion Transformer，强调可解释多变量预测。" },
+  { id: "patchtst", name: "PatchTST", category: "Deep Learning", lane: "Transformer", year: 2023, tier: "core", x: 656, y: 612, summary: "Patch 化 Transformer，把长时序切片后建模。", recommended: true },
 
-  { id: "timesfm", name: "TimesFM", category: "Foundation Model", lane: "基础模型", year: 2023, tier: "core", x: 1280, y: 238, summary: "Google 时序基础模型，强调跨领域 zero-shot 预测能力。", recommended: true },
-  { id: "chronos", name: "Chronos", category: "Foundation Model", lane: "基础模型", year: 2024, tier: "core", x: 1288, y: 366, summary: "Amazon 时序基础模型，把时间序列 token 化后接入语言模型范式。" },
-  { id: "moirai", name: "Moirai", category: "Foundation Model", lane: "基础模型", year: 2024, tier: "core", x: 1280, y: 500, summary: "Salesforce 通用时序基础模型，强调跨领域统一训练。" },
-  { id: "lag_llama", name: "Lag-Llama", category: "Foundation Model", lane: "基础模型", year: 2023, tier: "small", x: 1300, y: 650, summary: "Llama 风格概率时序基础模型路线。" }
+  { id: "timesfm", name: "TimesFM", category: "Foundation Model", lane: "基础模型", year: 2023, tier: "core", x: 656, y: 784, summary: "Google 时序基础模型，强调跨领域 zero-shot 预测能力。", recommended: true },
+  { id: "chronos", name: "Chronos", category: "Foundation Model", lane: "基础模型", year: 2024, tier: "core", x: 406, y: 790, summary: "Amazon 时序基础模型，把时间序列 token 化后接入语言模型范式。" },
+  { id: "moirai", name: "Moirai", category: "Foundation Model", lane: "基础模型", year: 2024, tier: "core", x: 902, y: 790, summary: "Salesforce 通用时序基础模型，强调跨领域统一训练。" },
+  { id: "lag_llama", name: "Lag-Llama", category: "Foundation Model", lane: "基础模型", year: 2023, tier: "small", x: 1130, y: 810, summary: "Llama 风格概率时序基础模型路线。" }
 ];
 
 const graphEdges: GraphEdge[] = [
@@ -192,6 +198,11 @@ function nodeCenter(node: VisualNode, sizeMap = nodeSize) {
   return { x: node.x + size.width / 2, y: node.y + size.height / 2 };
 }
 
+function nodePort(node: VisualNode, side: "top" | "bottom", sizeMap = nodeSize) {
+  const size = sizeMap[node.tier];
+  return { x: node.x + size.width / 2, y: side === "top" ? node.y : node.y + size.height };
+}
+
 function edgeKey(edge: GraphEdge) {
   return `${edge.from}->${edge.to}`;
 }
@@ -228,6 +239,11 @@ function collectRelated(nodeId: string | null, edges: GraphEdge[]) {
 }
 
 function curvePath(from: { x: number; y: number }, to: { x: number; y: number }) {
+  if (Math.abs(to.y - from.y) > Math.abs(to.x - from.x) * 0.75) {
+    const dy = Math.max(82, Math.abs(to.y - from.y) * 0.46);
+    const bend = Math.min(54, Math.abs(to.x - from.x) * 0.12);
+    return `M ${from.x} ${from.y} C ${from.x + bend} ${from.y + dy}, ${to.x - bend} ${to.y - dy}, ${to.x} ${to.y}`;
+  }
   const dx = Math.max(80, Math.abs(to.x - from.x) * 0.48);
   const sway = Math.min(84, Math.abs(to.y - from.y) * 0.22);
   return `M ${from.x} ${from.y} C ${from.x + dx} ${from.y + sway}, ${to.x - dx} ${to.y - sway}, ${to.x} ${to.y}`;
@@ -422,7 +438,7 @@ function TechTreeView({ nodes, onOpen }: { nodes: VisualNode[]; onOpen: (node: V
   return (
     <SectionCard title="模型科技树" description="多分支、汇聚和主干路线展示。hover 节点高亮上游和下游路径，点击节点打开详情。">
       <div
-        className="relative overflow-x-auto rounded-[28px] border border-cyan-300/10 bg-[#08111f] p-4 shadow-[0_28px_120px_rgba(2,8,23,0.45)]"
+        className="relative -mx-4 touch-pan-x overflow-auto rounded-[22px] border border-cyan-300/10 bg-[#08111f] p-3 shadow-[0_28px_120px_rgba(2,8,23,0.45)] sm:mx-0 sm:rounded-[28px] sm:p-4"
         style={{
           backgroundImage:
             "radial-gradient(circle at 18% 12%, rgba(129,140,248,0.18), transparent 28%), radial-gradient(circle at 76% 22%, rgba(34,211,238,0.12), transparent 30%), linear-gradient(rgba(148,163,184,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(148,163,184,0.06) 1px, transparent 1px)",
@@ -433,6 +449,7 @@ function TechTreeView({ nodes, onOpen }: { nodes: VisualNode[]; onOpen: (node: V
           <div>
             <div className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">AI Model Roadmap</div>
             <div className="mt-1 text-lg font-semibold text-white">企业级时间序列模型技术地图</div>
+            <div className="mt-1 text-xs text-slate-400 sm:hidden">横向滑动查看全图，点击节点查看详情。</div>
           </div>
           <div className="flex flex-wrap gap-2 text-xs text-slate-300">
             <span className="inline-flex items-center gap-1.5"><span className="h-2 w-6 rounded-full bg-gradient-to-r from-cyan-300 to-violet-400 shadow-[0_0_12px_rgba(129,140,248,0.8)]" />推荐主干</span>
@@ -443,8 +460,8 @@ function TechTreeView({ nodes, onOpen }: { nodes: VisualNode[]; onOpen: (node: V
           </div>
         </div>
 
-        <div className="relative h-[760px] min-w-[1480px]">
-          <svg className="absolute inset-0 h-full w-full" viewBox="0 0 1480 760" preserveAspectRatio="none">
+        <div className="relative h-[960px] min-w-[1280px]">
+          <svg className="absolute inset-0 h-full w-full" viewBox="0 0 1280 960" preserveAspectRatio="none">
             <defs>
               <linearGradient id="recommendedStroke" x1="0" x2="1" y1="0" y2="0">
                 <stop offset="0%" stopColor="#22D3EE" />
@@ -468,7 +485,7 @@ function TechTreeView({ nodes, onOpen }: { nodes: VisualNode[]; onOpen: (node: V
               return (
                 <path
                   key={key}
-                  d={curvePath(nodeCenter(from), nodeCenter(to))}
+                  d={curvePath(nodePort(from, "bottom"), nodePort(to, "top"))}
                   fill="none"
                   stroke={edge.recommended ? "url(#recommendedStroke)" : planned ? "rgba(148,163,184,0.34)" : "rgba(125,211,252,0.28)"}
                   strokeWidth={edge.recommended ? (isRelated ? 4.8 : 3.2) : isRelated ? 2.2 : 1.2}
@@ -491,9 +508,9 @@ function TechTreeView({ nodes, onOpen }: { nodes: VisualNode[]; onOpen: (node: V
 
 function timelinePosition(node: VisualNode, laneOffsets: Map<string, number>) {
   const yearIndex = timelineYears.indexOf(node.year);
-  const x = 168 + Math.max(yearIndex, 0) * 126;
+  const x = timelineLeft + Math.max(yearIndex, 0) * timelineYearGap + (laneOffsets.get(`${node.lane}:${node.year}:${node.id}:x`) ?? 0);
   const laneIndex = timelineLanes.indexOf(node.lane);
-  const y = 92 + Math.max(laneIndex, 0) * 112 + (laneOffsets.get(`${node.lane}:${node.year}:${node.id}`) ?? 0);
+  const y = timelineTop + Math.max(laneIndex, 0) * timelineLaneGap + (laneOffsets.get(`${node.lane}:${node.year}:${node.id}:y`) ?? 0);
   return { ...node, x, y };
 }
 
@@ -506,7 +523,9 @@ function TimelineView({ nodes, onOpen }: { nodes: VisualNode[]; onOpen: (node: V
       const key = `${node.lane}:${node.year}`;
       const index = counters.get(key) ?? 0;
       counters.set(key, index + 1);
-      offsets.set(`${node.lane}:${node.year}:${node.id}`, index * 34 - (index > 0 ? 10 : 0));
+      const direction = index % 2 === 0 ? 1 : -1;
+      offsets.set(`${node.lane}:${node.year}:${node.id}:x`, index === 0 ? 0 : direction * 18);
+      offsets.set(`${node.lane}:${node.year}:${node.id}:y`, index * 68);
     });
     return offsets;
   }, [nodes]);
@@ -516,9 +535,10 @@ function TimelineView({ nodes, onOpen }: { nodes: VisualNode[]; onOpen: (node: V
 
   return (
     <SectionCard title="模型发展时间线" description="多泳道呈现模型演化，节点按年份落位，路线之间用曲线连接。">
-      <div className="overflow-x-auto rounded-[28px] border border-cyan-300/10 bg-[#08111f] p-4 text-slate-100 shadow-[0_28px_120px_rgba(2,8,23,0.45)]">
-        <div className="relative h-[820px] min-w-[1680px]">
-          <svg className="absolute inset-0 h-full w-full" viewBox="0 0 1680 820" preserveAspectRatio="none">
+      <div className="-mx-4 touch-pan-x overflow-auto rounded-[22px] border border-cyan-300/10 bg-[#08111f] p-3 text-slate-100 shadow-[0_28px_120px_rgba(2,8,23,0.45)] sm:mx-0 sm:rounded-[28px] sm:p-4">
+        <div className="mb-3 px-2 text-xs text-slate-400 sm:hidden">横向滑动查看年份轴；同年模型已错位展示，点击节点查看详情。</div>
+        <div className="relative h-[1280px] min-w-[2160px]">
+          <svg className="absolute inset-0 h-full w-full" viewBox={`0 0 ${timelineWidth} ${timelineHeight}`} preserveAspectRatio="none">
             <defs>
               <linearGradient id="timelineRoute" x1="0" x2="1" y1="0" y2="0">
                 <stop offset="0%" stopColor="#22D3EE" />
@@ -533,17 +553,17 @@ function TimelineView({ nodes, onOpen }: { nodes: VisualNode[]; onOpen: (node: V
               </filter>
             </defs>
             {timelineYears.map((year, index) => {
-              const x = 168 + index * 126 + 58;
+              const x = timelineLeft + index * timelineYearGap + 58;
               return (
                 <g key={year}>
-                  <line x1={x} x2={x} y1={48} y2={780} stroke="rgba(148,163,184,0.09)" />
+                  <line x1={x} x2={x} y1={48} y2={1236} stroke="rgba(148,163,184,0.09)" />
                   <text x={x} y={32} textAnchor="middle" fill="#94A3B8" fontSize="12" fontWeight="600">{year}</text>
                 </g>
               );
             })}
             {timelineLanes.map((lane, index) => {
-              const y = 90 + index * 112;
-              return <line key={lane} x1={20} x2={1640} y1={y + 70} y2={y + 70} stroke="rgba(148,163,184,0.09)" />;
+              const y = timelineTop + index * timelineLaneGap;
+              return <line key={lane} x1={20} x2={2110} y1={y + 76} y2={y + 76} stroke="rgba(148,163,184,0.09)" />;
             })}
             {graphEdges.map((edge) => {
               const from = nodeMap.get(edge.from);
@@ -568,7 +588,7 @@ function TimelineView({ nodes, onOpen }: { nodes: VisualNode[]; onOpen: (node: V
           </svg>
 
           {timelineLanes.map((lane, index) => (
-            <div key={lane} className="absolute left-4 flex h-16 w-32 items-center rounded-2xl border border-white/10 bg-white/5 px-3 text-sm font-semibold text-slate-200" style={{ top: 88 + index * 112 }}>
+            <div key={lane} className="absolute left-4 flex h-16 w-32 items-center rounded-2xl border border-white/10 bg-white/5 px-3 text-sm font-semibold text-slate-200" style={{ top: timelineTop - 4 + index * timelineLaneGap }}>
               {lane}
             </div>
           ))}
