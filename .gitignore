@@ -19,3 +19,5 @@ backend/.model_cache/
 
 .DS_Store
 *.log
+*.tar.gz
+.deploy-local/
