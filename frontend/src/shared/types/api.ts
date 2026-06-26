@@ -49,6 +49,12 @@ export interface ModelCapability {
   priority: number;
 }
 
+export interface DeviceInfo {
+  device: string;
+  memoryTotalMb: number | null;
+  memoryAvailableMb: number | null;
+}
+
 export interface MetricValues {
   mae: number | null;
   mse: number | null;

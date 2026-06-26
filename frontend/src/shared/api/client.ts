@@ -1,6 +1,7 @@
 import type {
   DeepSeekConnectionResponse,
   DeepSeekSettings,
+  DeviceInfo,
   ExperimentDetail,
   ExperimentListItem,
   FinalForecastResponse,
@@ -48,8 +49,17 @@ export async function fetchModels(): Promise<ModelCapability[]> {
 }
 
 export async function fetchDevice(): Promise<string> {
-  const body = await parseResponse<{ device: string }>(await fetch("/api/models/device"));
+  const body = await parseResponse<Partial<DeviceInfo> & { device: string }>(await fetch("/api/models/device"));
   return body.device;
+}
+
+export async function fetchDeviceInfo(): Promise<DeviceInfo> {
+  const body = await parseResponse<Partial<DeviceInfo> & { device: string }>(await fetch("/api/models/device"));
+  return {
+    device: body.device,
+    memoryTotalMb: body.memoryTotalMb ?? null,
+    memoryAvailableMb: body.memoryAvailableMb ?? null
+  };
 }
 
 export async function fetchHealth(): Promise<{ ok: boolean; app: string; version?: string }> {

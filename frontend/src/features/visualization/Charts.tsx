@@ -42,6 +42,36 @@ function baseOption(title: string): EChartsOption {
   };
 }
 
+function compactTimeLabel(value: string | number) {
+  const text = String(value);
+  const normalized = text.replace("T", " ");
+  const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ ](\d{2}):(\d{2}))?/);
+  if (!match) return text;
+  const [, , month, day, hour, minute] = match;
+  if (hour && minute && `${hour}:${minute}` !== "00:00") return `${month}-${day} ${hour}:${minute}`;
+  return `${month}-${day}`;
+}
+
+function timeCategoryAxis(times: string[]) {
+  return {
+    type: "category" as const,
+    data: times,
+    boundaryGap: false,
+    axisLabel: { color: "#94A3B8", formatter: compactTimeLabel },
+    axisTick: { alignWithLabel: true }
+  };
+}
+
+function valueAxis({ scale = false, zeroLine = false }: { scale?: boolean; zeroLine?: boolean } = {}) {
+  return {
+    type: "value" as const,
+    scale,
+    axisLabel: { color: "#94A3B8" },
+    splitLine: { lineStyle: { color: "rgba(148,163,184,0.14)" } },
+    axisLine: zeroLine ? { show: true, lineStyle: { color: "rgba(148,163,184,0.28)" } } : undefined
+  };
+}
+
 function lineStyle(modelId: string, width = 2) {
   return {
     width: modelId === "timesfm" ? 3 : width,
@@ -65,7 +95,7 @@ export function ActualVsPredictedChart({ result, visibleModelIds, height }: { re
         lineStyle: lineStyle(id)
       }))
   ];
-  return <EChart height={height} option={{ ...baseOption(zhCN.charts.actualVsPredicted), xAxis: { type: "category", data: times, axisLabel: { color: "#94A3B8" } }, yAxis: { type: "value", axisLabel: { color: "#94A3B8" }, splitLine: { lineStyle: { color: "rgba(148,163,184,0.14)" } } }, series: series as EChartsOption["series"] }} />;
+  return <EChart height={height} option={{ ...baseOption(zhCN.charts.actualVsPredicted), xAxis: timeCategoryAxis(times), yAxis: valueAxis({ scale: true }), series: series as EChartsOption["series"] }} />;
 }
 
 export function ResidualTimelineChart({ result, visibleModelIds }: { result: ForecastRunResponse; visibleModelIds?: string[] }) {
@@ -81,7 +111,7 @@ export function ResidualTimelineChart({ result, visibleModelIds }: { result: For
       lineStyle: lineStyle(id),
       markLine: { silent: true, data: [{ yAxis: 0 }] }
     }));
-  return <EChart option={{ ...baseOption(zhCN.charts.residualTimeline), xAxis: { type: "category", data: times }, yAxis: { type: "value" }, series: series as EChartsOption["series"] }} />;
+  return <EChart option={{ ...baseOption(zhCN.charts.residualTimeline), xAxis: timeCategoryAxis(times), yAxis: valueAxis({ zeroLine: true }), series: series as EChartsOption["series"] }} />;
 }
 
 export function MetricBarChart({ result, metric }: { result: ForecastRunResponse; metric: keyof NonNullable<RankedModel["metrics"]> }) {
@@ -90,8 +120,8 @@ export function MetricBarChart({ result, metric }: { result: ForecastRunResponse
     <EChart
       option={{
         ...baseOption(`${metric.toUpperCase()} ${zhCN.charts.metricBar}`),
-        xAxis: { type: "category", data: successful.map((model) => model.modelName) },
-        yAxis: { type: "value" },
+        xAxis: { type: "category", data: successful.map((model) => model.modelName), axisLabel: { color: "#94A3B8" } },
+        yAxis: valueAxis(),
         series: [{ type: "bar", data: successful.map((model) => ({ value: model.metrics?.[metric] ?? 0, itemStyle: { color: modelColorMap[model.modelId] ?? "#4F46E5" } })), barMaxWidth: 44 }]
       }}
     />
@@ -107,7 +137,7 @@ export function ResidualDistributionChart({ result, visibleModelIds }: { result:
       type: "bar",
       data: result.backtest.predictions[id].map((point) => [Math.round(point.residual * 100) / 100, 1])
     }));
-  return <EChart option={{ ...baseOption(zhCN.charts.residualDistribution), xAxis: { type: "value" }, yAxis: { type: "value" }, series: series as EChartsOption["series"] }} />;
+  return <EChart option={{ ...baseOption(zhCN.charts.residualDistribution), xAxis: valueAxis({ scale: true }), yAxis: valueAxis(), series: series as EChartsOption["series"] }} />;
 }
 
 export function PredictedResidualScatterChart({ result, visibleModelIds }: { result: ForecastRunResponse; visibleModelIds?: string[] }) {
@@ -120,7 +150,7 @@ export function PredictedResidualScatterChart({ result, visibleModelIds }: { res
       itemStyle: { color: modelColorMap[id] },
       data: result.backtest.predictions[id].map((point) => [point.predicted, point.residual])
     }));
-  return <EChart option={{ ...baseOption(zhCN.charts.predictedResidualScatter), xAxis: { type: "value" }, yAxis: { type: "value" }, series: series as EChartsOption["series"] }} />;
+  return <EChart option={{ ...baseOption(zhCN.charts.predictedResidualScatter), xAxis: valueAxis({ scale: true }), yAxis: valueAxis({ zeroLine: true }), series: series as EChartsOption["series"] }} />;
 }
 
 export function AbsoluteErrorTimelineChart({ result, visibleModelIds }: { result: ForecastRunResponse; visibleModelIds?: string[] }) {
@@ -135,7 +165,7 @@ export function AbsoluteErrorTimelineChart({ result, visibleModelIds }: { result
       lineStyle: lineStyle(id),
       data: result.backtest.predictions[id].map((point) => point.absoluteError)
     }));
-  return <EChart option={{ ...baseOption(zhCN.charts.absoluteErrorTimeline), xAxis: { type: "category", data: times }, yAxis: { type: "value" }, series: series as EChartsOption["series"] }} />;
+  return <EChart option={{ ...baseOption(zhCN.charts.absoluteErrorTimeline), xAxis: timeCategoryAxis(times), yAxis: valueAxis(), series: series as EChartsOption["series"] }} />;
 }
 
 export function NormalizedMetricChart({ result }: { result: ForecastRunResponse }) {
@@ -150,7 +180,7 @@ export function NormalizedMetricChart({ result }: { result: ForecastRunResponse 
       return Number((value / maxByMetric[metric]).toFixed(4));
     })
   }));
-  return <EChart option={{ ...baseOption(zhCN.charts.normalizedMetric), xAxis: { type: "category", data: successful.map((model) => model.modelName) }, yAxis: { type: "value", max: 1 }, series: series as EChartsOption["series"] }} />;
+  return <EChart option={{ ...baseOption(zhCN.charts.normalizedMetric), xAxis: { type: "category", data: successful.map((model) => model.modelName), axisLabel: { color: "#94A3B8" } }, yAxis: { ...valueAxis(), max: 1 }, series: series as EChartsOption["series"] }} />;
 }
 
 export function FinalForecastChart({ finalForecast }: { finalForecast: FinalForecastResponse | null }) {
@@ -172,8 +202,8 @@ export function FinalForecastChart({ finalForecast }: { finalForecast: FinalFore
     <EChart
       option={{
         ...baseOption(zhCN.charts.finalForecast),
-        xAxis: { type: "category", data: times },
-        yAxis: { type: "value" },
+        xAxis: timeCategoryAxis(times),
+        yAxis: valueAxis({ scale: true }),
         series: [
           { name: zhCN.charts.history, type: "line", smooth: true, data: historyValues, lineStyle: { width: 3, color: modelColorMap.actual } },
           { name: finalForecast.modelInfo.name, type: "line", smooth: true, data: forecastValues, lineStyle: { width: 3, color: modelColorMap[finalForecast.finalModelId] ?? "#818CF8" } },

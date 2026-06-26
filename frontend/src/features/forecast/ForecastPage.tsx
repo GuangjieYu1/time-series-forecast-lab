@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { Link } from "react-router-dom";
-import { fetchDevice, fetchModels, runFinalForecast, runForecast } from "../../shared/api/client";
+import { fetchDeviceInfo, fetchModels, runFinalForecast, runForecast } from "../../shared/api/client";
 import { DataTable } from "../../shared/components/Table";
 import { EmptyState, ErrorBanner } from "../../shared/components/Status";
 import { Badge, controls, PageHeader, SectionCard, StatCard, Stepper, surface, Tabs } from "../../shared/components/Ui";
 import { zhCN } from "../../shared/i18n/zhCN";
-import type { ForecastRunRequest, ForecastRunResponse, ModelCapability, RankedModel } from "../../shared/types/api";
+import type { DeviceInfo, ForecastRunRequest, ForecastRunResponse, ModelCapability, RankedModel, SheetPreview, UploadPreviewResponse } from "../../shared/types/api";
 import { useLabStore } from "../../app/store";
 import {
   AbsoluteErrorTimelineChart,
@@ -70,6 +70,120 @@ const modelProgressWeights: Record<string, number> = {
   random_forest: 7,
   timesfm: 24
 };
+
+type ResourceLevel = "green" | "yellow" | "red" | "gray";
+
+interface ModelResourceAssessment {
+  level: ResourceLevel;
+  label: string;
+  reason: string;
+  minRamMb: number;
+  dataRamMb: number;
+  loadRank: number;
+}
+
+const modelResourceProfiles: Record<string, { baseRamMb: number; dataMultiplier: number; loadRank: number }> = {
+  naive: { baseRamMb: 128, dataMultiplier: 0.5, loadRank: 1 },
+  seasonal_naive: { baseRamMb: 160, dataMultiplier: 0.6, loadRank: 1 },
+  moving_average: { baseRamMb: 128, dataMultiplier: 0.5, loadRank: 1 },
+  arima: { baseRamMb: 512, dataMultiplier: 1.3, loadRank: 2 },
+  ets: { baseRamMb: 512, dataMultiplier: 1.1, loadRank: 2 },
+  random_forest: { baseRamMb: 768, dataMultiplier: 2.0, loadRank: 3 },
+  xgboost: { baseRamMb: 1024, dataMultiplier: 2.4, loadRank: 3 },
+  lightgbm: { baseRamMb: 1024, dataMultiplier: 2.2, loadRank: 3 },
+  prophet: { baseRamMb: 1024, dataMultiplier: 1.8, loadRank: 3 },
+  nbeats: { baseRamMb: 2048, dataMultiplier: 2.5, loadRank: 4 },
+  nhits: { baseRamMb: 2048, dataMultiplier: 2.5, loadRank: 4 },
+  patchtst: { baseRamMb: 3072, dataMultiplier: 3.0, loadRank: 4 },
+  timesfm: { baseRamMb: 4096, dataMultiplier: 1.4, loadRank: 5 },
+  lag_llama: { baseRamMb: 4096, dataMultiplier: 2.0, loadRank: 5 },
+  chronos: { baseRamMb: 4096, dataMultiplier: 2.0, loadRank: 5 },
+  moirai: { baseRamMb: 4096, dataMultiplier: 2.0, loadRank: 5 }
+};
+
+const resourceToneClass: Record<ResourceLevel, string> = {
+  green: "bg-emerald-400 shadow-emerald-400/40",
+  yellow: "bg-amber-400 shadow-amber-400/40",
+  red: "bg-red-500 shadow-red-500/40",
+  gray: "bg-slate-400 shadow-slate-400/30"
+};
+
+function formatMemory(mb: number | null | undefined) {
+  if (mb === null || mb === undefined || Number.isNaN(mb)) return "未知";
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+  return `${Math.round(mb)} MB`;
+}
+
+function estimateDataRamMb({
+  upload,
+  sheet,
+  dataMode,
+  targetColumns,
+  horizon,
+  testSize
+}: {
+  upload: UploadPreviewResponse | null;
+  sheet: SheetPreview | null;
+  dataMode: "aggregated" | "raw";
+  targetColumns: string[];
+  horizon: number;
+  testSize: number;
+}) {
+  const fileMb = upload ? upload.fileSize / 1024 / 1024 : 1;
+  const rowCount = sheet?.rowCountApprox ?? Math.max(100, Math.round(fileMb * 4000));
+  const columnCount = Math.max(sheet?.columns.length ?? 2, 1);
+  const inMemoryFrameMb = (rowCount * columnCount * 96) / 1024 / 1024;
+  const parseMultiplier = dataMode === "raw" ? 3.8 : 2.4;
+  const targetMultiplier = Math.max(targetColumns.length, 1);
+  const horizonBufferMb = Math.max(8, (horizon + testSize) * targetMultiplier * 0.45);
+  return Math.max(fileMb * parseMultiplier, inMemoryFrameMb * parseMultiplier) + horizonBufferMb + Math.max(0, targetMultiplier - 1) * 128;
+}
+
+function assessModelResource({
+  model,
+  deviceInfo,
+  upload,
+  sheet,
+  dataMode,
+  targetColumns,
+  horizon,
+  testSize
+}: {
+  model: ModelCapability;
+  deviceInfo: DeviceInfo | null;
+  upload: UploadPreviewResponse | null;
+  sheet: SheetPreview | null;
+  dataMode: "aggregated" | "raw";
+  targetColumns: string[];
+  horizon: number;
+  testSize: number;
+}): ModelResourceAssessment {
+  const profile = modelResourceProfiles[model.id] ?? { baseRamMb: 768, dataMultiplier: 1.4, loadRank: 3 };
+  const dataRamMb = estimateDataRamMb({ upload, sheet, dataMode, targetColumns, horizon, testSize });
+  const minRamMb = Math.ceil(profile.baseRamMb + dataRamMb * profile.dataMultiplier);
+  const totalMb = deviceInfo?.memoryTotalMb ?? null;
+  const availableMb = deviceInfo?.memoryAvailableMb ?? null;
+
+  if (!model.enabledInMvp || model.installStatus !== "available") {
+    return { level: "gray", label: "无法运行", reason: model.unavailableReason ?? modelStatusText(model), minRamMb, dataRamMb, loadRank: 99 };
+  }
+  if (totalMb && minRamMb > totalMb * 1.15) {
+    return { level: "gray", label: "无法运行", reason: `最小 RAM 超过主机总内存 ${formatMemory(totalMb)}`, minRamMb, dataRamMb, loadRank: 98 };
+  }
+  if (model.requiresGpu && deviceInfo?.device === "cpu") {
+    return { level: "red", label: "高压力", reason: "当前主机未检测到 GPU", minRamMb, dataRamMb, loadRank: profile.loadRank };
+  }
+  if (!availableMb) {
+    return { level: "yellow", label: "压力未知", reason: "未读取到可用内存，使用保守估算", minRamMb, dataRamMb, loadRank: profile.loadRank };
+  }
+  if (minRamMb <= availableMb * 0.55) {
+    return { level: "green", label: "无压力", reason: `预计占用低于可用内存 ${formatMemory(availableMb)} 的 55%`, minRamMb, dataRamMb, loadRank: profile.loadRank };
+  }
+  if (minRamMb <= availableMb * 0.85) {
+    return { level: "yellow", label: "有压力", reason: `接近可用内存 ${formatMemory(availableMb)}`, minRamMb, dataRamMb, loadRank: profile.loadRank };
+  }
+  return { level: "red", label: "高压力", reason: `可能挤占可用内存 ${formatMemory(availableMb)}`, minRamMb, dataRamMb, loadRank: profile.loadRank };
+}
 
 function RunningProgress({
   finalForecastMode = false,
@@ -187,8 +301,18 @@ function Leaderboard({ rows, recommendedModelId }: { rows: RankedModel[]; recomm
   );
 }
 
-function ModelCard({ model, selected, onChange }: { model: ModelCapability; selected: boolean; onChange: (checked: boolean) => void }) {
-  const runnable = isRunnableModel(model);
+function ModelCard({
+  model,
+  selected,
+  resource,
+  onChange
+}: {
+  model: ModelCapability;
+  selected: boolean;
+  resource: ModelResourceAssessment;
+  onChange: (checked: boolean) => void;
+}) {
+  const runnable = isRunnableModel(model) && resource.level !== "gray";
   return (
     <button
       type="button"
@@ -202,13 +326,29 @@ function ModelCard({ model, selected, onChange }: { model: ModelCapability; sele
     >
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="font-semibold text-slate-950 dark:text-white">{model.name}</div>
+          <div className="flex items-center gap-2 font-semibold text-slate-950 dark:text-white">
+            <span className={`h-2.5 w-2.5 rounded-full shadow-lg ${resourceToneClass[resource.level]}`} />
+            {model.name}
+          </div>
           <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">{model.modelFamily || model.category}</div>
         </div>
         <Badge tone={modelStatusTone(model)}>{modelStatusText(model)}</Badge>
       </div>
       <p className="mt-3 line-clamp-2 text-xs leading-5 text-slate-500 dark:text-slate-400">{zhCN.modelDescriptions[model.id as keyof typeof zhCN.modelDescriptions] ?? model.shortDescription}</p>
-      {!runnable && model.unavailableReason ? <p className="mt-2 text-xs text-amber-600 dark:text-amber-300">{model.unavailableReason}</p> : null}
+      <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+        <div className="rounded-xl bg-slate-50 px-3 py-2 text-slate-600 dark:bg-[#0b1020] dark:text-slate-300">
+          <div className="text-slate-400 dark:text-slate-500">负荷</div>
+          <div className="mt-1 font-semibold">{resource.label}</div>
+        </div>
+        <div className="rounded-xl bg-slate-50 px-3 py-2 text-slate-600 dark:bg-[#0b1020] dark:text-slate-300">
+          <div className="text-slate-400 dark:text-slate-500">最小 RAM</div>
+          <div className="mt-1 font-semibold">{formatMemory(resource.minRamMb)}</div>
+        </div>
+      </div>
+      <p className={`mt-2 text-xs ${resource.level === "red" || resource.level === "gray" ? "text-amber-600 dark:text-amber-300" : "text-slate-500 dark:text-slate-400"}`}>
+        {resource.reason}
+      </p>
+      {!runnable && model.unavailableReason && resource.reason !== model.unavailableReason ? <p className="mt-2 text-xs text-amber-600 dark:text-amber-300">{model.unavailableReason}</p> : null}
     </button>
   );
 }
@@ -365,6 +505,7 @@ export function ForecastPage() {
   const { upload, selectedSheet, forecastResult, finalForecast, setForecastResult, setFinalForecast } = useLabStore();
   const [models, setModels] = useState<ModelCapability[]>([]);
   const [device, setDevice] = useState("cpu");
+  const [deviceInfo, setDeviceInfo] = useState<DeviceInfo | null>(null);
   const [dataMode, setDataMode] = useState<"aggregated" | "raw">("aggregated");
   const [timeColumn, setTimeColumn] = useState("");
   const [targetColumns, setTargetColumns] = useState<string[]>([]);
@@ -388,7 +529,15 @@ export function ForecastPage() {
         setSelectedModels(runnableDefaults);
       })
       .catch(() => setModels([]));
-    void fetchDevice().then(setDevice).catch(() => setDevice("cpu"));
+    void fetchDeviceInfo()
+      .then((info) => {
+        setDeviceInfo(info);
+        setDevice(info.device);
+      })
+      .catch(() => {
+        setDeviceInfo({ device: "cpu", memoryTotalMb: null, memoryAvailableMb: null });
+        setDevice("cpu");
+      });
   }, []);
 
   useEffect(() => {
@@ -420,6 +569,42 @@ export function ForecastPage() {
       return score(left.inferredType) - score(right.inferredType);
     });
   }, [selectedSheet]);
+
+  const resourceAssessments = useMemo(() => {
+    return new Map(
+      models.map((model) => [
+        model.id,
+        assessModelResource({
+          model,
+          deviceInfo,
+          upload,
+          sheet: selectedSheet,
+          dataMode,
+          targetColumns,
+          horizon,
+          testSize
+        })
+      ])
+    );
+  }, [models, deviceInfo, upload, selectedSheet, dataMode, targetColumns, horizon, testSize]);
+
+  const sortedModels = useMemo(() => {
+    const levelOrder: Record<ResourceLevel, number> = { green: 0, yellow: 1, red: 2, gray: 3 };
+    return [...models].sort((left, right) => {
+      const leftResource = resourceAssessments.get(left.id);
+      const rightResource = resourceAssessments.get(right.id);
+      const levelDiff = levelOrder[leftResource?.level ?? "gray"] - levelOrder[rightResource?.level ?? "gray"];
+      if (levelDiff !== 0) return levelDiff;
+      const ramDiff = (leftResource?.minRamMb ?? Number.MAX_SAFE_INTEGER) - (rightResource?.minRamMb ?? Number.MAX_SAFE_INTEGER);
+      if (ramDiff !== 0) return ramDiff;
+      return left.priority - right.priority;
+    });
+  }, [models, resourceAssessments]);
+
+  useEffect(() => {
+    const availableIds = new Set(models.filter((model) => resourceAssessments.get(model.id)?.level !== "gray").map((model) => model.id));
+    setSelectedModels((current) => current.filter((modelId) => availableIds.has(modelId)));
+  }, [models, resourceAssessments]);
 
   const horizonRange = useMemo(() => {
     const selected = models.filter((model) => selectedModels.includes(model.id));
@@ -573,7 +758,10 @@ export function ForecastPage() {
               </div>
             </SectionCard>
 
-            <SectionCard title="Step 3-5：模型与回测" description="只允许选择当前可运行模型；未安装或计划中模型可在模型库查看原因。">
+            <SectionCard
+              title="Step 3-5：模型与回测"
+              description={`模型按当前数据规模和主机内存压力排序。主机：${device.toUpperCase()}，可用 RAM：${formatMemory(deviceInfo?.memoryAvailableMb)}，总 RAM：${formatMemory(deviceInfo?.memoryTotalMb)}。`}
+            >
               <div className="grid gap-4">
                 <div className="grid gap-3 md:grid-cols-2">
                   <label className="space-y-2">
@@ -602,11 +790,26 @@ export function ForecastPage() {
                   共同步长：{horizonRange.min} ~ {horizonRange.max}
                   {!horizonRange.compatible ? <span className="ml-2 text-red-600 dark:text-red-300">所选模型步长范围不兼容。</span> : null}
                 </div>
+                <div className="flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white p-3 text-xs text-slate-600 dark:border-white/10 dark:bg-[#151b2e] dark:text-slate-300">
+                  {[
+                    ["green", "无压力"],
+                    ["yellow", "有压力"],
+                    ["red", "高压力"],
+                    ["gray", "无法运行"]
+                  ].map(([level, label]) => (
+                    <span key={level} className="inline-flex items-center gap-2">
+                      <span className={`h-2.5 w-2.5 rounded-full shadow-lg ${resourceToneClass[level as ResourceLevel]}`} />
+                      {label}
+                    </span>
+                  ))}
+                  <span className="text-slate-400 dark:text-slate-500">估算随文件大小、行列数、目标列和步长动态变化。</span>
+                </div>
                 <div className="grid max-h-[520px] gap-3 overflow-auto pr-1 md:grid-cols-2">
-                  {models.map((model) => (
+                  {sortedModels.map((model) => (
                     <ModelCard
                       key={model.id}
                       model={model}
+                      resource={resourceAssessments.get(model.id) ?? assessModelResource({ model, deviceInfo, upload, sheet: selectedSheet, dataMode, targetColumns, horizon, testSize })}
                       selected={selectedModels.includes(model.id)}
                       onChange={(checked) => setSelectedModels((current) => (checked ? [...current, model.id] : current.filter((item) => item !== model.id)))}
                     />
