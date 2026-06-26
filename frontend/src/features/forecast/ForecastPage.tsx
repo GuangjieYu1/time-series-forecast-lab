@@ -21,7 +21,7 @@ import {
 } from "../visualization/Charts";
 import { ReportPanel } from "../reports/ReportPanel";
 
-const modelDefaults = ["naive", "seasonal_naive", "moving_average", "arima", "ets", "prophet", "timesfm", "xgboost", "lightgbm", "random_forest"];
+const modelDefaults = ["naive", "seasonal_naive", "moving_average", "arima", "ets", "prophet", "xgboost", "lightgbm", "random_forest"];
 const steps = ["选择数据模式", "选择字段", "选择模型", "设置回测", "运行实验"];
 
 type ResultTab = "overview" | "residual" | "metrics" | "distribution" | "final" | "report";
