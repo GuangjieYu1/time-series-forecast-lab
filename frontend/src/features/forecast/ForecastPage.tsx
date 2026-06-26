@@ -3,7 +3,7 @@ import type { Dispatch, SetStateAction } from "react";
 import { Link } from "react-router-dom";
 import { fetchDevice, fetchModels, runFinalForecast, runForecast } from "../../shared/api/client";
 import { DataTable } from "../../shared/components/Table";
-import { EmptyState, ErrorBanner, LoadingBlock } from "../../shared/components/Status";
+import { EmptyState, ErrorBanner } from "../../shared/components/Status";
 import { Badge, controls, PageHeader, SectionCard, StatCard, Stepper, surface, Tabs } from "../../shared/components/Ui";
 import { zhCN } from "../../shared/i18n/zhCN";
 import type { ForecastRunRequest, ForecastRunResponse, ModelCapability, RankedModel } from "../../shared/types/api";
@@ -49,6 +49,30 @@ function modelStatusTone(model: ModelCapability): "neutral" | "good" | "warn" | 
 function metricText(value: number | null | undefined) {
   if (value === null || value === undefined) return "-";
   return value < 1 ? value.toFixed(4) : value.toFixed(2);
+}
+
+function RunningProgress({ finalForecastMode = false }: { finalForecastMode?: boolean }) {
+  const items = finalForecastMode
+    ? ["读取完整历史数据", "重新训练最终模型", "生成未来预测", "更新预测图表"]
+    : ["校验字段配置", "构建时间序列", "运行模型回测", "计算残差指标"];
+  return (
+    <SectionCard
+      title={finalForecastMode ? "正在运行最终预测" : "正在运行预测实验"}
+      description={finalForecastMode ? "系统正在用最终模型预测未来时间点。" : "系统正在执行 holdout 回测，部分模型可能需要更长时间。"}
+      className="overflow-hidden"
+    >
+      <div className="h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-white/10">
+        <div className="h-full w-2/5 animate-[progress_1.4s_ease-in-out_infinite] rounded-full bg-gradient-to-r from-indigo-500 via-cyan-400 to-emerald-400" />
+      </div>
+      <div className="mt-4 grid gap-2 md:grid-cols-4">
+        {items.map((item) => (
+          <div key={item} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-600 dark:border-white/10 dark:bg-[#151b2e] dark:text-slate-300">
+            {item}
+          </div>
+        ))}
+      </div>
+    </SectionCard>
+  );
 }
 
 function Leaderboard({ rows, recommendedModelId }: { rows: RankedModel[]; recommendedModelId: string | null }) {
@@ -304,6 +328,17 @@ export function ForecastPage() {
     return { min, max, compatible: min <= max };
   }, [models, selectedModels]);
 
+  const stepCompletion = [
+    Boolean(dataMode),
+    Boolean(timeColumn && targetColumns.length),
+    Boolean(selectedModels.length),
+    Boolean(horizonRange.compatible && horizon >= horizonRange.min && horizon <= horizonRange.max && testSize >= 1),
+    Boolean(forecastResult)
+  ];
+  const completedStepIndexes = stepCompletion.map((done, index) => (done ? index : -1)).filter((index) => index >= 0);
+  const nextIncompleteStep = stepCompletion.findIndex((done) => !done);
+  const activeStepIndex = loading ? 4 : nextIncompleteStep === -1 ? 4 : nextIncompleteStep;
+
   async function submit() {
     if (!upload || !selectedSheet) return;
     setLoading(true);
@@ -363,11 +398,11 @@ export function ForecastPage() {
       />
 
       <ErrorBanner message={error} />
-      {loading ? <LoadingBlock label="正在运行预测实验..." /> : null}
+      {loading ? <RunningProgress finalForecastMode={Boolean(forecastResult)} /> : null}
 
       {!forecastResult ? (
         <>
-          <Stepper steps={steps} activeIndex={selectedModels.length ? 3 : 1} />
+          <Stepper steps={steps} activeIndex={activeStepIndex} completedIndexes={loading ? [0, 1, 2, 3] : completedStepIndexes} />
           <div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
             <SectionCard title="Step 1-2：数据模式与字段" description="先确认这是已聚合时间序列还是原始明细，再选择时间列和预测目标。">
               <div className="grid gap-4 md:grid-cols-2">
@@ -424,7 +459,8 @@ export function ForecastPage() {
               <div className="grid gap-4">
                 <div className="grid gap-3 md:grid-cols-2">
                   <label className="space-y-2">
-                    <span className="text-sm font-medium text-slate-700 dark:text-slate-200">预测步长 horizon</span>
+                    <span className="text-sm font-medium text-slate-700 dark:text-slate-200">预测步长</span>
+                    <span className="block text-xs text-slate-500 dark:text-slate-400">未来预测点数</span>
                     <input
                       className={controls.input}
                       type="number"
@@ -439,12 +475,13 @@ export function ForecastPage() {
                     />
                   </label>
                   <label className="space-y-2">
-                    <span className="text-sm font-medium text-slate-700 dark:text-slate-200">测试集长度 testSize</span>
+                    <span className="text-sm font-medium text-slate-700 dark:text-slate-200">测试集长度</span>
+                    <span className="block text-xs text-slate-500 dark:text-slate-400">留出评估点数</span>
                     <input className={controls.input} type="number" min={1} value={testSize} onChange={(event) => setTestSize(Number(event.target.value))} />
                   </label>
                 </div>
                 <div className="rounded-2xl bg-slate-50 p-3 text-sm text-slate-600 dark:bg-[#151b2e] dark:text-slate-300">
-                  当前所选模型共同支持的预测步长范围：{horizonRange.min} ~ {horizonRange.max}
+                  共同步长：{horizonRange.min} ~ {horizonRange.max}
                   {!horizonRange.compatible ? <span className="ml-2 text-red-600 dark:text-red-300">所选模型步长范围不兼容。</span> : null}
                 </div>
                 <div className="grid max-h-[520px] gap-3 overflow-auto pr-1 md:grid-cols-2">

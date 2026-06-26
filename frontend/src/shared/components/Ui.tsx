@@ -85,21 +85,27 @@ export function Badge({ children, tone = "neutral" }: { children: React.ReactNod
   return <span className={toneClass}>{children}</span>;
 }
 
-export function Stepper({ steps, activeIndex = 0 }: { steps: string[]; activeIndex?: number }) {
+export function Stepper({ steps, activeIndex = 0, completedIndexes = [] }: { steps: string[]; activeIndex?: number; completedIndexes?: number[] }) {
   return (
     <div className="grid gap-2 md:grid-cols-5">
       {steps.map((step, index) => {
-        const active = index <= activeIndex;
+        const completed = completedIndexes.includes(index);
+        const active = index === activeIndex && !completed;
         return (
           <div
             key={step}
             className={`rounded-2xl border p-3 text-sm transition ${
-              active
+              completed
+                ? "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-400/30 dark:bg-emerald-400/10 dark:text-emerald-200"
+                : active
                 ? "border-indigo-300 bg-indigo-50 text-indigo-800 dark:border-indigo-400/30 dark:bg-indigo-400/10 dark:text-indigo-200"
                 : "border-slate-200 bg-white text-slate-500 dark:border-white/10 dark:bg-[#111827] dark:text-slate-400"
             }`}
           >
-            <div className="text-xs font-semibold">Step {index + 1}</div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold">Step {index + 1}</span>
+              {completed ? <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500 text-xs font-bold text-white">✓</span> : null}
+            </div>
             <div className="mt-1 font-medium">{step}</div>
           </div>
         );
