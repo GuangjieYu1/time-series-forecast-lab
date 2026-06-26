@@ -51,18 +51,86 @@ function metricText(value: number | null | undefined) {
   return value < 1 ? value.toFixed(4) : value.toFixed(2);
 }
 
-function RunningProgress({ finalForecastMode = false }: { finalForecastMode?: boolean }) {
+function formatElapsed(seconds: number) {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return `${minutes}m ${rest}s`;
+}
+
+const modelProgressWeights: Record<string, number> = {
+  naive: 2,
+  seasonal_naive: 3,
+  moving_average: 2,
+  arima: 8,
+  ets: 7,
+  prophet: 12,
+  xgboost: 8,
+  lightgbm: 8,
+  random_forest: 7,
+  timesfm: 24
+};
+
+function RunningProgress({
+  finalForecastMode = false,
+  selectedModelIds = [],
+  models = [],
+  finalModelId = "",
+  elapsedSeconds = 0
+}: {
+  finalForecastMode?: boolean;
+  selectedModelIds?: string[];
+  models?: ModelCapability[];
+  finalModelId?: string;
+  elapsedSeconds?: number;
+}) {
   const items = finalForecastMode
     ? ["读取完整历史数据", "重新训练最终模型", "生成未来预测", "更新预测图表"]
     : ["校验字段配置", "构建时间序列", "运行模型回测", "计算残差指标"];
+  const modelMap = new Map(models.map((model) => [model.id, model]));
+  const modelIds = finalForecastMode ? [finalModelId].filter(Boolean) : selectedModelIds;
+  const runningModels = modelIds.map((modelId) => {
+    const model = modelMap.get(modelId);
+    return {
+      id: modelId,
+      name: model?.name ?? modelId,
+      family: model?.modelFamily || model?.category || "模型",
+      requiresGpu: Boolean(model?.requiresGpu)
+    };
+  });
+  const weights = runningModels.map((model) => modelProgressWeights[model.id] ?? 6);
+  const totalWeight = Math.max(weights.reduce((sum, item) => sum + item, 0) + 8, 12);
+  const overallProgress = Math.min(92, Math.max(10, Math.round((elapsedSeconds / totalWeight) * 82 + 10)));
+  let accumulatedWeight = 0;
+  const progressRows = runningModels.map((model, index) => {
+    const weight = weights[index];
+    const startAt = accumulatedWeight;
+    accumulatedWeight += weight;
+    const raw = elapsedSeconds <= startAt ? 6 : elapsedSeconds >= startAt + weight ? 88 : 14 + Math.round(((elapsedSeconds - startAt) / weight) * 70);
+    const progress = Math.min(88, Math.max(6, raw));
+    const status = progress < 12 ? "排队中" : progress >= 88 ? "等待结果" : "运行中";
+    const tone: "neutral" | "good" | "warn" | "bad" | "info" = status === "运行中" ? "info" : status === "等待结果" ? "good" : "neutral";
+    return { ...model, progress, status, tone };
+  });
+
   return (
     <SectionCard
       title={finalForecastMode ? "正在运行最终预测" : "正在运行预测实验"}
-      description={finalForecastMode ? "系统正在用最终模型预测未来时间点。" : "系统正在执行 holdout 回测，部分模型可能需要更长时间。"}
+      description={finalForecastMode ? "系统正在用最终模型预测未来时间点。" : "系统正在执行 holdout 回测；每个模型会单独展示估算进度，最终结果以后端返回为准。"}
       className="overflow-hidden"
     >
-      <div className="h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-white/10">
-        <div className="h-full w-2/5 animate-[progress_1.4s_ease-in-out_infinite] rounded-full bg-gradient-to-r from-indigo-500 via-cyan-400 to-emerald-400" />
+      <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+        <div>
+          <div className="text-2xl font-semibold text-slate-950 dark:text-white">{overallProgress}%</div>
+          <div className="text-xs text-slate-500 dark:text-slate-400">已运行 {formatElapsed(elapsedSeconds)}</div>
+        </div>
+        <Badge tone="info">{finalForecastMode ? "最终预测" : `${runningModels.length} 个模型回测`}</Badge>
+      </div>
+      <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-white/10">
+        <div
+          className="h-full rounded-full bg-gradient-to-r from-indigo-500 via-cyan-400 to-emerald-400 transition-all duration-700"
+          style={{ width: `${overallProgress}%` }}
+        />
       </div>
       <div className="mt-4 grid gap-2 md:grid-cols-4">
         {items.map((item) => (
@@ -71,6 +139,30 @@ function RunningProgress({ finalForecastMode = false }: { finalForecastMode?: bo
           </div>
         ))}
       </div>
+      {progressRows.length ? (
+        <div className="mt-4 grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
+          {progressRows.map((model) => (
+            <div key={model.id} className="rounded-2xl border border-slate-200 bg-white p-3 dark:border-white/10 dark:bg-[#151b2e]">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold text-slate-950 dark:text-white">{model.name}</div>
+                  <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    {model.family}{model.requiresGpu ? " / 建议 GPU" : ""}
+                  </div>
+                </div>
+                <Badge tone={model.tone}>{model.status}</Badge>
+              </div>
+              <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-white/10">
+                <div className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-cyan-400 transition-all duration-700" style={{ width: `${model.progress}%` }} />
+              </div>
+              <div className="mt-2 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+                <span>{model.progress}%</span>
+                <span>{model.id === "timesfm" ? "首次加载可能较慢" : "后端完成后确认"}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </SectionCard>
   );
 }
@@ -284,6 +376,8 @@ export function ForecastPage() {
   const [finalModelId, setFinalModelId] = useState("");
   const [chartModelIds, setChartModelIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
+  const [progressNow, setProgressNow] = useState(Date.now());
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -312,6 +406,13 @@ export function ForecastPage() {
     }
   }, [forecastResult]);
 
+  useEffect(() => {
+    if (!loading || runStartedAt === null) return;
+    setProgressNow(Date.now());
+    const timer = window.setInterval(() => setProgressNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [loading, runStartedAt]);
+
   const orderedColumns = useMemo(() => {
     if (!selectedSheet) return [];
     return [...selectedSheet.columns].sort((left, right) => {
@@ -338,9 +439,13 @@ export function ForecastPage() {
   const completedStepIndexes = stepCompletion.map((done, index) => (done ? index : -1)).filter((index) => index >= 0);
   const nextIncompleteStep = stepCompletion.findIndex((done) => !done);
   const activeStepIndex = loading ? 4 : nextIncompleteStep === -1 ? 4 : nextIncompleteStep;
+  const elapsedSeconds = runStartedAt === null ? 0 : Math.max(0, Math.floor((progressNow - runStartedAt) / 1000));
 
   async function submit() {
     if (!upload || !selectedSheet) return;
+    const startedAt = Date.now();
+    setRunStartedAt(startedAt);
+    setProgressNow(startedAt);
     setLoading(true);
     setError(null);
     try {
@@ -364,11 +469,15 @@ export function ForecastPage() {
       setError(err instanceof Error ? err.message : "实验运行失败，请检查字段、模型或测试集长度。");
     } finally {
       setLoading(false);
+      setRunStartedAt(null);
     }
   }
 
   async function submitFinalForecast() {
     if (!forecastResult || !finalModelId) return;
+    const startedAt = Date.now();
+    setRunStartedAt(startedAt);
+    setProgressNow(startedAt);
     setLoading(true);
     setError(null);
     try {
@@ -377,6 +486,7 @@ export function ForecastPage() {
       setError(err instanceof Error ? err.message : "最终预测失败，请检查最终模型是否可用。");
     } finally {
       setLoading(false);
+      setRunStartedAt(null);
     }
   }
 
@@ -398,7 +508,15 @@ export function ForecastPage() {
       />
 
       <ErrorBanner message={error} />
-      {loading ? <RunningProgress finalForecastMode={Boolean(forecastResult)} /> : null}
+      {loading ? (
+        <RunningProgress
+          finalForecastMode={Boolean(forecastResult)}
+          selectedModelIds={selectedModels}
+          models={models}
+          finalModelId={finalModelId}
+          elapsedSeconds={elapsedSeconds}
+        />
+      ) : null}
 
       {!forecastResult ? (
         <>
