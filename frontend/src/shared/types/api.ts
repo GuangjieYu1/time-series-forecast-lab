@@ -103,6 +103,13 @@ export interface ForecastRunResponse {
     droppedRowCount: number;
     duplicateTimeCount: number;
     missingTimeCount: number;
+    invalidTimeCount: number;
+    inputMissingTargetCount: number;
+    invalidTargetCount: number;
+    filledValueCount: number;
+    outlierCount: number;
+    outlierAdjustedCount: number;
+    cleaningActions: string[];
     timeStart: string | null;
     timeEnd: string | null;
     warnings: string[];
@@ -111,6 +118,7 @@ export interface ForecastRunResponse {
 }
 
 export interface ForecastRunRequest {
+  runId?: string;
   uploadId: string;
   sheetName: string;
   dataMode: "aggregated" | "raw";
@@ -124,8 +132,12 @@ export interface ForecastRunRequest {
   horizon: number;
   testSize: number;
   selectedModels: string[];
-  missingValueStrategy: "drop" | "zero" | "ffill";
+  missingValueStrategy: "drop" | "zero" | "ffill" | "interpolate";
   fillMissingTimeSteps: boolean;
+  duplicateTimeStrategy: "mean" | "sum" | "first" | "last";
+  outlierStrategy: "none" | "clip_iqr";
+  outlierIqrMultiplier: number;
+  trimStrings: boolean;
   experimentName?: string;
 }
 
@@ -138,6 +150,38 @@ export interface FinalForecastResponse {
     name: string;
     supportsPredictionInterval: boolean;
   };
+}
+
+export type ForecastProgressStatus = "running" | "completed" | "failed";
+export type ModelProgressStatus = "queued" | "fitting" | "predicting" | "scoring" | "success" | "failed";
+
+export interface ModelProgress {
+  modelId: string;
+  modelName: string;
+  targetColumn: string;
+  status: ModelProgressStatus;
+  percent: number;
+  message: string;
+  fitSeconds: number | null;
+  predictSeconds: number | null;
+  error: string | null;
+}
+
+export interface ForecastProgress {
+  runId: string;
+  kind: "backtest" | "final";
+  status: ForecastProgressStatus;
+  phase: string;
+  overallPercent: number;
+  message: string;
+  currentTarget: string | null;
+  completedModels: number;
+  totalModels: number;
+  models: ModelProgress[];
+  startedAt: string;
+  updatedAt: string;
+  error: string | null;
+  version: number;
 }
 
 export interface ExperimentListItem {

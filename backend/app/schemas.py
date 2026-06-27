@@ -70,6 +70,7 @@ class AggregationConfig(BaseModel):
 
 
 class ForecastRunRequest(BaseModel):
+    runId: str | None = None
     uploadId: str
     sheetName: str
     dataMode: Literal["aggregated", "raw"]
@@ -80,8 +81,12 @@ class ForecastRunRequest(BaseModel):
     horizon: int = Field(ge=1)
     testSize: int = Field(ge=1)
     selectedModels: list[str]
-    missingValueStrategy: Literal["drop", "zero", "ffill"] = "drop"
+    missingValueStrategy: Literal["drop", "zero", "ffill", "interpolate"] = "drop"
     fillMissingTimeSteps: bool = True
+    duplicateTimeStrategy: Literal["mean", "sum", "first", "last"] = "mean"
+    outlierStrategy: Literal["none", "clip_iqr"] = "none"
+    outlierIqrMultiplier: float = Field(default=1.5, ge=1.0, le=5.0)
+    trimStrings: bool = True
     experimentName: str | None = None
 
 
@@ -133,6 +138,13 @@ class Diagnostics(BaseModel):
     droppedRowCount: int
     duplicateTimeCount: int
     missingTimeCount: int
+    invalidTimeCount: int = 0
+    inputMissingTargetCount: int = 0
+    invalidTargetCount: int = 0
+    filledValueCount: int = 0
+    outlierCount: int = 0
+    outlierAdjustedCount: int = 0
+    cleaningActions: list[str] = Field(default_factory=list)
     timeStart: str | None
     timeEnd: str | None
     warnings: list[str] = Field(default_factory=list)
@@ -161,6 +173,7 @@ class ForecastRunResponse(BaseModel):
 
 
 class FinalForecastRequest(BaseModel):
+    runId: str | None = None
     experimentId: str
     finalModelId: str
     horizon: int = Field(ge=1)
@@ -184,6 +197,35 @@ class FinalForecastResponse(BaseModel):
     history: list[HistoryPoint]
     forecast: list[ForecastPoint]
     modelInfo: dict[str, Any]
+
+
+class ModelProgress(BaseModel):
+    modelId: str
+    modelName: str
+    targetColumn: str
+    status: Literal["queued", "fitting", "predicting", "scoring", "success", "failed"] = "queued"
+    percent: int = Field(default=0, ge=0, le=100)
+    message: str = "Waiting to run."
+    fitSeconds: float | None = None
+    predictSeconds: float | None = None
+    error: str | None = None
+
+
+class ForecastProgress(BaseModel):
+    runId: str
+    kind: Literal["backtest", "final"]
+    status: Literal["running", "completed", "failed"]
+    phase: str
+    overallPercent: int = Field(ge=0, le=100)
+    message: str
+    currentTarget: str | None = None
+    completedModels: int = 0
+    totalModels: int = 0
+    models: list[ModelProgress] = Field(default_factory=list)
+    startedAt: datetime
+    updatedAt: datetime
+    error: str | None = None
+    version: int = 1
 
 
 class ExperimentListItem(BaseModel):

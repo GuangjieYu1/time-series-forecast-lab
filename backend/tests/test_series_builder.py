@@ -69,3 +69,68 @@ def test_frequency_too_fine_is_rejected():
     with pytest.raises(AppError) as exc:
         build_time_series(df, request(frequency="H"), "passenger_count")
     assert exc.value.code == "FREQUENCY_TOO_FINE"
+
+
+def test_basic_cleaning_trims_numeric_text_and_interpolates_missing_target():
+    df = pd.DataFrame(
+        {
+            "date": [" 2026-06-01 ", "2026-06-02", "2026-06-03", "bad-date"],
+            "passenger_count": [" 1,200 ", None, "1,600", "900"],
+        }
+    )
+    result = build_time_series(
+        df,
+        request(missingValueStrategy="interpolate"),
+        "passenger_count",
+    )
+    assert [point.value for point in result.series.points] == [1200, 1400, 1600]
+    assert result.series.diagnostics.invalidTimeCount == 1
+    assert result.series.diagnostics.inputMissingTargetCount == 1
+    assert result.series.diagnostics.filledValueCount == 1
+    assert result.series.diagnostics.droppedRowCount == 1
+
+
+def test_duplicate_strategy_last_is_applied():
+    df = pd.DataFrame(
+        {
+            "date": ["2026-06-01", "2026-06-01", "2026-06-02", "2026-06-03"],
+            "passenger_count": [100, 120, 130, 140],
+        }
+    )
+    result = build_time_series(
+        df,
+        request(duplicateTimeStrategy="last", fillMissingTimeSteps=False),
+        "passenger_count",
+    )
+    assert [point.value for point in result.series.points] == [120, 130, 140]
+
+
+def test_iqr_outliers_are_detected_and_optionally_clipped():
+    values = [10, 11, 9, 10, 12, 11, 10, 9, 11, 10, 1000]
+    dates = pd.date_range("2026-06-01", periods=len(values), freq="D")
+    df = pd.DataFrame({"date": dates, "passenger_count": values})
+
+    detected = build_time_series(df, request(outlierStrategy="none"), "passenger_count")
+    clipped = build_time_series(df, request(outlierStrategy="clip_iqr"), "passenger_count")
+
+    assert detected.series.diagnostics.outlierCount == 1
+    assert detected.series.points[-1].value == 1000
+    assert clipped.series.diagnostics.outlierAdjustedCount == 1
+    assert clipped.series.points[-1].value < 1000
+
+
+def test_missing_time_steps_can_be_interpolated():
+    df = pd.DataFrame(
+        {
+            "date": ["2026-06-01", "2026-06-03", "2026-06-04"],
+            "passenger_count": [100, 140, 160],
+        }
+    )
+    result = build_time_series(
+        df,
+        request(missingValueStrategy="interpolate"),
+        "passenger_count",
+    )
+    assert [point.value for point in result.series.points] == [100, 120, 140, 160]
+    assert result.series.diagnostics.missingTimeCount == 1
+    assert result.series.diagnostics.filledValueCount == 1

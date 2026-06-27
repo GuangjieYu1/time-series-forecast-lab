@@ -54,6 +54,7 @@ def test_raw_multi_sheet_end_to_end_history_and_cleanup(generated_fixtures: Path
     assert upload_path.exists()
 
     request = {
+        "runId": "run_api_contract",
         "uploadId": upload_id,
         "sheetName": "domestic",
         "dataMode": "raw",
@@ -73,6 +74,17 @@ def test_raw_multi_sheet_end_to_end_history_and_cleanup(generated_fixtures: Path
     assert forecast_body["recommendedModelId"]
     assert forecast_body["backtest"]["predictions"]
     assert not upload_path.exists()
+    assert "invalidTimeCount" in forecast_body["diagnostics"]
+    assert "outlierCount" in forecast_body["diagnostics"]
+    assert forecast_body["diagnostics"]["cleaningActions"]
+
+    progress_response = client.get("/api/forecast/progress/run_api_contract")
+    assert progress_response.status_code == 200
+    progress = progress_response.json()
+    assert progress["status"] == "completed"
+    assert progress["overallPercent"] == 100
+    assert progress["completedModels"] == len(request["selectedModels"])
+    assert all(model["status"] in {"success", "failed"} for model in progress["models"])
 
     failed_models = [model for model in forecast_body["rankedModels"] if model["status"] == "failed"]
     assert all(model["error"] for model in failed_models)

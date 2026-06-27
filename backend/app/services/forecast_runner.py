@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Callable, Literal
 
 import pandas as pd
 
@@ -8,6 +9,9 @@ from app.core.errors import AppError
 from app.schemas import FinalForecastResponse, ForecastPoint, HistoryPoint
 from app.services.model_registry import MODEL_CAPABILITIES, create_model, validate_horizon
 from app.services.series_builder import PANDAS_FREQ
+
+
+FinalProgressCallback = Callable[[Literal["fitting", "predicting"]], None]
 
 
 def _future_times(last_time: datetime, frequency: str, horizon: int) -> list[datetime]:
@@ -22,6 +26,7 @@ def run_final_forecast(
     horizon: int,
     frequency: str,
     history: list[dict],
+    progress_callback: FinalProgressCallback | None = None,
 ) -> FinalForecastResponse:
     if final_model_id not in MODEL_CAPABILITIES:
         raise AppError(f"Unknown model id: {final_model_id}.")
@@ -36,7 +41,11 @@ def run_final_forecast(
     values = [float(point["value"]) for point in history]
     model = create_model(final_model_id)
     try:
+        if progress_callback:
+            progress_callback("fitting")
         model.fit(times, values, frequency)
+        if progress_callback:
+            progress_callback("predicting")
         output = model.predict(horizon)
     except Exception as exc:
         raise AppError(f"Final model failed: {exc}") from exc

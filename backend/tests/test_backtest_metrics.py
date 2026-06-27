@@ -94,3 +94,28 @@ def test_nan_predictions_are_failed(monkeypatch):
     result = run_holdout_backtest(make_series([1, 2, 3, 4]), ["naive"], horizon=2, test_size=2)
     assert result.rankedModels[0].status == "failed"
     assert "NaN" in (result.rankedModels[0].error or "")
+
+
+def test_backtest_reports_real_model_stages(monkeypatch):
+    class FixedModel:
+        def fit(self, times, values, frequency):
+            return None
+
+        def predict(self, horizon):
+            from app.models.base import ForecastOutput
+
+            return ForecastOutput(predictions=[10.0] * horizon)
+
+    monkeypatch.setattr(backtest_runner, "create_model", lambda model_id: FixedModel())
+    events = []
+    run_holdout_backtest(
+        make_series([float(index) for index in range(40)]),
+        ["naive"],
+        horizon=5,
+        test_size=5,
+        progress_callback=events.append,
+    )
+
+    assert [event.stage for event in events] == ["fitting", "predicting", "scoring", "success"]
+    assert events[-1].fitSeconds >= 0
+    assert events[-1].predictSeconds >= 0

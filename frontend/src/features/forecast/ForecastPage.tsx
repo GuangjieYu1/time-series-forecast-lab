@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { Link } from "react-router-dom";
-import { fetchDeviceInfo, fetchModels, runFinalForecast, runForecast } from "../../shared/api/client";
+import { createRunId, fetchDeviceInfo, fetchModels, runFinalForecast, runForecast, subscribeForecastProgress } from "../../shared/api/client";
 import { DataTable } from "../../shared/components/Table";
 import { EmptyState, ErrorBanner } from "../../shared/components/Status";
 import { Badge, controls, PageHeader, SectionCard, StatCard, Stepper, surface, Tabs } from "../../shared/components/Ui";
 import { zhCN } from "../../shared/i18n/zhCN";
-import type { DeviceInfo, ForecastRunRequest, ForecastRunResponse, ModelCapability, RankedModel, SheetPreview, UploadPreviewResponse } from "../../shared/types/api";
+import type { DeviceInfo, ForecastProgress, ForecastRunRequest, ForecastRunResponse, ModelCapability, RankedModel, SheetPreview, UploadPreviewResponse } from "../../shared/types/api";
 import { useLabStore } from "../../app/store";
 import {
   AbsoluteErrorTimelineChart,
@@ -57,19 +57,6 @@ function formatElapsed(seconds: number) {
   const rest = seconds % 60;
   return `${minutes}m ${rest}s`;
 }
-
-const modelProgressWeights: Record<string, number> = {
-  naive: 2,
-  seasonal_naive: 3,
-  moving_average: 2,
-  arima: 8,
-  ets: 7,
-  prophet: 12,
-  xgboost: 8,
-  lightgbm: 8,
-  random_forest: 7,
-  timesfm: 24
-};
 
 type ResourceLevel = "green" | "yellow" | "red" | "gray";
 
@@ -190,17 +177,19 @@ function RunningProgress({
   selectedModelIds = [],
   models = [],
   finalModelId = "",
-  elapsedSeconds = 0
+  elapsedSeconds = 0,
+  progress
 }: {
   finalForecastMode?: boolean;
   selectedModelIds?: string[];
   models?: ModelCapability[];
   finalModelId?: string;
   elapsedSeconds?: number;
+  progress: ForecastProgress | null;
 }) {
   const items = finalForecastMode
     ? ["读取完整历史数据", "重新训练最终模型", "生成未来预测", "更新预测图表"]
-    : ["校验字段配置", "构建时间序列", "运行模型回测", "计算残差指标"];
+    : ["校验字段配置", "清洁并构建序列", "运行模型回测", "计算残差指标"];
   const modelMap = new Map(models.map((model) => [model.id, model]));
   const modelIds = finalForecastMode ? [finalModelId].filter(Boolean) : selectedModelIds;
   const runningModels = modelIds.map((modelId) => {
@@ -212,33 +201,58 @@ function RunningProgress({
       requiresGpu: Boolean(model?.requiresGpu)
     };
   });
-  const weights = runningModels.map((model) => modelProgressWeights[model.id] ?? 6);
-  const totalWeight = Math.max(weights.reduce((sum, item) => sum + item, 0) + 8, 12);
-  const overallProgress = Math.min(92, Math.max(10, Math.round((elapsedSeconds / totalWeight) * 82 + 10)));
-  let accumulatedWeight = 0;
-  const progressRows = runningModels.map((model, index) => {
-    const weight = weights[index];
-    const startAt = accumulatedWeight;
-    accumulatedWeight += weight;
-    const raw = elapsedSeconds <= startAt ? 6 : elapsedSeconds >= startAt + weight ? 88 : 14 + Math.round(((elapsedSeconds - startAt) / weight) * 70);
-    const progress = Math.min(88, Math.max(6, raw));
-    const status = progress < 12 ? "排队中" : progress >= 88 ? "等待结果" : "运行中";
-    const tone: "neutral" | "good" | "warn" | "bad" | "info" = status === "运行中" ? "info" : status === "等待结果" ? "good" : "neutral";
-    return { ...model, progress, status, tone };
-  });
+  const statusMeta = {
+    queued: { label: "排队中", tone: "neutral" },
+    fitting: { label: "拟合中", tone: "info" },
+    predicting: { label: "预测中", tone: "info" },
+    scoring: { label: "计算指标", tone: "warn" },
+    success: { label: "已完成", tone: "good" },
+    failed: { label: "失败", tone: "bad" }
+  } as const;
+  const progressRows = progress?.models.length
+    ? progress.models.map((row) => ({
+        ...row,
+        id: row.modelId,
+        name: row.modelName,
+        family: modelMap.get(row.modelId)?.modelFamily || modelMap.get(row.modelId)?.category || "模型",
+        requiresGpu: Boolean(modelMap.get(row.modelId)?.requiresGpu),
+        displayStatus: statusMeta[row.status]
+      }))
+    : runningModels.map((model) => ({
+        ...model,
+        targetColumn: "",
+        percent: 0,
+        message: "等待后端接收任务。",
+        fitSeconds: null,
+        predictSeconds: null,
+        error: null,
+        displayStatus: statusMeta.queued
+      }));
+  const overallProgress = progress?.overallPercent ?? 1;
+  const phaseIndex = (() => {
+    const phase = progress?.phase ?? "preparing";
+    if (phase.startsWith("model_") || phase === "fitting" || phase === "predicting") return 2;
+    if (phase === "ranking" || phase === "saving" || phase === "completed") return 3;
+    if (phase === "parsing" || phase === "profiling" || phase === "building_series") return 1;
+    return 0;
+  })();
 
   return (
     <SectionCard
       title={finalForecastMode ? "正在运行最终预测" : "正在运行预测实验"}
-      description={finalForecastMode ? "系统正在用最终模型预测未来时间点。" : "系统正在执行 holdout 回测；每个模型会单独展示估算进度，最终结果以后端返回为准。"}
+      description={finalForecastMode ? "后端正在用完整历史重新拟合最终模型并生成预测。" : "进度来自后端真实阶段事件；模型库不提供内部迭代百分比时，展示拟合、预测和指标计算阶段。"}
       className="overflow-hidden"
     >
       <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
         <div>
           <div className="text-2xl font-semibold text-slate-950 dark:text-white">{overallProgress}%</div>
-          <div className="text-xs text-slate-500 dark:text-slate-400">已运行 {formatElapsed(elapsedSeconds)}</div>
+          <div className="text-xs text-slate-500 dark:text-slate-400">
+            已运行 {formatElapsed(elapsedSeconds)} · {progress?.message ?? "正在连接后端进度流。"}
+          </div>
         </div>
-        <Badge tone="info">{finalForecastMode ? "最终预测" : `${runningModels.length} 个模型回测`}</Badge>
+        <Badge tone={progress?.status === "failed" ? "bad" : progress?.status === "completed" ? "good" : "info"}>
+          {progress ? `${progress.completedModels}/${progress.totalModels} 个模型完成` : finalForecastMode ? "最终预测" : `${runningModels.length} 个模型回测`}
+        </Badge>
       </div>
       <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-white/10">
         <div
@@ -247,8 +261,15 @@ function RunningProgress({
         />
       </div>
       <div className="mt-4 grid gap-2 md:grid-cols-4">
-        {items.map((item) => (
-          <div key={item} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-600 dark:border-white/10 dark:bg-[#151b2e] dark:text-slate-300">
+        {items.map((item, index) => (
+          <div
+            key={item}
+            className={`rounded-xl border px-3 py-2 text-xs font-medium ${
+              index <= phaseIndex
+                ? "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-400/30 dark:bg-emerald-400/10 dark:text-emerald-300"
+                : "border-slate-200 bg-slate-50 text-slate-600 dark:border-white/10 dark:bg-[#151b2e] dark:text-slate-300"
+            }`}
+          >
             {item}
           </div>
         ))}
@@ -256,23 +277,27 @@ function RunningProgress({
       {progressRows.length ? (
         <div className="mt-4 grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
           {progressRows.map((model) => (
-            <div key={model.id} className="rounded-2xl border border-slate-200 bg-white p-3 dark:border-white/10 dark:bg-[#151b2e]">
+            <div key={`${model.targetColumn}:${model.id}`} className="rounded-2xl border border-slate-200 bg-white p-3 dark:border-white/10 dark:bg-[#151b2e]">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="truncate text-sm font-semibold text-slate-950 dark:text-white">{model.name}</div>
                   <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                    {model.family}{model.requiresGpu ? " / 建议 GPU" : ""}
+                    {model.family}{model.targetColumn ? ` / ${model.targetColumn}` : ""}{model.requiresGpu ? " / 建议 GPU" : ""}
                   </div>
                 </div>
-                <Badge tone={model.tone}>{model.status}</Badge>
+                <Badge tone={model.displayStatus.tone}>{model.displayStatus.label}</Badge>
               </div>
               <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-white/10">
-                <div className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-cyan-400 transition-all duration-700" style={{ width: `${model.progress}%` }} />
+                <div className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-cyan-400 transition-all duration-500" style={{ width: `${model.percent}%` }} />
               </div>
-              <div className="mt-2 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-                <span>{model.progress}%</span>
-                <span>{model.id === "timesfm" ? "首次加载可能较慢" : "后端完成后确认"}</span>
+              <div className="mt-2 flex flex-col gap-1 text-xs text-slate-500 dark:text-slate-400 sm:flex-row sm:items-center sm:justify-between">
+                <span className="min-w-0 break-words">{model.percent}% · {model.message}</span>
+                <span className="shrink-0">
+                  {model.fitSeconds !== null ? `拟合 ${model.fitSeconds.toFixed(2)}s` : ""}
+                  {model.predictSeconds !== null ? ` / 预测 ${model.predictSeconds.toFixed(2)}s` : ""}
+                </span>
               </div>
+              {model.error ? <div className="mt-2 text-xs text-red-600 dark:text-red-300">{model.error}</div> : null}
             </div>
           ))}
         </div>
@@ -388,6 +413,29 @@ function ResultsDashboard({
         <StatCard label="最佳 MAE" value={metricText(best?.metrics?.mae)} hint="越低越好" tone="good" />
         <StatCard label="最佳 WAPE" value={metricText(best?.metrics?.wape)} hint="总绝对误差占比" tone="warn" />
       </div>
+
+      <SectionCard title="数据清洁摘要" description="清洁只作用于本次实验构建的时间序列，不修改上传原文件。">
+        <div className="grid divide-y divide-slate-200 border-y border-slate-200 dark:divide-white/10 dark:border-white/10 sm:grid-cols-2 sm:divide-x sm:divide-y-0 xl:grid-cols-6">
+          {[
+            ["无效时间", result.diagnostics.invalidTimeCount],
+            ["目标缺失", result.diagnostics.inputMissingTargetCount],
+            ["无效数值", result.diagnostics.invalidTargetCount],
+            ["重复时间", result.diagnostics.duplicateTimeCount],
+            ["已补数值", result.diagnostics.filledValueCount],
+            ["异常值调整", `${result.diagnostics.outlierAdjustedCount}/${result.diagnostics.outlierCount}`]
+          ].map(([label, value]) => (
+            <div key={label} className="px-4 py-3">
+              <div className="text-xs text-slate-500 dark:text-slate-400">{label}</div>
+              <div className="mt-1 text-lg font-semibold text-slate-950 dark:text-white">{value}</div>
+            </div>
+          ))}
+        </div>
+        {result.diagnostics.cleaningActions.length ? (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {result.diagnostics.cleaningActions.map((action) => <Badge key={action} tone="neutral">{action}</Badge>)}
+          </div>
+        ) : null}
+      </SectionCard>
 
       <div className="grid gap-5 xl:grid-cols-[1fr_360px]">
         <div className={`${surface.chartPanel} min-h-[460px]`}>
@@ -510,6 +558,11 @@ export function ForecastPage() {
   const [timeColumn, setTimeColumn] = useState("");
   const [targetColumns, setTargetColumns] = useState<string[]>([]);
   const [aggregationMethod, setAggregationMethod] = useState<ForecastRunRequest["aggregation"]["method"]>("sum");
+  const [missingValueStrategy, setMissingValueStrategy] = useState<ForecastRunRequest["missingValueStrategy"]>("drop");
+  const [fillMissingTimeSteps, setFillMissingTimeSteps] = useState(true);
+  const [duplicateTimeStrategy, setDuplicateTimeStrategy] = useState<ForecastRunRequest["duplicateTimeStrategy"]>("mean");
+  const [outlierStrategy, setOutlierStrategy] = useState<ForecastRunRequest["outlierStrategy"]>("none");
+  const [outlierIqrMultiplier, setOutlierIqrMultiplier] = useState(1.5);
   const [horizon, setHorizon] = useState(7);
   const [testSize, setTestSize] = useState(7);
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
@@ -519,6 +572,7 @@ export function ForecastPage() {
   const [loading, setLoading] = useState(false);
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
   const [progressNow, setProgressNow] = useState(Date.now());
+  const [runProgress, setRunProgress] = useState<ForecastProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -629,12 +683,16 @@ export function ForecastPage() {
   async function submit() {
     if (!upload || !selectedSheet) return;
     const startedAt = Date.now();
+    const runId = createRunId();
     setRunStartedAt(startedAt);
     setProgressNow(startedAt);
+    setRunProgress(null);
     setLoading(true);
     setError(null);
+    const stopProgress = subscribeForecastProgress(runId, setRunProgress);
     try {
       const request: ForecastRunRequest = {
+        runId,
         uploadId: upload.uploadId,
         sheetName: selectedSheet.sheetName,
         dataMode,
@@ -645,14 +703,19 @@ export function ForecastPage() {
         horizon,
         testSize,
         selectedModels,
-        missingValueStrategy: "drop",
-        fillMissingTimeSteps: true
+        missingValueStrategy,
+        fillMissingTimeSteps,
+        duplicateTimeStrategy,
+        outlierStrategy,
+        outlierIqrMultiplier,
+        trimStrings: true
       };
       const response = await runForecast(request);
       setForecastResult(response);
     } catch (err) {
       setError(err instanceof Error ? err.message : "实验运行失败，请检查字段、模型或测试集长度。");
     } finally {
+      stopProgress();
       setLoading(false);
       setRunStartedAt(null);
     }
@@ -661,15 +724,19 @@ export function ForecastPage() {
   async function submitFinalForecast() {
     if (!forecastResult || !finalModelId) return;
     const startedAt = Date.now();
+    const runId = createRunId();
     setRunStartedAt(startedAt);
     setProgressNow(startedAt);
+    setRunProgress(null);
     setLoading(true);
     setError(null);
+    const stopProgress = subscribeForecastProgress(runId, setRunProgress);
     try {
-      setFinalForecast(await runFinalForecast(forecastResult.experimentId, finalModelId, horizon));
+      setFinalForecast(await runFinalForecast(forecastResult.experimentId, finalModelId, horizon, runId));
     } catch (err) {
       setError(err instanceof Error ? err.message : "最终预测失败，请检查最终模型是否可用。");
     } finally {
+      stopProgress();
       setLoading(false);
       setRunStartedAt(null);
     }
@@ -700,6 +767,7 @@ export function ForecastPage() {
           models={models}
           finalModelId={finalModelId}
           elapsedSeconds={elapsedSeconds}
+          progress={runProgress}
         />
       ) : null}
 
@@ -754,6 +822,51 @@ export function ForecastPage() {
                     ))}
                   </div>
                   {targetColumns.length > 1 ? <p className="text-xs text-amber-600 dark:text-amber-300">多目标会按目标列分别运行单变量预测。</p> : null}
+                </div>
+              </div>
+              <div className="mt-5 border-t border-slate-200 pt-5 dark:border-white/10">
+                <div className="mb-3">
+                  <div className="text-sm font-semibold text-slate-900 dark:text-white">基础数据清洁</div>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">先清理时间和目标值，再聚合、补齐时间缺口并检测异常值。</p>
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-slate-700 dark:text-slate-200">缺失值处理</span>
+                    <select className={controls.input} value={missingValueStrategy} onChange={(event) => setMissingValueStrategy(event.target.value as ForecastRunRequest["missingValueStrategy"])}>
+                      <option value="drop">删除缺失值（保守）</option>
+                      <option value="interpolate">线性插值</option>
+                      <option value="ffill">前向填充</option>
+                      <option value="zero">填充为 0</option>
+                    </select>
+                  </label>
+                  {dataMode === "aggregated" ? (
+                    <label className="space-y-2">
+                      <span className="text-sm font-medium text-slate-700 dark:text-slate-200">重复时间处理</span>
+                      <select className={controls.input} value={duplicateTimeStrategy} onChange={(event) => setDuplicateTimeStrategy(event.target.value as ForecastRunRequest["duplicateTimeStrategy"])}>
+                        <option value="mean">取平均值</option>
+                        <option value="sum">求和</option>
+                        <option value="first">保留第一条</option>
+                        <option value="last">保留最后一条</option>
+                      </select>
+                    </label>
+                  ) : null}
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-slate-700 dark:text-slate-200">异常值处理</span>
+                    <select className={controls.input} value={outlierStrategy} onChange={(event) => setOutlierStrategy(event.target.value as ForecastRunRequest["outlierStrategy"])}>
+                      <option value="none">仅检测，不修改（推荐）</option>
+                      <option value="clip_iqr">按 IQR 边界截尾</option>
+                    </select>
+                  </label>
+                  {outlierStrategy === "clip_iqr" ? (
+                    <label className="space-y-2">
+                      <span className="text-sm font-medium text-slate-700 dark:text-slate-200">IQR 倍数</span>
+                      <input className={controls.input} type="number" min={1} max={5} step={0.1} value={outlierIqrMultiplier} onChange={(event) => setOutlierIqrMultiplier(Number(event.target.value))} />
+                    </label>
+                  ) : null}
+                  <label className="flex items-center gap-3 text-sm text-slate-700 dark:text-slate-200">
+                    <input type="checkbox" checked={fillMissingTimeSteps} onChange={(event) => setFillMissingTimeSteps(event.target.checked)} />
+                    补齐缺失时间点
+                  </label>
                 </div>
               </div>
             </SectionCard>

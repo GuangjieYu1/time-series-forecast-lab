@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from datetime import datetime
 import math
+from typing import Callable, Literal
 
 from pydantic import BaseModel
 
@@ -25,6 +26,17 @@ class BacktestResult(BaseModel):
     backtest: BacktestData
 
 
+class ModelProgressEvent(BaseModel):
+    modelId: str
+    stage: Literal["fitting", "predicting", "scoring", "success", "failed"]
+    fitSeconds: float = 0.0
+    predictSeconds: float = 0.0
+    error: str | None = None
+
+
+ProgressCallback = Callable[[ModelProgressEvent], None]
+
+
 def _iso(value: datetime) -> str:
     return value.isoformat()
 
@@ -34,6 +46,7 @@ def run_holdout_backtest(
     selected_models: list[str],
     horizon: int,
     test_size: int,
+    progress_callback: ProgressCallback | None = None,
 ) -> BacktestResult:
     if not selected_models:
         raise AppError("Select at least one model before running the experiment.")
@@ -67,11 +80,17 @@ def run_holdout_backtest(
         predict_seconds = 0.0
         warnings: list[str] = []
         try:
+            if progress_callback:
+                progress_callback(ModelProgressEvent(modelId=model_id, stage="fitting"))
             model = create_model(model_id)
             fit_start = time.perf_counter()
             model.fit([point.time for point in train], [point.value for point in train], series.frequency)
             fit_seconds = time.perf_counter() - fit_start
 
+            if progress_callback:
+                progress_callback(
+                    ModelProgressEvent(modelId=model_id, stage="predicting", fitSeconds=fit_seconds)
+                )
             predict_start = time.perf_counter()
             output = model.predict(test_size)
             predict_seconds = time.perf_counter() - predict_start
@@ -82,6 +101,15 @@ def run_holdout_backtest(
                 raise RuntimeError(f"Model returned {len(predicted_values)} points for test size {test_size}.")
             if any(not math.isfinite(value) for value in predicted_values):
                 raise RuntimeError("Model returned NaN or infinite predictions.")
+            if progress_callback:
+                progress_callback(
+                    ModelProgressEvent(
+                        modelId=model_id,
+                        stage="scoring",
+                        fitSeconds=fit_seconds,
+                        predictSeconds=predict_seconds,
+                    )
+                )
             metrics, metric_warnings = calculate_metrics(actual_values, predicted_values)
             if metrics.mae is not None and not math.isfinite(metrics.mae):
                 raise RuntimeError("Model metrics are not finite.")
@@ -111,6 +139,15 @@ def run_holdout_backtest(
                     warnings=warnings,
                 )
             )
+            if progress_callback:
+                progress_callback(
+                    ModelProgressEvent(
+                        modelId=model_id,
+                        stage="success",
+                        fitSeconds=fit_seconds,
+                        predictSeconds=predict_seconds,
+                    )
+                )
         except Exception as exc:
             ranked.append(
                 RankedModel(
@@ -123,6 +160,16 @@ def run_holdout_backtest(
                     error=str(exc),
                 )
             )
+            if progress_callback:
+                progress_callback(
+                    ModelProgressEvent(
+                        modelId=model_id,
+                        stage="failed",
+                        fitSeconds=fit_seconds,
+                        predictSeconds=predict_seconds,
+                        error=str(exc),
+                    )
+                )
 
     successful = [item for item in ranked if item.status == "success" and item.metrics and item.metrics.mae is not None]
     successful.sort(key=lambda item: item.metrics.mae if item.metrics and item.metrics.mae is not None else float("inf"))

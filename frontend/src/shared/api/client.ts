@@ -5,6 +5,7 @@ import type {
   ExperimentDetail,
   ExperimentListItem,
   FinalForecastResponse,
+  ForecastProgress,
   ForecastRunRequest,
   ForecastRunResponse,
   ModelCapability,
@@ -76,12 +77,34 @@ export async function runForecast(request: ForecastRunRequest): Promise<Forecast
   );
 }
 
-export async function runFinalForecast(experimentId: string, finalModelId: string, horizon: number): Promise<FinalForecastResponse> {
+export function createRunId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return `run_${crypto.randomUUID()}`;
+  }
+  return `run_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+export function subscribeForecastProgress(
+  runId: string,
+  onProgress: (progress: ForecastProgress) => void
+): () => void {
+  const source = new EventSource(`/api/forecast/progress/${encodeURIComponent(runId)}/events`);
+  source.onmessage = (event) => {
+    const progress = JSON.parse(event.data) as ForecastProgress;
+    onProgress(progress);
+    if (progress.status === "completed" || progress.status === "failed") {
+      source.close();
+    }
+  };
+  return () => source.close();
+}
+
+export async function runFinalForecast(experimentId: string, finalModelId: string, horizon: number, runId?: string): Promise<FinalForecastResponse> {
   return parseResponse<FinalForecastResponse>(
     await fetch("/api/forecast/final", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ experimentId, finalModelId, horizon })
+      body: JSON.stringify({ experimentId, finalModelId, horizon, runId })
     })
   );
 }
