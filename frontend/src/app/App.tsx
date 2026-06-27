@@ -24,15 +24,16 @@ const navItems = [
 
 function ThemeToggle({ dark, onToggle }: { dark: boolean; onToggle: () => void }) {
   return (
-    <button className={controls.secondaryButton} onClick={onToggle}>
-      {dark ? "浅色模式" : "深色模式"}
+    <button className={`${controls.secondaryButton} shrink-0`} onClick={onToggle} aria-label={dark ? "切换到浅色模式" : "切换到深色模式"}>
+      <span className="text-base sm:hidden" aria-hidden="true">{dark ? "☀" : "☾"}</span>
+      <span className="hidden sm:inline">{dark ? "浅色模式" : "深色模式"}</span>
     </button>
   );
 }
 
-function Sidebar() {
+function NavigationPanel({ mobile = false, onNavigate }: { mobile?: boolean; onNavigate?: () => void }) {
   return (
-    <aside className="fixed inset-y-0 left-0 z-20 hidden w-72 border-r border-white/10 bg-[#0b1020] p-4 text-slate-200 lg:block">
+    <div className="flex h-full min-h-0 flex-col">
       <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-4">
         <div className="flex items-center gap-3">
           <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-400 to-cyan-300 text-sm font-black text-[#080b14]">
@@ -42,17 +43,28 @@ function Sidebar() {
             <div className="text-base font-semibold text-white">{zhCN.productName}</div>
             <div className="text-xs text-slate-400">{zhCN.productNameEn}</div>
           </div>
+          {mobile ? (
+            <button
+              type="button"
+              className="ml-auto flex h-11 w-11 items-center justify-center rounded-xl border border-white/10 text-2xl text-slate-300 transition hover:bg-white/10 hover:text-white"
+              onClick={onNavigate}
+              aria-label="关闭导航"
+            >
+              ×
+            </button>
+          ) : null}
         </div>
       </div>
 
-      <nav className="mt-6 space-y-1">
+      <nav className="mt-6 min-h-0 flex-1 space-y-1 overflow-y-auto" aria-label="主导航">
         {navItems.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
             end={item.to === "/"}
+            onClick={onNavigate}
             className={({ isActive }) =>
-              `group flex items-center gap-3 rounded-2xl px-3 py-3 text-sm font-medium transition ${
+              `group flex min-h-12 items-center gap-3 rounded-2xl px-3 py-3 text-sm font-medium transition ${
                 isActive
                   ? "bg-white text-[#080b14] shadow-[0_16px_45px_rgba(255,255,255,0.12)]"
                   : "text-slate-400 hover:bg-white/8 hover:text-white"
@@ -65,16 +77,63 @@ function Sidebar() {
         ))}
       </nav>
 
-      <div className="absolute bottom-4 left-4 right-4 overflow-hidden rounded-3xl border border-white/10 bg-white/[0.04] p-4">
+      <div className="relative mt-5 shrink-0 overflow-hidden rounded-3xl border border-white/10 bg-white/[0.04] p-4">
         <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-cyan-300/70 to-transparent" />
         <div className="text-xs font-semibold text-slate-200">本地 AI 数据分析工作台</div>
         <p className="mt-2 text-xs leading-5 text-slate-400">多模型回测、残差诊断、最终预测和 DeepSeek 中文报告统一在本机完成。</p>
       </div>
-    </aside>
+    </div>
   );
 }
 
-function TopStatusBar({ dark, onToggle }: { dark: boolean; onToggle: () => void }) {
+function Sidebar({ mobileOpen, onMobileClose }: { mobileOpen: boolean; onMobileClose: () => void }) {
+  return (
+    <>
+      <aside className="fixed inset-y-0 left-0 z-20 hidden w-72 border-r border-white/10 bg-[#0b1020] p-4 text-slate-200 lg:block">
+        <NavigationPanel />
+      </aside>
+
+      <div
+        className={`fixed inset-0 z-40 transition lg:hidden ${mobileOpen ? "pointer-events-auto" : "pointer-events-none"}`}
+        aria-hidden={!mobileOpen}
+      >
+        <button
+          type="button"
+          className={`absolute inset-0 bg-slate-950/70 backdrop-blur-sm transition-opacity ${mobileOpen ? "opacity-100" : "opacity-0"}`}
+          onClick={onMobileClose}
+          aria-label="关闭导航遮罩"
+          tabIndex={mobileOpen ? 0 : -1}
+        />
+        <aside
+          id="mobile-navigation"
+          className={`absolute inset-y-0 left-0 w-[min(88vw,340px)] border-r border-white/10 bg-[#0b1020] p-4 text-slate-200 shadow-2xl transition-transform duration-300 ${
+            mobileOpen ? "translate-x-0" : "-translate-x-full"
+          }`}
+          aria-label="移动端导航"
+        >
+          <NavigationPanel mobile onNavigate={onMobileClose} />
+        </aside>
+      </div>
+    </>
+  );
+}
+
+function MobileMenuButton({ open, onClick }: { open: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-white/[0.05] text-2xl text-white transition hover:bg-white/10 lg:hidden"
+      onClick={onClick}
+      aria-label={open ? "关闭主导航" : "打开主导航"}
+      aria-expanded={open}
+      aria-controls="mobile-navigation"
+    >
+      {open ? "×" : "☰"}
+    </button>
+  );
+}
+
+function TopStatusBar({ dark, onToggle, mobileOpen, onMenuToggle }: { dark: boolean; onToggle: () => void; mobileOpen: boolean; onMenuToggle: () => void }) {
   const location = useLocation();
   const { forecastResult } = useLabStore();
   const [backendOk, setBackendOk] = useState<boolean | null>(null);
@@ -102,14 +161,20 @@ function TopStatusBar({ dark, onToggle }: { dark: boolean; onToggle: () => void 
   );
 
   return (
-    <header className="sticky top-0 z-10 px-4 py-4 backdrop-blur-2xl lg:pl-80">
-      <div className={`${surface.glass} px-4 py-3`}>
-        <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-          <div>
+    <header className="sticky top-0 z-30 px-3 py-3 backdrop-blur-2xl sm:px-4 sm:py-4 lg:pl-80">
+      <div className={`${surface.glass} px-3 py-3 sm:px-4`}>
+        <div className="flex items-center gap-3">
+          <MobileMenuButton open={mobileOpen} onClick={onMenuToggle} />
+          <div className="min-w-0">
             <div className="text-xs font-medium text-slate-400">当前页面</div>
-            <div className="text-lg font-semibold text-white">{pageTitle}</div>
+            <div className="truncate text-base font-semibold text-white sm:text-lg">{pageTitle}</div>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="ml-auto sm:hidden">
+            <ThemeToggle dark={dark} onToggle={onToggle} />
+          </div>
+        </div>
+        <div className="mt-3 flex min-w-0 items-center gap-2 xl:mt-0 xl:justify-end">
+          <div className="flex min-w-0 flex-1 gap-2 overflow-x-auto pb-1 xl:justify-end">
             <Badge tone={backendOk ? "good" : backendOk === false ? "bad" : "warn"}>
               后端：{backendOk ? "在线" : backendOk === false ? "离线" : "检测中"}
             </Badge>
@@ -117,6 +182,8 @@ function TopStatusBar({ dark, onToggle }: { dark: boolean; onToggle: () => void 
             <Badge tone={timesfmStatus === "available" ? "good" : timesfmStatus === "需要下载" ? "warn" : "neutral"}>TimesFM：{timesfmStatus}</Badge>
             <Badge tone={deepSeekConfigured ? "good" : "warn"}>DeepSeek：{deepSeekConfigured ? "已配置" : "未配置"}</Badge>
             <Badge tone="neutral">实验：{forecastResult?.experimentId ?? "尚未运行"}</Badge>
+          </div>
+          <div className="hidden sm:block">
             <ThemeToggle dark={dark} onToggle={onToggle} />
           </div>
         </div>
@@ -127,6 +194,26 @@ function TopStatusBar({ dark, onToggle }: { dark: boolean; onToggle: () => void 
 
 export function App() {
   const [dark, setDark] = useState(() => window.localStorage.getItem("tsfl_theme") !== "light");
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const location = useLocation();
+
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMobileNavOpen(false);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [mobileNavOpen]);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
@@ -135,9 +222,14 @@ export function App() {
 
   return (
     <div className={dark ? surface.shell : surface.page}>
-      <Sidebar />
-      <TopStatusBar dark={dark} onToggle={() => setDark((value) => !value)} />
-      <main className="px-4 pb-8 pt-2 lg:pl-80">
+      <Sidebar mobileOpen={mobileNavOpen} onMobileClose={() => setMobileNavOpen(false)} />
+      <TopStatusBar
+        dark={dark}
+        onToggle={() => setDark((value) => !value)}
+        mobileOpen={mobileNavOpen}
+        onMenuToggle={() => setMobileNavOpen((value) => !value)}
+      />
+      <main className="px-3 pb-8 pt-2 sm:px-4 lg:pl-80">
         <div className="mx-auto max-w-[1500px] space-y-6">
           <Routes>
             <Route path="/" element={<OverviewPage />} />
