@@ -18,6 +18,8 @@ PANDAS_FREQ = {
     "Y": "YS",
 }
 
+WEB_WORKER_N_JOBS = 1
+
 
 class LagFeatureRegressor:
     model_id = "lag_feature_regressor"
@@ -88,8 +90,9 @@ class LagFeatureRegressor:
         self.frequency = frequency
         self.model = self.build_model()
         features, targets = self._training_matrix()
-        self.model.fit(features, targets)
-        fitted = np.asarray(self.model.predict(features), dtype=float)
+        feature_frame = pd.DataFrame(features, columns=self.feature_columns)
+        self.model.fit(feature_frame, targets)
+        fitted = np.asarray(self.model.predict(feature_frame), dtype=float)
         residuals = targets - fitted
         self.residual_scale = float(np.std(residuals, ddof=1)) if len(residuals) > 1 else 0.0
 
@@ -107,7 +110,10 @@ class LagFeatureRegressor:
         upper: list[float | None] = []
         future_times = self._future_times(horizon)
         for step, future_time in enumerate(future_times):
-            features = np.asarray([self._features_for(history, future_time, len(history) + step)], dtype=float)
+            features = pd.DataFrame(
+                [self._features_for(history, future_time, len(history) + step)],
+                columns=self.feature_columns,
+            )
             predicted = float(np.asarray(self.model.predict(features), dtype=float)[0])
             if not np.isfinite(predicted):
                 raise RuntimeError("Model returned NaN or infinite predictions.")
@@ -127,6 +133,12 @@ class XGBoostModel(LagFeatureRegressor):
     package_name = "xgboost"
     unavailable_message = "XGBoost is not installed. Install optional dependency 'xgboost' to enable this model."
 
+    def __init__(self, n_estimators: int = 200, max_depth: int = 3, learning_rate: float = 0.05) -> None:
+        super().__init__()
+        self.n_estimators = n_estimators
+        self.max_depth = max_depth
+        self.learning_rate = learning_rate
+
     def build_model(self):
         try:
             from xgboost import XGBRegressor
@@ -134,12 +146,14 @@ class XGBoostModel(LagFeatureRegressor):
             raise RuntimeError(self.unavailable_message) from exc
         return XGBRegressor(
             objective="reg:squarederror",
-            n_estimators=200,
-            max_depth=3,
-            learning_rate=0.05,
+            n_estimators=self.n_estimators,
+            max_depth=self.max_depth,
+            learning_rate=self.learning_rate,
             subsample=0.9,
             colsample_bytree=0.9,
             random_state=42,
+            n_jobs=WEB_WORKER_N_JOBS,
+            verbosity=0,
         )
 
 
@@ -148,16 +162,23 @@ class LightGbmModel(LagFeatureRegressor):
     package_name = "lightgbm"
     unavailable_message = "LightGBM is not installed. Install optional dependency 'lightgbm' to enable this model."
 
+    def __init__(self, n_estimators: int = 250, num_leaves: int = 31, learning_rate: float = 0.05) -> None:
+        super().__init__()
+        self.n_estimators = n_estimators
+        self.num_leaves = num_leaves
+        self.learning_rate = learning_rate
+
     def build_model(self):
         try:
             from lightgbm import LGBMRegressor
         except Exception as exc:
             raise RuntimeError(self.unavailable_message) from exc
         return LGBMRegressor(
-            n_estimators=250,
-            learning_rate=0.05,
-            num_leaves=31,
+            n_estimators=self.n_estimators,
+            learning_rate=self.learning_rate,
+            num_leaves=self.num_leaves,
             random_state=42,
+            n_jobs=WEB_WORKER_N_JOBS,
             verbose=-1,
         )
 
@@ -167,9 +188,21 @@ class RandomForestTsModel(LagFeatureRegressor):
     package_name = "sklearn"
     unavailable_message = "scikit-learn is not installed. Install optional dependency 'scikit-learn' to enable this model."
 
+    def __init__(self, n_estimators: int = 120, max_depth: int = 18, min_samples_leaf: int = 2) -> None:
+        super().__init__()
+        self.n_estimators = n_estimators
+        self.max_depth = max_depth
+        self.min_samples_leaf = min_samples_leaf
+
     def build_model(self):
         try:
             from sklearn.ensemble import RandomForestRegressor
         except Exception as exc:
             raise RuntimeError(self.unavailable_message) from exc
-        return RandomForestRegressor(n_estimators=300, random_state=42, n_jobs=-1, min_samples_leaf=2)
+        return RandomForestRegressor(
+            n_estimators=self.n_estimators,
+            random_state=42,
+            n_jobs=WEB_WORKER_N_JOBS,
+            min_samples_leaf=self.min_samples_leaf,
+            max_depth=self.max_depth,
+        )

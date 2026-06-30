@@ -11,10 +11,12 @@ from app.models.base import ForecastOutput
 class TimesFmModel:
     model_id = "timesfm"
 
-    def __init__(self) -> None:
+    def __init__(self, max_context: int = 512, normalize_inputs: bool = True) -> None:
         self.values: list[float] = []
         self.model = None
         self.api_version = "unknown"
+        self.max_context = max_context
+        self.normalize_inputs = normalize_inputs
 
     def fit(self, times: list[datetime], values: list[float], frequency: str) -> None:
         self.values = [float(value) for value in values]
@@ -31,9 +33,9 @@ class TimesFmModel:
             if hasattr(timesfm, "TimesFM_2p5_200M_torch"):
                 self.api_version = "2.5"
                 forecast_config = timesfm.configs.ForecastConfig(
-                    max_context=min(512, max(32, len(values))),
+                    max_context=min(self.max_context, max(32, len(values))),
                     max_horizon=256,
-                    normalize_inputs=True,
+                    normalize_inputs=self.normalize_inputs,
                 )
                 repo_id = getattr(timesfm.TimesFM_2p5_200M_torch, "DEFAULT_REPO_ID", "google/timesfm-2.5-200m-pytorch")
                 source = local_dir if (local_dir / "model.safetensors").exists() else repo_id
@@ -49,7 +51,7 @@ class TimesFmModel:
             if hasattr(timesfm, "TimesFm"):
                 self.api_version = "1.x"
                 self.model = timesfm.TimesFm(
-                    context_len=min(512, max(32, len(values))),
+                    context_len=min(self.max_context, max(32, len(values))),
                     horizon_len=1,
                     input_patch_len=32,
                     output_patch_len=128,

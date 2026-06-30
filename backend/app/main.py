@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi import HTTPException
@@ -13,6 +15,7 @@ from app.db.session import engine
 
 
 settings = get_settings()
+logging.getLogger("app").setLevel(logging.INFO)
 app = FastAPI(title=settings.app_name)
 
 app.add_middleware(

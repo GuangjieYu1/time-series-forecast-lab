@@ -40,6 +40,110 @@ def test_upload_preview_csv_and_multi_sheet_xlsx(generated_fixtures: Path):
     delete_upload(xlsx_body["uploadId"])
 
 
+def test_upload_preview_wide_csv_when_sniffer_cannot_determine_delimiter(tmp_path: Path):
+    client = TestClient(app)
+    columns = ["date", *[str(index) for index in range(700)], "OT"]
+    values = ["2016-07-01 02:00:00", *["1.000000" for _ in range(700)], "2.000000"]
+    csv_path = tmp_path / "wide.csv"
+    csv_path.write_text(",".join(columns) + "\n" + ",".join(values) + "\n", encoding="utf-8")
+
+    with csv_path.open("rb") as handle:
+        response = client.post("/api/upload/preview", files={"file": (csv_path.name, handle, "text/csv")})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["sheets"][0]["columns"][0]["name"] == "date"
+    assert body["sheets"][0]["columns"][-1]["name"] == "OT"
+    assert body["sheets"][0]["previewRows"][0]["OT"] == "2.000000"
+    delete_upload(body["uploadId"])
+
+
+def test_forecast_rejects_oversized_run_before_reading_upload(tmp_path: Path):
+    client = TestClient(app)
+    columns = ["date", *[f"value_{index}" for index in range(10)]]
+    rows = [
+        ",".join(columns),
+        *[
+            ",".join([f"2026-06-{day:02d}", *[str(day + index) for index in range(10)]])
+            for day in range(1, 41)
+        ],
+    ]
+    csv_path = tmp_path / "many_targets.csv"
+    csv_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    with csv_path.open("rb") as handle:
+        upload_response = client.post("/api/upload/preview", files={"file": (csv_path.name, handle, "text/csv")})
+    assert upload_response.status_code == 200
+    upload_id = upload_response.json()["uploadId"]
+    upload_path = Path(read_upload_metadata(upload_id)["path"])
+
+    request = {
+        "runId": "run_too_many_targets",
+        "uploadId": upload_id,
+        "sheetName": "CSV",
+        "dataMode": "aggregated",
+        "timeColumn": "date",
+        "targetColumns": [f"value_{index}" for index in range(9)],
+        "aggregation": {"enabled": False, "method": "sum"},
+        "frequency": "auto",
+        "horizon": 7,
+        "testSize": 7,
+        "selectedModels": ["naive"],
+        "missingValueStrategy": "drop",
+        "fillMissingTimeSteps": True,
+    }
+    response = client.post("/api/forecast/run", json=request)
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["code"] == "TOO_MANY_TARGET_COLUMNS"
+    assert upload_path.exists()
+    delete_upload(upload_id)
+
+
+def test_forecast_rejects_too_many_model_runs(tmp_path: Path):
+    client = TestClient(app)
+    columns = ["date", "value_0", "value_1", "value_2", "value_3"]
+    rows = [
+        ",".join(columns),
+        *[
+            ",".join([f"2026-06-{day:02d}", str(day), str(day + 1), str(day + 2), str(day + 3)])
+            for day in range(1, 41)
+        ],
+    ]
+    csv_path = tmp_path / "many_model_runs.csv"
+    csv_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    with csv_path.open("rb") as handle:
+        upload_response = client.post("/api/upload/preview", files={"file": (csv_path.name, handle, "text/csv")})
+    assert upload_response.status_code == 200
+    upload_id = upload_response.json()["uploadId"]
+    upload_path = Path(read_upload_metadata(upload_id)["path"])
+
+    request = {
+        "runId": "run_too_many_model_runs",
+        "uploadId": upload_id,
+        "sheetName": "CSV",
+        "dataMode": "aggregated",
+        "timeColumn": "date",
+        "targetColumns": ["value_0", "value_1", "value_2", "value_3"],
+        "aggregation": {"enabled": False, "method": "sum"},
+        "frequency": "auto",
+        "horizon": 7,
+        "testSize": 7,
+        "selectedModels": ["naive", "seasonal_naive", "moving_average", "arima", "ets", "prophet", "xgboost", "lightgbm", "random_forest"],
+        "missingValueStrategy": "drop",
+        "fillMissingTimeSteps": True,
+    }
+    response = client.post("/api/forecast/run", json=request)
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["code"] == "TOO_MANY_MODEL_RUNS"
+    assert upload_path.exists()
+    delete_upload(upload_id)
+
+
 def test_raw_multi_sheet_end_to_end_history_and_cleanup(generated_fixtures: Path):
     client = TestClient(app)
     fixture = generated_fixtures / "raw_flight_detail_multi_sheet.xlsx"

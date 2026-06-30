@@ -23,6 +23,76 @@ import { ReportPanel } from "../reports/ReportPanel";
 
 const modelDefaults = ["naive", "seasonal_naive", "moving_average", "arima", "ets", "prophet", "xgboost", "lightgbm", "random_forest"];
 const steps = ["选择数据模式", "选择字段", "选择模型", "设置回测", "运行实验"];
+const maxTargetColumns = 8;
+const maxModelRuns = 32;
+const maxHeavyModelRuns = 4;
+const heavyModelIds = new Set(["prophet", "timesfm"]);
+
+type ModelParameterValue = number | string | boolean;
+
+interface ModelParameterField {
+  key: string;
+  label: string;
+  type: "number" | "select" | "boolean";
+  min?: number;
+  max?: number;
+  step?: number;
+  options?: { value: string; label: string }[];
+}
+
+const seasonalityOptions = [
+  { value: "auto", label: "auto" },
+  { value: "on", label: "on" },
+  { value: "off", label: "off" }
+];
+
+const modelParameterDefaults: Record<string, Record<string, ModelParameterValue>> = {
+  seasonal_naive: { period: 0 },
+  moving_average: { window: 7 },
+  arima: { p: 1, d: 1, q: 1 },
+  ets: { trend: "auto" },
+  prophet: { intervalWidth: 0.8, dailySeasonality: "auto", weeklySeasonality: "auto", yearlySeasonality: "auto" },
+  timesfm: { maxContext: 512, normalizeInputs: true },
+  xgboost: { nEstimators: 200, maxDepth: 3, learningRate: 0.05 },
+  lightgbm: { nEstimators: 250, numLeaves: 31, learningRate: 0.05 },
+  random_forest: { nEstimators: 120, maxDepth: 18, minSamplesLeaf: 2 }
+};
+
+const modelParameterFields: Record<string, ModelParameterField[]> = {
+  seasonal_naive: [{ key: "period", label: "季节周期", type: "number", min: 0, max: 8760, step: 1 }],
+  moving_average: [{ key: "window", label: "窗口长度", type: "number", min: 2, max: 720, step: 1 }],
+  arima: [
+    { key: "p", label: "AR 阶 p", type: "number", min: 0, max: 5, step: 1 },
+    { key: "d", label: "差分 d", type: "number", min: 0, max: 2, step: 1 },
+    { key: "q", label: "MA 阶 q", type: "number", min: 0, max: 5, step: 1 }
+  ],
+  ets: [{ key: "trend", label: "趋势项", type: "select", options: [{ value: "auto", label: "auto" }, { value: "none", label: "none" }, { value: "add", label: "add" }] }],
+  prophet: [
+    { key: "intervalWidth", label: "区间宽度", type: "number", min: 0.5, max: 0.99, step: 0.01 },
+    { key: "dailySeasonality", label: "日季节性", type: "select", options: seasonalityOptions },
+    { key: "weeklySeasonality", label: "周季节性", type: "select", options: seasonalityOptions },
+    { key: "yearlySeasonality", label: "年季节性", type: "select", options: seasonalityOptions }
+  ],
+  timesfm: [
+    { key: "maxContext", label: "上下文长度", type: "number", min: 32, max: 512, step: 32 },
+    { key: "normalizeInputs", label: "归一化输入", type: "boolean" }
+  ],
+  xgboost: [
+    { key: "nEstimators", label: "树数量", type: "number", min: 20, max: 500, step: 10 },
+    { key: "maxDepth", label: "最大深度", type: "number", min: 1, max: 10, step: 1 },
+    { key: "learningRate", label: "学习率", type: "number", min: 0.01, max: 0.5, step: 0.01 }
+  ],
+  lightgbm: [
+    { key: "nEstimators", label: "树数量", type: "number", min: 20, max: 600, step: 10 },
+    { key: "numLeaves", label: "叶子数", type: "number", min: 7, max: 255, step: 1 },
+    { key: "learningRate", label: "学习率", type: "number", min: 0.01, max: 0.5, step: 0.01 }
+  ],
+  random_forest: [
+    { key: "nEstimators", label: "树数量", type: "number", min: 20, max: 300, step: 10 },
+    { key: "maxDepth", label: "最大深度", type: "number", min: 2, max: 40, step: 1 },
+    { key: "minSamplesLeaf", label: "叶节点最少样本", type: "number", min: 1, max: 20, step: 1 }
+  ]
+};
 
 type ResultTab = "overview" | "residual" | "metrics" | "distribution" | "final" | "report";
 
@@ -326,23 +396,85 @@ function Leaderboard({ rows, recommendedModelId }: { rows: RankedModel[]; recomm
   );
 }
 
+function ModelParameterControls({
+  modelId,
+  parameters,
+  onChange
+}: {
+  modelId: string;
+  parameters: Record<string, ModelParameterValue>;
+  onChange: (key: string, value: ModelParameterValue) => void;
+}) {
+  const fields = modelParameterFields[modelId] ?? [];
+  if (!fields.length) {
+    return <div className="rounded-xl bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:bg-[#0b1020] dark:text-slate-400">该模型暂无额外可调参数。</div>;
+  }
+  return (
+    <div className="grid gap-3">
+      {fields.map((field) => {
+        const value = parameters[field.key] ?? modelParameterDefaults[modelId]?.[field.key] ?? (field.type === "boolean" ? false : "");
+        if (field.type === "select") {
+          return (
+            <label key={field.key} className="space-y-1 text-xs text-slate-600 dark:text-slate-300">
+              <span className="font-medium">{field.label}</span>
+              <select className={`${controls.input} h-9 text-xs`} value={String(value)} onChange={(event) => onChange(field.key, event.target.value)}>
+                {(field.options ?? []).map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          );
+        }
+        if (field.type === "boolean") {
+          return (
+            <label key={field.key} className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-300">
+              <input type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(field.key, event.target.checked)} />
+              {field.label}
+            </label>
+          );
+        }
+        return (
+          <label key={field.key} className="space-y-1 text-xs text-slate-600 dark:text-slate-300">
+            <span className="font-medium">{field.label}</span>
+            <input
+              className={`${controls.input} h-9 text-xs`}
+              type="number"
+              min={field.min}
+              max={field.max}
+              step={field.step}
+              value={Number(value)}
+              onChange={(event) => {
+                const next = Number(event.target.value);
+                if (Number.isFinite(next)) onChange(field.key, next);
+              }}
+            />
+          </label>
+        );
+      })}
+    </div>
+  );
+}
+
 function ModelCard({
   model,
   selected,
   resource,
-  onChange
+  parameters,
+  onChange,
+  onParameterChange
 }: {
   model: ModelCapability;
   selected: boolean;
   resource: ModelResourceAssessment;
+  parameters: Record<string, ModelParameterValue>;
   onChange: (checked: boolean) => void;
+  onParameterChange: (key: string, value: ModelParameterValue) => void;
 }) {
   const runnable = isRunnableModel(model) && resource.level !== "gray";
   return (
-    <button
-      type="button"
-      disabled={!runnable}
-      onClick={() => runnable && onChange(!selected)}
+    <div
       className={`rounded-2xl border p-4 text-left transition ${
         selected
           ? "border-indigo-400 bg-indigo-50 shadow-sm dark:border-indigo-300/40 dark:bg-indigo-400/10"
@@ -350,14 +482,20 @@ function ModelCard({
       } ${runnable ? "" : "opacity-60"}`}
     >
       <div className="flex items-start justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <div className="flex items-center gap-2 font-semibold text-slate-950 dark:text-white">
             <span className={`h-2.5 w-2.5 rounded-full shadow-lg ${resourceToneClass[resource.level]}`} />
-            {model.name}
+            <span className="truncate">{model.name}</span>
           </div>
           <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">{model.modelFamily || model.category}</div>
         </div>
-        <Badge tone={modelStatusTone(model)}>{modelStatusText(model)}</Badge>
+        <div className="flex shrink-0 flex-col items-end gap-2">
+          <Badge tone={modelStatusTone(model)}>{modelStatusText(model)}</Badge>
+          <label className={`inline-flex items-center gap-2 text-xs font-semibold ${runnable ? "cursor-pointer text-indigo-600 dark:text-indigo-200" : "cursor-not-allowed text-slate-400"}`}>
+            <input type="checkbox" disabled={!runnable} checked={selected} onChange={(event) => onChange(event.target.checked)} />
+            {selected ? "已选择" : "选择"}
+          </label>
+        </div>
       </div>
       <p className="mt-3 line-clamp-2 text-xs leading-5 text-slate-500 dark:text-slate-400">{zhCN.modelDescriptions[model.id as keyof typeof zhCN.modelDescriptions] ?? model.shortDescription}</p>
       <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
@@ -374,7 +512,15 @@ function ModelCard({
         {resource.reason}
       </p>
       {!runnable && model.unavailableReason && resource.reason !== model.unavailableReason ? <p className="mt-2 text-xs text-amber-600 dark:text-amber-300">{model.unavailableReason}</p> : null}
-    </button>
+      {runnable ? (
+        <details className="mt-3 overflow-hidden rounded-xl border border-slate-200 bg-white/70 dark:border-white/10 dark:bg-[#0b1020]/70">
+          <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200">高级设置</summary>
+          <div className="border-t border-slate-200 p-3 dark:border-white/10">
+            <ModelParameterControls modelId={model.id} parameters={parameters} onChange={onParameterChange} />
+          </div>
+        </details>
+      ) : null}
+    </div>
   );
 }
 
@@ -566,6 +712,7 @@ export function ForecastPage() {
   const [horizon, setHorizon] = useState(7);
   const [testSize, setTestSize] = useState(7);
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
+  const [modelParameters, setModelParameters] = useState<Record<string, Record<string, ModelParameterValue>>>(modelParameterDefaults);
   const [metric, setMetric] = useState<"mae" | "mse" | "rmse" | "wape">("mae");
   const [finalModelId, setFinalModelId] = useState("");
   const [chartModelIds, setChartModelIds] = useState<string[]>([]);
@@ -667,12 +814,30 @@ export function ForecastPage() {
     const max = Math.min(...selected.map((model) => model.maxHorizon));
     return { min, max, compatible: min <= max };
   }, [models, selectedModels]);
+  const modelRunCount = targetColumns.length * selectedModels.length;
+  const heavyModelRunCount = targetColumns.length * selectedModels.filter((modelId) => heavyModelIds.has(modelId)).length;
+  const runLimitMessage = useMemo(() => {
+    if (targetColumns.length > maxTargetColumns) return `一次最多选择 ${maxTargetColumns} 个目标列，请分批运行宽表数据。`;
+    if (modelRunCount > maxModelRuns) return `一次最多运行 ${maxModelRuns} 个目标-模型组合，当前是 ${modelRunCount} 个。`;
+    if (heavyModelRunCount > maxHeavyModelRuns) return `Prophet / TimesFM 属于重模型，一次最多运行 ${maxHeavyModelRuns} 个重模型组合，当前是 ${heavyModelRunCount} 个。`;
+    return null;
+  }, [heavyModelRunCount, modelRunCount, targetColumns.length]);
+  const canRunExperiment = Boolean(
+    targetColumns.length &&
+      selectedModels.length &&
+      horizonRange.compatible &&
+      horizon >= horizonRange.min &&
+      horizon <= horizonRange.max &&
+      testSize >= 1 &&
+      !runLimitMessage &&
+      !loading
+  );
 
   const stepCompletion = [
     Boolean(dataMode),
     Boolean(timeColumn && targetColumns.length),
     Boolean(selectedModels.length),
-    Boolean(horizonRange.compatible && horizon >= horizonRange.min && horizon <= horizonRange.max && testSize >= 1),
+    Boolean(horizonRange.compatible && horizon >= horizonRange.min && horizon <= horizonRange.max && testSize >= 1 && !runLimitMessage),
     Boolean(forecastResult)
   ];
   const completedStepIndexes = stepCompletion.map((done, index) => (done ? index : -1)).filter((index) => index >= 0);
@@ -680,8 +845,23 @@ export function ForecastPage() {
   const activeStepIndex = loading ? 4 : nextIncompleteStep === -1 ? 4 : nextIncompleteStep;
   const elapsedSeconds = runStartedAt === null ? 0 : Math.max(0, Math.floor((progressNow - runStartedAt) / 1000));
 
+  function updateModelParameter(modelId: string, key: string, value: ModelParameterValue) {
+    setModelParameters((current) => ({
+      ...current,
+      [modelId]: {
+        ...(modelParameterDefaults[modelId] ?? {}),
+        ...(current[modelId] ?? {}),
+        [key]: value
+      }
+    }));
+  }
+
   async function submit() {
     if (!upload || !selectedSheet) return;
+    if (runLimitMessage) {
+      setError(runLimitMessage);
+      return;
+    }
     const startedAt = Date.now();
     const runId = createRunId();
     setRunStartedAt(startedAt);
@@ -703,6 +883,7 @@ export function ForecastPage() {
         horizon,
         testSize,
         selectedModels,
+        modelParameters: Object.fromEntries(selectedModels.map((modelId) => [modelId, modelParameters[modelId] ?? {}])),
         missingValueStrategy,
         fillMissingTimeSteps,
         duplicateTimeStrategy,
@@ -809,18 +990,30 @@ export function ForecastPage() {
                 <div className="space-y-2">
                   <span className="text-sm font-medium text-slate-700 dark:text-slate-200">预测目标列</span>
                   <div className="max-h-44 overflow-auto rounded-2xl border border-slate-200 p-2 dark:border-white/10">
-                    {orderedColumns.map((column) => (
-                      <label key={column.name} className="flex items-center gap-2 rounded-xl px-2 py-2 text-sm hover:bg-slate-50 dark:hover:bg-white/5">
+                    {orderedColumns.map((column) => {
+                      const selected = targetColumns.includes(column.name);
+                      const targetLimitReached = !selected && targetColumns.length >= maxTargetColumns;
+                      return (
+                      <label key={column.name} className={`flex items-center gap-2 rounded-xl px-2 py-2 text-sm hover:bg-slate-50 dark:hover:bg-white/5 ${targetLimitReached ? "opacity-50" : ""}`}>
                         <input
                           type="checkbox"
-                          checked={targetColumns.includes(column.name)}
-                          onChange={(event) => setTargetColumns((current) => (event.target.checked ? [...current, column.name] : current.filter((item) => item !== column.name)))}
+                          checked={selected}
+                          disabled={targetLimitReached}
+                          onChange={(event) =>
+                            setTargetColumns((current) => {
+                              if (!event.target.checked) return current.filter((item) => item !== column.name);
+                              if (current.includes(column.name) || current.length >= maxTargetColumns) return current;
+                              return [...current, column.name];
+                            })
+                          }
                         />
-                        {column.name}
+                        <span className="min-w-0 flex-1 truncate">{column.name}</span>
                         <Badge tone={column.inferredType === "number" ? "good" : column.inferredType === "datetime" ? "info" : "neutral"}>{column.inferredType}</Badge>
                       </label>
-                    ))}
+                    );
+                    })}
                   </div>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">已选择 {targetColumns.length} / {maxTargetColumns} 个目标列。</p>
                   {targetColumns.length > 1 ? <p className="text-xs text-amber-600 dark:text-amber-300">多目标会按目标列分别运行单变量预测。</p> : null}
                 </div>
               </div>
@@ -917,6 +1110,11 @@ export function ForecastPage() {
                   ))}
                   <span className="text-slate-400 dark:text-slate-500">估算随文件大小、行列数、目标列和步长动态变化。</span>
                 </div>
+                <div className={`rounded-2xl border p-3 text-sm ${runLimitMessage ? "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100" : "border-slate-200 bg-slate-50 text-slate-600 dark:border-white/10 dark:bg-[#151b2e] dark:text-slate-300"}`}>
+                  本次计划运行 {modelRunCount} 个目标-模型组合，重模型组合 {heavyModelRunCount} 个。
+                  <span className="ml-2 text-xs opacity-75">上限：组合 {maxModelRuns}，重模型 {maxHeavyModelRuns}。</span>
+                  {runLimitMessage ? <div className="mt-2 text-xs font-semibold">{runLimitMessage}</div> : null}
+                </div>
                 <div className="grid max-h-[520px] gap-3 overflow-auto pr-1 md:grid-cols-2">
                   {sortedModels.map((model) => (
                     <ModelCard
@@ -924,11 +1122,13 @@ export function ForecastPage() {
                       model={model}
                       resource={resourceAssessments.get(model.id) ?? assessModelResource({ model, deviceInfo, upload, sheet: selectedSheet, dataMode, targetColumns, horizon, testSize })}
                       selected={selectedModels.includes(model.id)}
-                      onChange={(checked) => setSelectedModels((current) => (checked ? [...current, model.id] : current.filter((item) => item !== model.id)))}
+                      parameters={modelParameters[model.id] ?? modelParameterDefaults[model.id] ?? {}}
+                      onChange={(checked) => setSelectedModels((current) => (checked ? (current.includes(model.id) ? current : [...current, model.id]) : current.filter((item) => item !== model.id)))}
+                      onParameterChange={(key, value) => updateModelParameter(model.id, key, value)}
                     />
                   ))}
                 </div>
-                <button className={controls.primaryButton} disabled={!targetColumns.length || !selectedModels.length || !horizonRange.compatible || loading} onClick={() => void submit()}>
+                <button className={controls.primaryButton} disabled={!canRunExperiment} onClick={() => void submit()}>
                   运行 Holdout（留出测试集）回测
                 </button>
               </div>

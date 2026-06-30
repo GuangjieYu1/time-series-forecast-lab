@@ -4,7 +4,7 @@ import type { FinalForecastResponse, ForecastRunResponse, RankedModel } from "..
 import { zhCN } from "../../shared/i18n/zhCN";
 
 export const modelColorMap: Record<string, string> = {
-  actual: "#0F172A",
+  actual: "#00E5FF",
   timesfm: "#8B5CF6",
   prophet: "#2563EB",
   arima: "#F97316",
@@ -76,7 +76,18 @@ function lineStyle(modelId: string, width = 2) {
   return {
     width: modelId === "timesfm" ? 3 : width,
     type: ["naive", "seasonal_naive", "moving_average"].includes(modelId) ? "dashed" : "solid",
-    color: modelColorMap[modelId]
+    color: modelColorMap[modelId],
+    opacity: 0.68
+  };
+}
+
+function actualLineStyle(width = 5) {
+  return {
+    width,
+    color: modelColorMap.actual,
+    opacity: 1,
+    shadowBlur: 12,
+    shadowColor: "rgba(34,211,238,0.85)"
   };
 }
 
@@ -84,7 +95,16 @@ export function ActualVsPredictedChart({ result, visibleModelIds, height }: { re
   const shown = visibleModelIds ?? defaultVisibleModelIds(result);
   const times = result.backtest.actual.map((point) => point.time);
   const series = [
-    { name: zhCN.charts.actual, type: "line", smooth: true, data: result.backtest.actual.map((point) => point.value), lineStyle: { width: 4, color: modelColorMap.actual } },
+    {
+      name: zhCN.charts.actual,
+      type: "line",
+      smooth: true,
+      data: result.backtest.actual.map((point) => point.value),
+      lineStyle: actualLineStyle(),
+      z: 20,
+      showSymbol: false,
+      emphasis: { focus: "series", lineStyle: actualLineStyle(6) }
+    },
     ...shown
       .filter((id) => result.backtest.predictions[id])
       .map((id) => ({
@@ -205,7 +225,7 @@ export function FinalForecastChart({ finalForecast }: { finalForecast: FinalFore
         xAxis: timeCategoryAxis(times),
         yAxis: valueAxis({ scale: true }),
         series: [
-          { name: zhCN.charts.history, type: "line", smooth: true, data: historyValues, lineStyle: { width: 3, color: modelColorMap.actual } },
+          { name: zhCN.charts.history, type: "line", smooth: true, data: historyValues, lineStyle: actualLineStyle(4), z: 20, showSymbol: false },
           { name: finalForecast.modelInfo.name, type: "line", smooth: true, data: forecastValues, lineStyle: { width: 3, color: modelColorMap[finalForecast.finalModelId] ?? "#818CF8" } },
           { name: zhCN.charts.lower, type: "line", smooth: true, data: lower, lineStyle: { type: "dashed" } },
           { name: zhCN.charts.upper, type: "line", smooth: true, data: upper, lineStyle: { type: "dashed" } }

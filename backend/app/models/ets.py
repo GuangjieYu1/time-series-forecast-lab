@@ -11,10 +11,11 @@ from app.models.moving_average import MovingAverageModel
 class EtsModel:
     model_id = "ets"
 
-    def __init__(self) -> None:
+    def __init__(self, trend: str = "auto") -> None:
         self.model = None
         self.values: list[float] = []
         self.fallback = MovingAverageModel()
+        self.trend = trend
         self.warnings: list[str] = []
 
     def fit(self, times: list[datetime], values: list[float], frequency: str) -> None:
@@ -22,7 +23,7 @@ class EtsModel:
         try:
             from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
-            trend = "add" if len(values) >= 10 else None
+            trend = "add" if self.trend == "add" or (self.trend == "auto" and len(values) >= 10) else None
             fitted = ExponentialSmoothing(values, trend=trend, seasonal=None, initialization_method="estimated").fit()
             self.model = fitted
         except Exception as exc:

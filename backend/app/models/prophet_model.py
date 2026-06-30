@@ -21,12 +21,29 @@ PANDAS_FREQ = {
 class ProphetModel:
     model_id = "prophet"
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        interval_width: float = 0.8,
+        daily_seasonality: str = "auto",
+        weekly_seasonality: str = "auto",
+        yearly_seasonality: str = "auto",
+    ) -> None:
         self.model = None
         self.frequency = "D"
         self.last_time: datetime | None = None
         self.values: list[float] = []
+        self.interval_width = interval_width
+        self.daily_seasonality = daily_seasonality
+        self.weekly_seasonality = weekly_seasonality
+        self.yearly_seasonality = yearly_seasonality
         self.warnings: list[str] = []
+
+    def _seasonality_value(self, value: str):
+        if value == "on":
+            return True
+        if value == "off":
+            return False
+        return "auto"
 
     def fit(self, times: list[datetime], values: list[float], frequency: str) -> None:
         self.frequency = frequency
@@ -36,7 +53,12 @@ class ProphetModel:
             from prophet import Prophet
 
             frame = pd.DataFrame({"ds": times, "y": values})
-            model = Prophet(interval_width=0.8, daily_seasonality=False, weekly_seasonality="auto", yearly_seasonality="auto")
+            model = Prophet(
+                interval_width=self.interval_width,
+                daily_seasonality=self._seasonality_value(self.daily_seasonality),
+                weekly_seasonality=self._seasonality_value(self.weekly_seasonality),
+                yearly_seasonality=self._seasonality_value(self.yearly_seasonality),
+            )
             model.fit(frame)
             self.model = model
         except Exception as exc:

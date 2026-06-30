@@ -81,6 +81,7 @@ class ForecastRunRequest(BaseModel):
     horizon: int = Field(ge=1)
     testSize: int = Field(ge=1)
     selectedModels: list[str]
+    modelParameters: dict[str, dict[str, Any]] = Field(default_factory=dict)
     missingValueStrategy: Literal["drop", "zero", "ffill", "interpolate"] = "drop"
     fillMissingTimeSteps: bool = True
     duplicateTimeStrategy: Literal["mean", "sum", "first", "last"] = "mean"

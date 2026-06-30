@@ -14,6 +14,8 @@ from app.services.schema_profiler import profile_columns
 
 
 CSV_SHEET_NAME = "CSV"
+CSV_SAMPLE_CHARS = 1024 * 1024
+CSV_DELIMITERS = [",", "\t", ";", "|"]
 
 
 def _clean_header(values: list[Any]) -> list[str]:
@@ -38,6 +40,39 @@ def _json_value(value: Any) -> Any:
     return value
 
 
+def _fallback_csv_dialect(delimiter: str):
+    return type("FallbackCsvDialect", (csv.excel,), {"delimiter": delimiter})
+
+
+def _detect_csv_dialect(sample: str):
+    if not sample:
+        return csv.excel
+    try:
+        return csv.Sniffer().sniff(sample, delimiters="".join(CSV_DELIMITERS))
+    except csv.Error:
+        first_line = next((line for line in sample.splitlines() if line.strip()), sample)
+        delimiter = max(CSV_DELIMITERS, key=lambda item: first_line.count(item))
+        if first_line.count(delimiter) == 0:
+            delimiter = ","
+        return _fallback_csv_dialect(delimiter)
+
+
+def _read_csv_sample(path: Path, encoding: str) -> str:
+    with path.open("r", encoding=encoding, newline="") as handle:
+        return handle.read(CSV_SAMPLE_CHARS)
+
+
+def _csv_read_options(path: Path) -> dict[str, str]:
+    for encoding in ("utf-8-sig", "gb18030"):
+        try:
+            sample = _read_csv_sample(path, encoding)
+        except UnicodeDecodeError:
+            continue
+        dialect = _detect_csv_dialect(sample)
+        return {"encoding": encoding, "sep": dialect.delimiter}
+    raise AppError("Failed to decode the CSV file. Please use UTF-8 or GB18030 encoding.")
+
+
 def _rows_from_records(records: list[list[Any]], headers: list[str], limit: int) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for record in records[:limit]:
@@ -51,9 +86,9 @@ def _rows_from_records(records: list[list[Any]], headers: list[str], limit: int)
 def _preview_csv(path: Path, limit: int) -> SheetPreview:
     try:
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
-            sample = handle.read(4096)
+            sample = handle.read(CSV_SAMPLE_CHARS)
             handle.seek(0)
-            dialect = csv.Sniffer().sniff(sample) if sample else csv.excel
+            dialect = _detect_csv_dialect(sample)
             reader = csv.reader(handle, dialect)
             try:
                 headers = _clean_header(next(reader))
@@ -67,7 +102,9 @@ def _preview_csv(path: Path, limit: int) -> SheetPreview:
                     preview_records.append(record)
     except UnicodeDecodeError:
         with path.open("r", encoding="gb18030", newline="") as handle:
-            reader = csv.reader(handle)
+            sample = handle.read(CSV_SAMPLE_CHARS)
+            handle.seek(0)
+            reader = csv.reader(handle, _detect_csv_dialect(sample))
             try:
                 headers = _clean_header(next(reader))
             except StopIteration as exc:
@@ -197,7 +234,7 @@ def read_sheet_dataframe(upload_id: str, sheet_name: str) -> pd.DataFrame:
     ext = path.suffix.lower()
     try:
         if ext == ".csv":
-            return pd.read_csv(path)
+            return pd.read_csv(path, **_csv_read_options(path))
         if ext == ".xlsx":
             return pd.read_excel(path, sheet_name=sheet_name, engine="openpyxl")
         if ext == ".xls":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from typing import Any
 
 from app.core.config import get_settings
 from app.models.arima import ArimaModel
@@ -26,6 +27,89 @@ def _timesfm_cache_has_files() -> bool:
     if not cache_dir.exists():
         return False
     return any(path.is_file() and path.name == "model.safetensors" and path.stat().st_size > 500_000_000 for path in cache_dir.rglob("*"))
+
+
+def _int_param(params: dict[str, Any], key: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(params.get(key, default))
+    except (TypeError, ValueError):
+        value = default
+    return min(max(value, minimum), maximum)
+
+
+def _float_param(params: dict[str, Any], key: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        value = float(params.get(key, default))
+    except (TypeError, ValueError):
+        value = default
+    return min(max(value, minimum), maximum)
+
+
+def _bool_param(params: dict[str, Any], key: str, default: bool) -> bool:
+    value = params.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    return default
+
+
+def _choice_param(params: dict[str, Any], key: str, default: str, choices: set[str]) -> str:
+    value = params.get(key, default)
+    return value if isinstance(value, str) and value in choices else default
+
+
+def sanitize_model_parameters(model_id: str, params: dict[str, Any] | None) -> dict[str, Any]:
+    raw = params or {}
+    if model_id == "moving_average":
+        return {"window": _int_param(raw, "window", 7, 2, 720)}
+    if model_id == "seasonal_naive":
+        period = _int_param(raw, "period", 0, 0, 8760)
+        return {"period": period or None}
+    if model_id == "arima":
+        return {
+            "p": _int_param(raw, "p", 1, 0, 5),
+            "d": _int_param(raw, "d", 1, 0, 2),
+            "q": _int_param(raw, "q", 1, 0, 5),
+        }
+    if model_id == "ets":
+        return {"trend": _choice_param(raw, "trend", "auto", {"auto", "none", "add"})}
+    if model_id == "prophet":
+        seasonality_choices = {"auto", "on", "off"}
+        return {
+            "interval_width": _float_param(raw, "intervalWidth", 0.8, 0.5, 0.99),
+            "daily_seasonality": _choice_param(raw, "dailySeasonality", "auto", seasonality_choices),
+            "weekly_seasonality": _choice_param(raw, "weeklySeasonality", "auto", seasonality_choices),
+            "yearly_seasonality": _choice_param(raw, "yearlySeasonality", "auto", seasonality_choices),
+        }
+    if model_id == "timesfm":
+        return {
+            "max_context": _int_param(raw, "maxContext", 512, 32, 512),
+            "normalize_inputs": _bool_param(raw, "normalizeInputs", True),
+        }
+    if model_id == "xgboost":
+        return {
+            "n_estimators": _int_param(raw, "nEstimators", 200, 20, 500),
+            "max_depth": _int_param(raw, "maxDepth", 3, 1, 10),
+            "learning_rate": _float_param(raw, "learningRate", 0.05, 0.01, 0.5),
+        }
+    if model_id == "lightgbm":
+        return {
+            "n_estimators": _int_param(raw, "nEstimators", 250, 20, 600),
+            "num_leaves": _int_param(raw, "numLeaves", 31, 7, 255),
+            "learning_rate": _float_param(raw, "learningRate", 0.05, 0.01, 0.5),
+        }
+    if model_id == "random_forest":
+        return {
+            "n_estimators": _int_param(raw, "nEstimators", 120, 20, 300),
+            "max_depth": _int_param(raw, "maxDepth", 18, 2, 40),
+            "min_samples_leaf": _int_param(raw, "minSamplesLeaf", 2, 1, 20),
+        }
+    return {}
 
 
 MODEL_CAPABILITIES: dict[str, ModelCapability] = {
@@ -419,11 +503,11 @@ def get_model_capability(model_id: str) -> ModelCapability | None:
     return MODEL_CAPABILITIES.get(model_id)
 
 
-def create_model(model_id: str):
+def create_model(model_id: str, parameters: dict[str, Any] | None = None):
     factory = MODEL_FACTORIES.get(model_id)
     if factory is None:
         raise ValueError(f"Unknown model id: {model_id}")
-    return factory()
+    return factory(**sanitize_model_parameters(model_id, parameters))
 
 
 def validate_horizon(selected_models: list[str], horizon: int) -> tuple[int, int]:

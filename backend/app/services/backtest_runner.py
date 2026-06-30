@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from datetime import datetime
 import math
+import logging
 from typing import Callable, Literal
 
 from pydantic import BaseModel
@@ -17,6 +18,7 @@ from app.schemas import (
 )
 from app.services.metrics import calculate_metrics
 from app.services.model_registry import MODEL_CAPABILITIES, create_model, validate_horizon
+from app.services.model_executor import run_isolated_fit_predict, should_isolate_model
 from app.services.series_builder import TimeSeriesData
 
 
@@ -35,6 +37,7 @@ class ModelProgressEvent(BaseModel):
 
 
 ProgressCallback = Callable[[ModelProgressEvent], None]
+logger = logging.getLogger(__name__)
 
 
 def _iso(value: datetime) -> str:
@@ -46,6 +49,7 @@ def run_holdout_backtest(
     selected_models: list[str],
     horizon: int,
     test_size: int,
+    model_parameters: dict[str, dict] | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> BacktestResult:
     if not selected_models:
@@ -73,6 +77,7 @@ def run_holdout_backtest(
     actual = [BacktestActualPoint(time=_iso(point.time), value=point.value) for point in test]
     predictions: dict[str, list[BacktestPredictionPoint]] = {}
     ranked: list[RankedModel] = []
+    parameters_by_model = model_parameters or {}
 
     for model_id in selected_models:
         capability = MODEL_CAPABILITIES[model_id]
@@ -80,20 +85,47 @@ def run_holdout_backtest(
         predict_seconds = 0.0
         warnings: list[str] = []
         try:
+            logger.info(
+                "model run started target=%s model=%s frequency=%s train_points=%s test_size=%s horizon=%s isolated=%s",
+                series.targetColumn,
+                model_id,
+                series.frequency,
+                len(train),
+                test_size,
+                horizon,
+                should_isolate_model(model_id),
+            )
             if progress_callback:
                 progress_callback(ModelProgressEvent(modelId=model_id, stage="fitting"))
-            model = create_model(model_id)
-            fit_start = time.perf_counter()
-            model.fit([point.time for point in train], [point.value for point in train], series.frequency)
-            fit_seconds = time.perf_counter() - fit_start
-
-            if progress_callback:
-                progress_callback(
-                    ModelProgressEvent(modelId=model_id, stage="predicting", fitSeconds=fit_seconds)
+            train_times = [point.time for point in train]
+            train_values = [point.value for point in train]
+            model_params = parameters_by_model.get(model_id)
+            if should_isolate_model(model_id):
+                output = run_isolated_fit_predict(
+                    model_id,
+                    model_params,
+                    train_times,
+                    train_values,
+                    series.frequency,
+                    test_size,
                 )
-            predict_start = time.perf_counter()
-            output = model.predict(test_size)
-            predict_seconds = time.perf_counter() - predict_start
+                fit_seconds = output.fit_seconds
+                predict_seconds = output.predict_seconds
+            else:
+                model = create_model(model_id, model_params)
+                fit_start = time.perf_counter()
+                model.fit(train_times, train_values, series.frequency)
+                fit_seconds = time.perf_counter() - fit_start
+
+                if progress_callback:
+                    progress_callback(
+                        ModelProgressEvent(modelId=model_id, stage="predicting", fitSeconds=fit_seconds)
+                    )
+                predict_start = time.perf_counter()
+                output = model.predict(test_size)
+                predict_seconds = time.perf_counter() - predict_start
+            if should_isolate_model(model_id) and progress_callback:
+                progress_callback(ModelProgressEvent(modelId=model_id, stage="predicting", fitSeconds=fit_seconds))
             warnings.extend(output.warnings)
 
             predicted_values = [float(value) for value in output.predictions[:test_size]]
@@ -139,6 +171,13 @@ def run_holdout_backtest(
                     warnings=warnings,
                 )
             )
+            logger.info(
+                "model run completed target=%s model=%s fit_seconds=%.4f predict_seconds=%.4f",
+                series.targetColumn,
+                model_id,
+                fit_seconds,
+                predict_seconds,
+            )
             if progress_callback:
                 progress_callback(
                     ModelProgressEvent(
@@ -149,6 +188,15 @@ def run_holdout_backtest(
                     )
                 )
         except Exception as exc:
+            logger.exception(
+                "model run failed target=%s model=%s frequency=%s train_points=%s test_size=%s horizon=%s",
+                series.targetColumn,
+                model_id,
+                series.frequency,
+                len(train),
+                test_size,
+                horizon,
+            )
             ranked.append(
                 RankedModel(
                     modelId=model_id,

@@ -132,6 +132,7 @@ export interface ForecastRunRequest {
   horizon: number;
   testSize: number;
   selectedModels: string[];
+  modelParameters: Record<string, Record<string, number | string | boolean>>;
   missingValueStrategy: "drop" | "zero" | "ffill" | "interpolate";
   fillMissingTimeSteps: boolean;
   duplicateTimeStrategy: "mean" | "sum" | "first" | "last";

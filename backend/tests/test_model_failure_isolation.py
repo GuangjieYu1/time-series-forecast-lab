@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 
 import app.services.backtest_runner as backtest_runner
+from app.services.model_executor import IsolatedModelResult
 from app.schemas import Diagnostics
 from app.services.backtest_runner import run_holdout_backtest
 from app.services.series_builder import TimeSeriesData, TimeSeriesPoint
@@ -52,7 +54,7 @@ class PredictFailureModel:
 
 
 def test_fit_failure_does_not_fail_whole_backtest(monkeypatch):
-    def factory(model_id):
+    def factory(model_id, parameters=None):
         return FitFailureModel() if model_id == "naive" else WorkingModel()
 
     monkeypatch.setattr(backtest_runner, "create_model", factory)
@@ -65,7 +67,7 @@ def test_fit_failure_does_not_fail_whole_backtest(monkeypatch):
 
 
 def test_predict_failure_does_not_fail_whole_backtest(monkeypatch):
-    def factory(model_id):
+    def factory(model_id, parameters=None):
         return PredictFailureModel() if model_id == "naive" else WorkingModel()
 
     monkeypatch.setattr(backtest_runner, "create_model", factory)
@@ -74,3 +76,44 @@ def test_predict_failure_does_not_fail_whole_backtest(monkeypatch):
     assert failed.status == "failed"
     assert "predict exploded" in (failed.error or "")
     assert result.recommendedModelId == "moving_average"
+
+
+def test_isolated_model_failure_does_not_fail_whole_backtest(monkeypatch, caplog):
+    def factory(model_id, parameters=None):
+        return WorkingModel()
+
+    def isolated_runner(*args, **kwargs):
+        raise RuntimeError("isolated model stopped unexpectedly")
+
+    monkeypatch.setattr(backtest_runner, "create_model", factory)
+    monkeypatch.setattr(backtest_runner, "should_isolate_model", lambda model_id: model_id == "xgboost")
+    monkeypatch.setattr(backtest_runner, "run_isolated_fit_predict", isolated_runner)
+
+    caplog.set_level(logging.ERROR)
+    result = run_holdout_backtest(series(), ["moving_average", "xgboost"], horizon=5, test_size=5)
+    assert result.recommendedModelId == "moving_average"
+    failed = [model for model in result.rankedModels if model.modelId == "xgboost"][0]
+    assert failed.status == "failed"
+    assert "isolated model stopped unexpectedly" in (failed.error or "")
+    assert "model run failed" in caplog.text
+    assert "model=xgboost" in caplog.text
+
+
+def test_isolated_model_success_is_scored(monkeypatch):
+    def isolated_runner(*args, **kwargs):
+        return IsolatedModelResult(
+            predictions=[35.0, 36.0, 37.0, 38.0, 39.0],
+            lower=[],
+            upper=[],
+            warnings=["isolated"],
+            fit_seconds=0.1,
+            predict_seconds=0.2,
+        )
+
+    monkeypatch.setattr(backtest_runner, "should_isolate_model", lambda model_id: model_id == "xgboost")
+    monkeypatch.setattr(backtest_runner, "run_isolated_fit_predict", isolated_runner)
+
+    result = run_holdout_backtest(series(), ["xgboost"], horizon=5, test_size=5)
+    assert result.rankedModels[0].modelId == "xgboost"
+    assert result.rankedModels[0].status == "success"
+    assert result.rankedModels[0].warnings == ["isolated"]

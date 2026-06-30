@@ -8,8 +8,8 @@ import {
 export function DataTable<T>({ data, columns }: { data: T[]; columns: ColumnDef<T>[] }) {
   const table = useReactTable({ data, columns, getCoreRowModel: getCoreRowModel() });
   return (
-    <div className="overflow-auto rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950">
-      <table className="min-w-full text-left text-sm">
+    <div className="max-h-[560px] overflow-auto rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950">
+      <table className="min-w-max w-full text-left text-sm">
         <thead className="bg-slate-100 text-xs uppercase text-slate-500 dark:bg-slate-900 dark:text-slate-400">
           {table.getHeaderGroups().map((headerGroup) => (
             <tr key={headerGroup.id}>

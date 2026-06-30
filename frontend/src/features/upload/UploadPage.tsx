@@ -13,6 +13,11 @@ function formatValue(value: unknown) {
   return String(value);
 }
 
+function formatFileSize(bytes: number) {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${Math.round(bytes / 1024)} KB`;
+}
+
 function typeLabel(column: ColumnProfile) {
   if (column.inferredType === "datetime") return "时间列";
   if (column.inferredType === "number") return "数值列";
@@ -44,28 +49,46 @@ function PreviewTable({ sheet }: { sheet: SheetPreview }) {
 }
 
 function ColumnProfilePanel({ columns }: { columns: ColumnProfile[] }) {
+  const summary = useMemo(() => {
+    const counts = columns.reduce<Record<string, number>>((acc, column) => {
+      acc[column.inferredType] = (acc[column.inferredType] ?? 0) + 1;
+      return acc;
+    }, {});
+    return [
+      `时间 ${counts.datetime ?? 0}`,
+      `数值 ${counts.number ?? 0}`,
+      `文本 ${counts.string ?? 0}`
+    ].join(" / ");
+  }, [columns]);
+
   return (
-    <div className="space-y-3">
-      {columns.map((column) => (
-        <div key={column.name} className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-[#151b2e]">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="truncate font-medium text-slate-900 dark:text-white">{column.name}</div>
-              <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                非空 {column.nonNullCountInPreview} / 空值 {column.nullCountInPreview}
+    <div className="overflow-hidden rounded-xl border border-slate-200 dark:border-white/10">
+      <div className="flex flex-col gap-1 border-b border-slate-200 bg-white px-3 py-2 text-xs dark:border-white/10 dark:bg-[#151b2e]">
+        <div className="font-semibold text-slate-900 dark:text-white">字段 {columns.length} 列</div>
+        <div className="text-slate-500 dark:text-slate-400">{summary}</div>
+      </div>
+      <div className="max-h-[640px] divide-y divide-slate-100 overflow-y-auto dark:divide-white/10">
+        {columns.map((column) => (
+          <div key={column.name} className="p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="truncate font-medium text-slate-900 dark:text-white">{column.name}</div>
+                <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  非空 {column.nonNullCountInPreview} / 空值 {column.nullCountInPreview}
+                </div>
               </div>
+              <span className="shrink-0"><Badge tone={typeTone(column)}>{typeLabel(column)}</Badge></span>
             </div>
-            <Badge tone={typeTone(column)}>{typeLabel(column)}</Badge>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {column.sampleValues.slice(0, 3).map((value, index) => (
+                <span key={index} className="max-w-[9rem] truncate rounded-lg bg-slate-100 px-2 py-1 text-xs text-slate-600 dark:bg-[#0b1020] dark:text-slate-300">
+                  {formatValue(value)}
+                </span>
+              ))}
+            </div>
           </div>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {column.sampleValues.slice(0, 3).map((value, index) => (
-              <span key={index} className="max-w-full truncate rounded-lg bg-slate-100 px-2 py-1 text-xs text-slate-600 dark:bg-[#0b1020] dark:text-slate-300">
-                {formatValue(value)}
-              </span>
-            ))}
-          </div>
-        </div>
-      ))}
+        ))}
+      </div>
     </div>
   );
 }
@@ -115,8 +138,8 @@ export function UploadPage() {
       <ErrorBanner message={error} />
       {loading ? <LoadingBlock label="正在由后端解析文件预览..." /> : null}
 
-      <div className="grid gap-6 xl:grid-cols-[1fr_360px]">
-        <section className={`${surface.workbench} p-6`}>
+      <div className="grid min-w-0 gap-6 2xl:grid-cols-[minmax(0,1fr)_380px]">
+        <section className={`${surface.workbench} min-w-0 overflow-hidden p-6`}>
           <div className="rounded-[28px] border border-dashed border-indigo-300 bg-gradient-to-br from-indigo-50 to-cyan-50 p-8 text-center dark:border-indigo-300/30 dark:from-indigo-400/10 dark:to-cyan-400/10">
             <div className="mx-auto max-w-2xl">
               <Badge tone="info">支持 CSV / XLSX / XLS</Badge>
@@ -134,11 +157,11 @@ export function UploadPage() {
           {upload && selectedSheet ? (
             <div className="mt-6 space-y-5">
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <div className="text-sm font-semibold text-slate-950 dark:text-white">{upload.fileName}</div>
-                  <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">{Math.round(upload.fileSize / 1024)} KB / {upload.sheets.length} 个 Sheet</div>
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold text-slate-950 dark:text-white">{upload.fileName}</div>
+                  <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">{formatFileSize(upload.fileSize)} / {upload.sheets.length} 个 Sheet / {selectedSheet.columns.length} 列</div>
                 </div>
-                <button className={controls.primaryButton} onClick={() => navigate("/forecast")}>
+                <button className={`${controls.primaryButton} shrink-0`} onClick={() => navigate("/forecast")}>
                   进入预测实验
                 </button>
               </div>
@@ -160,7 +183,7 @@ export function UploadPage() {
                 ))}
               </div>
 
-              <SectionCard title="前 100 行预览" description="用于确认字段和样例值，前端不会完整解析大文件。">
+              <SectionCard className="min-w-0 overflow-hidden" title="前 100 行预览" description="用于确认字段和样例值，前端不会完整解析大文件。">
                 <PreviewTable sheet={selectedSheet} />
               </SectionCard>
             </div>
@@ -171,7 +194,7 @@ export function UploadPage() {
           )}
         </section>
 
-        <aside className="space-y-4">
+        <aside className="min-w-0 space-y-4 2xl:sticky 2xl:top-28 2xl:self-start">
           <StatCard label="解析策略" value="后端流式" hint="CSV 流式读取，Excel 按 Sheet 预览" tone="info" />
           <StatCard label="预览上限" value="100 行" hint="控制浏览器内存和渲染压力" tone="good" />
           <StatCard label="存储策略" value="不落库" hint="原始文件不会写入实验历史" tone="warn" />

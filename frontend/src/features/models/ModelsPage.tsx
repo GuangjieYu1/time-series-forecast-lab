@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import type { ELK, ElkExtendedEdge, ElkNode, ElkPort } from "elkjs/lib/elk.bundled";
 import { fetchDevice, fetchModels } from "../../shared/api/client";
 import { EmptyState, ErrorBanner, LoadingBlock } from "../../shared/components/Status";
 import { Badge, controls, PageHeader, SectionCard, StatCard, surface, Tabs } from "../../shared/components/Ui";
@@ -44,15 +45,40 @@ interface GraphEdge {
   recommended?: boolean;
 }
 
+type ElkGraphMode = "timeline" | "tree";
+type PortSide = "EAST" | "WEST" | "NORTH" | "SOUTH";
+
+interface LayoutPort {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  kind: "source" | "target";
+}
+
+interface LayoutNode extends VisualNode {
+  ports: LayoutPort[];
+}
+
+interface LayoutEdge {
+  id: string;
+  edge: GraphEdge;
+  paths: string[];
+}
+
+interface ElkGraphLayout {
+  nodes: LayoutNode[];
+  edges: LayoutEdge[];
+  width: number;
+  height: number;
+}
+
 const timelineLanes = ["基线模型", "统计模型", "机器学习", "深度学习", "Transformer", "基础模型"];
 const timelineYears = [1900, 1957, 1960, 1970, 2001, 2016, 2017, 2019, 2021, 2022, 2023, 2024];
 const recommendedPath = new Set(["seasonal_naive", "ets", "prophet", "lightgbm", "patchtst", "timesfm"]);
-const timelineLeft = 178;
-const timelineTop = 96;
-const timelineYearGap = 156;
-const timelineLaneGap = 200;
-const timelineWidth = 2160;
-const timelineHeight = 1280;
+const graphInset = 36;
+let elkInstance: ELK | null = null;
 
 const visualNodes: VisualNodeBase[] = [
   { id: "moving_average", name: "Moving Average", category: "Baseline", lane: "基线模型", year: 1900, tier: "normal", x: 150, y: 54, summary: "早期平滑思想，用最近窗口平均值构造稳定基线。" },
@@ -112,6 +138,29 @@ const graphEdges: GraphEdge[] = [
   { from: "patchtst", to: "lag_llama" }
 ];
 
+const techTreeEdges: GraphEdge[] = [
+  { from: "moving_average", to: "lag_features" },
+  { from: "naive", to: "arima" },
+  { from: "seasonal_naive", to: "ets", recommended: true },
+  { from: "arima", to: "sarima" },
+  { from: "ets", to: "theta" },
+  { from: "ets", to: "tbats" },
+  { from: "ets", to: "prophet", recommended: true },
+  { from: "lag_features", to: "random_forest" },
+  { from: "lag_features", to: "xgboost" },
+  { from: "lag_features", to: "lightgbm" },
+  { from: "lag_features", to: "catboost" },
+  { from: "random_forest", to: "nbeats" },
+  { from: "xgboost", to: "deepar" },
+  { from: "lightgbm", to: "patchtst", recommended: true },
+  { from: "nbeats", to: "nhits" },
+  { from: "deepar", to: "tft" },
+  { from: "patchtst", to: "timesfm", recommended: true },
+  { from: "patchtst", to: "chronos" },
+  { from: "patchtst", to: "moirai" },
+  { from: "patchtst", to: "lag_llama" }
+];
+
 const nodeSize: Record<NodeTier, { width: number; height: number }> = {
   core: { width: 176, height: 96 },
   normal: { width: 150, height: 82 },
@@ -119,9 +168,9 @@ const nodeSize: Record<NodeTier, { width: number; height: number }> = {
 };
 
 const timelineNodeSize: Record<NodeTier, { width: number; height: number }> = {
-  core: { width: 138, height: 58 },
-  normal: { width: 124, height: 52 },
-  small: { width: 106, height: 46 }
+  core: { width: 148, height: 72 },
+  normal: { width: 138, height: 68 },
+  small: { width: 120, height: 62 }
 };
 
 function modelIcon(model: ModelCapability | null, node?: VisualNode) {
@@ -193,18 +242,155 @@ function isPlannedNode(node: VisualNode | undefined) {
   return !node?.model || node.status === "planned" || !node.enabledInMvp;
 }
 
-function nodeCenter(node: VisualNode, sizeMap = nodeSize) {
-  const size = sizeMap[node.tier];
-  return { x: node.x + size.width / 2, y: node.y + size.height / 2 };
-}
-
-function nodePort(node: VisualNode, side: "top" | "bottom", sizeMap = nodeSize) {
-  const size = sizeMap[node.tier];
-  return { x: node.x + size.width / 2, y: side === "top" ? node.y : node.y + size.height };
-}
-
 function edgeKey(edge: GraphEdge) {
   return `${edge.from}->${edge.to}`;
+}
+
+function layoutOrder(node: VisualNode) {
+  const laneIndex = timelineLanes.indexOf(node.lane);
+  const yearIndex = timelineYears.indexOf(node.year);
+  return `${Math.max(yearIndex, 0).toString().padStart(2, "0")}-${Math.max(laneIndex, 0).toString().padStart(2, "0")}-${node.id}`;
+}
+
+function portId(nodeId: string, kind: "source" | "target", index: number) {
+  return `${nodeId}__${kind}__${index}`;
+}
+
+function edgePath(section: NonNullable<ElkExtendedEdge["sections"]>[number]) {
+  const points = [section.startPoint, ...(section.bendPoints ?? []), section.endPoint];
+  return points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
+}
+
+function buildPorts(nodeId: string, edges: GraphEdge[], sourceSide: PortSide, targetSide: PortSide): ElkPort[] {
+  const ports: ElkPort[] = [];
+  edges.forEach((edge, index) => {
+    if (edge.from === nodeId) {
+      ports.push({
+        id: portId(nodeId, "source", index),
+        width: 8,
+        height: 8,
+        layoutOptions: { "elk.port.side": sourceSide }
+      });
+    }
+    if (edge.to === nodeId) {
+      ports.push({
+        id: portId(nodeId, "target", index),
+        width: 8,
+        height: 8,
+        layoutOptions: { "elk.port.side": targetSide }
+      });
+    }
+  });
+  return ports;
+}
+
+function layoutPorts(ports: ElkPort[] | undefined): LayoutPort[] {
+  return (ports ?? []).map((port) => ({
+    id: port.id,
+    x: port.x ?? 0,
+    y: port.y ?? 0,
+    width: port.width ?? 8,
+    height: port.height ?? 8,
+    kind: port.id.includes("__source__") ? "source" : "target"
+  }));
+}
+
+async function getElk() {
+  if (!elkInstance) {
+    const { default: ElkConstructor } = await import("elkjs/lib/elk.bundled");
+    elkInstance = new ElkConstructor();
+  }
+  return elkInstance;
+}
+
+async function layoutWithElk(nodes: VisualNode[], edges: GraphEdge[], mode: ElkGraphMode): Promise<ElkGraphLayout> {
+  const elk = await getElk();
+  const sizeMap = mode === "timeline" ? timelineNodeSize : nodeSize;
+  const sourceSide: PortSide = mode === "timeline" ? "EAST" : "SOUTH";
+  const targetSide: PortSide = mode === "timeline" ? "WEST" : "NORTH";
+  const sortedNodes = [...nodes].sort((left, right) => layoutOrder(left).localeCompare(layoutOrder(right)));
+  const children: ElkNode[] = sortedNodes.map((node) => {
+    const size = sizeMap[node.tier];
+    return {
+      id: node.id,
+      width: size.width,
+      height: size.height,
+      ports: buildPorts(node.id, edges, sourceSide, targetSide),
+      layoutOptions: {
+        "elk.portConstraints": "FIXED_SIDE",
+        "elk.nodeLabels.placement": "INSIDE CENTER"
+      }
+    };
+  });
+
+  const elkEdges: ElkExtendedEdge[] = edges.map((edge, index) => ({
+    id: edgeKey(edge),
+    sources: [portId(edge.from, "source", index)],
+    targets: [portId(edge.to, "target", index)]
+  }));
+
+  const baseOptions: Record<string, string> =
+    mode === "timeline"
+      ? {
+          "elk.algorithm": "layered",
+          "elk.direction": "RIGHT",
+          "elk.edgeRouting": "ORTHOGONAL",
+          "elk.spacing.nodeNode": "44",
+          "elk.spacing.edgeNode": "18",
+          "elk.layered.spacing.nodeNodeBetweenLayers": "88",
+          "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",
+          "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES",
+          "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX"
+        }
+      : {
+          "elk.algorithm": "mrtree",
+          "elk.direction": "DOWN",
+          "elk.edgeRouting": "POLYLINE",
+          "elk.spacing.nodeNode": "38",
+          "elk.mrtree.edgeRoutingMode": "AVOID_OVERLAP"
+        };
+
+  const graphInput: ElkNode = {
+    id: `${mode}-model-graph`,
+    children,
+    edges: elkEdges,
+    layoutOptions: baseOptions
+  };
+  const graph = await elk.layout(graphInput);
+
+  const childrenById = new Map((graph.children ?? []).map((node) => [node.id, node]));
+  const edgeMeta = new Map(edges.map((edge) => [edgeKey(edge), edge]));
+  const layoutNodes = sortedNodes.map((node) => {
+    const laidOut = childrenById.get(node.id);
+    return {
+      ...node,
+      x: laidOut?.x ?? 0,
+      y: laidOut?.y ?? 0,
+      ports: layoutPorts(laidOut?.ports)
+    };
+  });
+  const layoutEdges = (graph.edges ?? []).map((edge) => ({
+    id: edge.id,
+    edge: edgeMeta.get(edge.id) ?? { from: "", to: "" },
+    paths: (edge.sections ?? []).map(edgePath)
+  }));
+  const extents = layoutNodes.reduce(
+    (acc, node) => {
+      const size = sizeMap[node.tier];
+      return {
+        width: Math.max(acc.width, node.x + size.width),
+        height: Math.max(acc.height, node.y + size.height)
+      };
+    },
+    { width: graph.width ?? 0, height: graph.height ?? 0 }
+  );
+
+  return {
+    nodes: layoutNodes,
+    edges: layoutEdges,
+    width: Math.max(mode === "timeline" ? 1320 : 960, extents.width + graphInset * 2),
+    height: Math.max(mode === "timeline" ? 680 : 760, extents.height + graphInset * 2)
+  };
 }
 
 function collectRelated(nodeId: string | null, edges: GraphEdge[]) {
@@ -236,17 +422,6 @@ function collectRelated(nodeId: string | null, edges: GraphEdge[]) {
   walkForward(nodeId);
   walkBackward(nodeId);
   return { nodeIds, edgeIds };
-}
-
-function curvePath(from: { x: number; y: number }, to: { x: number; y: number }) {
-  if (Math.abs(to.y - from.y) > Math.abs(to.x - from.x) * 0.75) {
-    const dy = Math.max(82, Math.abs(to.y - from.y) * 0.46);
-    const bend = Math.min(54, Math.abs(to.x - from.x) * 0.12);
-    return `M ${from.x} ${from.y} C ${from.x + bend} ${from.y + dy}, ${to.x - bend} ${to.y - dy}, ${to.x} ${to.y}`;
-  }
-  const dx = Math.max(80, Math.abs(to.x - from.x) * 0.48);
-  const sway = Math.min(84, Math.abs(to.y - from.y) * 0.22);
-  return `M ${from.x} ${from.y} C ${from.x + dx} ${from.y + sway}, ${to.x - dx} ${to.y - sway}, ${to.x} ${to.y}`;
 }
 
 function ModelCardArticle({ model }: { model: ModelCapability }) {
@@ -320,14 +495,16 @@ function MapNode({
   relatedIds,
   onHover,
   onOpen,
-  compact = false
+  compact = false,
+  showHandles = false
 }: {
-  node: VisualNode;
+  node: VisualNode & { ports?: LayoutPort[] };
   hoveredId: string | null;
   relatedIds: Set<string>;
   onHover: (nodeId: string | null) => void;
   onOpen: (node: VisualNode) => void;
   compact?: boolean;
+  showHandles?: boolean;
 }) {
   const size = (compact ? timelineNodeSize : nodeSize)[node.tier];
   const related = !hoveredId || relatedIds.has(node.id);
@@ -345,14 +522,29 @@ function MapNode({
       className={`group absolute z-20 rounded-2xl border text-left backdrop-blur-xl transition duration-200 ${nodeStatusClass(node)} ${
         recommended ? "ring-1 ring-violet-300/60 shadow-[0_0_34px_rgba(129,140,248,0.35)]" : ""
       } ${related ? "opacity-100" : "opacity-30 saturate-50"}`}
-      style={{ left: node.x, top: node.y, width: size.width, minHeight: size.height }}
+      style={{ left: node.x, top: node.y, width: size.width, height: size.height }}
     >
+      {showHandles
+        ? node.ports?.map((port) => (
+            <span
+              key={port.id}
+              className={`pointer-events-none absolute z-30 h-2.5 w-2.5 rounded-full border shadow-[0_0_12px_rgba(34,211,238,0.55)] ${
+                port.kind === "source" ? "border-cyan-200 bg-cyan-300" : "border-violet-200 bg-violet-300"
+              }`}
+              style={{
+                left: port.x - 5,
+                top: port.y - 5
+              }}
+            />
+          ))
+        : null}
       <div className={`${compact ? "p-2.5" : node.tier === "small" ? "p-2.5" : "p-3.5"}`}>
         <div className="flex items-start justify-between gap-2">
           <div className={`font-semibold leading-tight ${tierClass}`}>{node.name}</div>
           <span className="rounded-full border border-white/10 bg-white/8 px-1.5 py-0.5 text-[10px] font-semibold text-slate-200">{modelIcon(node.model, node)}</span>
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          <span className="rounded-full border border-white/10 bg-white/8 px-2 py-0.5 text-[10px] text-slate-200">{node.year}</span>
           <span className="rounded-full border border-white/10 bg-white/8 px-2 py-0.5 text-[10px] text-slate-200">{statusText(node.status)}</span>
           {recommended ? <span className="rounded-full bg-violet-400/20 px-2 py-0.5 text-[10px] text-violet-100">主干</span> : null}
         </div>
@@ -430,13 +622,48 @@ function ModelDetailDrawer({ node, onClose }: { node: VisualNode | null; onClose
   );
 }
 
-function TechTreeView({ nodes, onOpen }: { nodes: VisualNode[]; onOpen: (node: VisualNode) => void }) {
+function ElkGraphView({
+  title,
+  description,
+  nodes,
+  edges,
+  mode,
+  onOpen
+}: {
+  title: string;
+  description: string;
+  nodes: VisualNode[];
+  edges: GraphEdge[];
+  mode: ElkGraphMode;
+  onOpen: (node: VisualNode) => void;
+}) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
-  const nodeMap = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
-  const related = useMemo(() => collectRelated(hoveredId, graphEdges), [hoveredId]);
+  const [layout, setLayout] = useState<ElkGraphLayout | null>(null);
+  const [layoutError, setLayoutError] = useState<string | null>(null);
+  const related = useMemo(() => collectRelated(hoveredId, edges), [hoveredId, edges]);
+  const nodeMap = useMemo(() => new Map((layout?.nodes ?? nodes).map((node) => [node.id, node])), [layout?.nodes, nodes]);
+  const routeGradientId = `${mode}Route`;
+  const routeGlowId = `${mode}Glow`;
+  const arrowId = `${mode}Arrow`;
+
+  useEffect(() => {
+    let mounted = true;
+    setLayout(null);
+    setLayoutError(null);
+    void layoutWithElk(nodes, edges, mode)
+      .then((result) => {
+        if (mounted) setLayout(result);
+      })
+      .catch((err) => {
+        if (mounted) setLayoutError(err instanceof Error ? err.message : "ELK 布局计算失败。");
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [edges, mode, nodes]);
 
   return (
-    <SectionCard title="模型科技树" description="多分支、汇聚和主干路线展示。hover 节点高亮上游和下游路径，点击节点打开详情。">
+    <SectionCard title={title} description={description}>
       <div
         className="relative -mx-4 touch-pan-x overflow-auto rounded-[22px] border border-cyan-300/10 bg-[#08111f] p-3 shadow-[0_28px_120px_rgba(2,8,23,0.45)] sm:mx-0 sm:rounded-[28px] sm:p-4"
         style={{
@@ -447,9 +674,8 @@ function TechTreeView({ nodes, onOpen }: { nodes: VisualNode[]; onOpen: (node: V
       >
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3 px-2">
           <div>
-            <div className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">AI Model Roadmap</div>
-            <div className="mt-1 text-lg font-semibold text-white">企业级时间序列模型技术地图</div>
-            <div className="mt-1 text-xs text-slate-400 sm:hidden">横向滑动查看全图，点击节点查看详情。</div>
+            <div className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">{mode === "timeline" ? "ELKjs Multiple Handles" : "ELKjs Tree"}</div>
+            <div className="mt-1 text-lg font-semibold text-white">{mode === "timeline" ? "多端口模型演化图" : "自上而下模型科技树"}</div>
           </div>
           <div className="flex flex-wrap gap-2 text-xs text-slate-300">
             <span className="inline-flex items-center gap-1.5"><span className="h-2 w-6 rounded-full bg-gradient-to-r from-cyan-300 to-violet-400 shadow-[0_0_12px_rgba(129,140,248,0.8)]" />推荐主干</span>
@@ -460,145 +686,93 @@ function TechTreeView({ nodes, onOpen }: { nodes: VisualNode[]; onOpen: (node: V
           </div>
         </div>
 
-        <div className="relative h-[960px] min-w-[1280px]">
-          <svg className="absolute inset-0 h-full w-full" viewBox="0 0 1280 960" preserveAspectRatio="none">
-            <defs>
-              <linearGradient id="recommendedStroke" x1="0" x2="1" y1="0" y2="0">
-                <stop offset="0%" stopColor="#22D3EE" />
-                <stop offset="100%" stopColor="#A78BFA" />
-              </linearGradient>
-              <filter id="routeGlow" x="-50%" y="-50%" width="200%" height="200%">
-                <feGaussianBlur stdDeviation="4" result="coloredBlur" />
-                <feMerge>
-                  <feMergeNode in="coloredBlur" />
-                  <feMergeNode in="SourceGraphic" />
-                </feMerge>
-              </filter>
-            </defs>
-            {graphEdges.map((edge) => {
-              const from = nodeMap.get(edge.from);
-              const to = nodeMap.get(edge.to);
-              if (!from || !to) return null;
-              const key = edgeKey(edge);
-              const isRelated = !hoveredId || related.edgeIds.has(key);
-              const planned = isPlannedNode(from) || isPlannedNode(to);
-              return (
-                <path
-                  key={key}
-                  d={curvePath(nodePort(from, "bottom"), nodePort(to, "top"))}
-                  fill="none"
-                  stroke={edge.recommended ? "url(#recommendedStroke)" : planned ? "rgba(148,163,184,0.34)" : "rgba(125,211,252,0.28)"}
-                  strokeWidth={edge.recommended ? (isRelated ? 4.8 : 3.2) : isRelated ? 2.2 : 1.2}
-                  strokeDasharray={planned && !edge.recommended ? "8 8" : undefined}
-                  opacity={isRelated ? (edge.recommended ? 0.98 : planned ? 0.42 : 0.58) : 0.1}
-                  filter={edge.recommended && isRelated ? "url(#routeGlow)" : undefined}
-                />
-              );
-            })}
-          </svg>
+        {layoutError ? <ErrorBanner message={layoutError} /> : null}
+        {!layout && !layoutError ? <LoadingBlock label="正在计算 ELK 布局..." /> : null}
+        {layout ? (
+          <div className="relative" style={{ minWidth: layout.width, height: layout.height }}>
+            <svg className="absolute inset-0 h-full w-full" viewBox={`0 0 ${layout.width} ${layout.height}`} preserveAspectRatio="none">
+              <defs>
+                <linearGradient id={routeGradientId} x1="0" x2="1" y1="0" y2="0">
+                  <stop offset="0%" stopColor="#22D3EE" />
+                  <stop offset="100%" stopColor="#A78BFA" />
+                </linearGradient>
+                <filter id={routeGlowId} x="-50%" y="-50%" width="200%" height="200%">
+                  <feGaussianBlur stdDeviation="4" result="coloredBlur" />
+                  <feMerge>
+                    <feMergeNode in="coloredBlur" />
+                    <feMergeNode in="SourceGraphic" />
+                  </feMerge>
+                </filter>
+                <marker id={arrowId} markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto" markerUnits="strokeWidth">
+                  <path d="M 0 0 L 8 4 L 0 8 z" fill="#67E8F9" opacity="0.78" />
+                </marker>
+              </defs>
+              <g transform={`translate(${graphInset} ${graphInset})`}>
+                {layout.edges.map((layoutEdge) => {
+                  const key = layoutEdge.id;
+                  const isRelated = !hoveredId || related.edgeIds.has(key);
+                  const from = nodeMap.get(layoutEdge.edge.from);
+                  const to = nodeMap.get(layoutEdge.edge.to);
+                  const planned = isPlannedNode(from) || isPlannedNode(to);
+                  return layoutEdge.paths.map((path, index) => (
+                    <path
+                      key={`${key}:${index}`}
+                      d={path}
+                      fill="none"
+                      markerEnd={isRelated ? `url(#${arrowId})` : undefined}
+                      stroke={layoutEdge.edge.recommended ? `url(#${routeGradientId})` : planned ? "rgba(148,163,184,0.34)" : "rgba(125,211,252,0.28)"}
+                      strokeWidth={layoutEdge.edge.recommended ? (isRelated ? 4.6 : 3) : isRelated ? 2.1 : 1.1}
+                      strokeDasharray={planned && !layoutEdge.edge.recommended ? "8 8" : undefined}
+                      opacity={isRelated ? (layoutEdge.edge.recommended ? 0.98 : planned ? 0.44 : 0.62) : 0.1}
+                      filter={layoutEdge.edge.recommended && isRelated ? `url(#${routeGlowId})` : undefined}
+                    />
+                  ));
+                })}
+              </g>
+            </svg>
 
-          {nodes.map((node) => (
-            <MapNode key={node.id} node={node} hoveredId={hoveredId} relatedIds={related.nodeIds} onHover={setHoveredId} onOpen={onOpen} />
-          ))}
-        </div>
+            {layout.nodes.map((node) => (
+              <MapNode
+                key={node.id}
+                node={{ ...node, x: node.x + graphInset, y: node.y + graphInset }}
+                hoveredId={hoveredId}
+                relatedIds={related.nodeIds}
+                onHover={setHoveredId}
+                onOpen={onOpen}
+                compact={mode === "timeline"}
+                showHandles
+              />
+            ))}
+          </div>
+        ) : null}
       </div>
     </SectionCard>
   );
 }
 
-function timelinePosition(node: VisualNode, laneOffsets: Map<string, number>) {
-  const yearIndex = timelineYears.indexOf(node.year);
-  const x = timelineLeft + Math.max(yearIndex, 0) * timelineYearGap + (laneOffsets.get(`${node.lane}:${node.year}:${node.id}:x`) ?? 0);
-  const laneIndex = timelineLanes.indexOf(node.lane);
-  const y = timelineTop + Math.max(laneIndex, 0) * timelineLaneGap + (laneOffsets.get(`${node.lane}:${node.year}:${node.id}:y`) ?? 0);
-  return { ...node, x, y };
+function TechTreeView({ nodes, onOpen }: { nodes: VisualNode[]; onOpen: (node: VisualNode) => void }) {
+  return (
+    <ElkGraphView
+      title="模型科技树"
+      description="ELKjs Tree 自上而下排列主路线和分支节点，点击节点打开详情。"
+      nodes={nodes}
+      edges={techTreeEdges}
+      mode="tree"
+      onOpen={onOpen}
+    />
+  );
 }
 
 function TimelineView({ nodes, onOpen }: { nodes: VisualNode[]; onOpen: (node: VisualNode) => void }) {
-  const [hoveredId, setHoveredId] = useState<string | null>(null);
-  const laneOffsets = useMemo(() => {
-    const counters = new Map<string, number>();
-    const offsets = new Map<string, number>();
-    nodes.forEach((node) => {
-      const key = `${node.lane}:${node.year}`;
-      const index = counters.get(key) ?? 0;
-      counters.set(key, index + 1);
-      const direction = index % 2 === 0 ? 1 : -1;
-      offsets.set(`${node.lane}:${node.year}:${node.id}:x`, index === 0 ? 0 : direction * 18);
-      offsets.set(`${node.lane}:${node.year}:${node.id}:y`, index * 68);
-    });
-    return offsets;
-  }, [nodes]);
-  const positioned = useMemo(() => nodes.map((node) => timelinePosition(node, laneOffsets)), [nodes, laneOffsets]);
-  const nodeMap = useMemo(() => new Map(positioned.map((node) => [node.id, node])), [positioned]);
-  const related = useMemo(() => collectRelated(hoveredId, graphEdges), [hoveredId]);
-
   return (
-    <SectionCard title="模型发展时间线" description="多泳道呈现模型演化，节点按年份落位，路线之间用曲线连接。">
-      <div className="-mx-4 touch-pan-x overflow-auto rounded-[22px] border border-cyan-300/10 bg-[#08111f] p-3 text-slate-100 shadow-[0_28px_120px_rgba(2,8,23,0.45)] sm:mx-0 sm:rounded-[28px] sm:p-4">
-        <div className="mb-3 px-2 text-xs text-slate-400 sm:hidden">横向滑动查看年份轴；同年模型已错位展示，点击节点查看详情。</div>
-        <div className="relative h-[1280px] min-w-[2160px]">
-          <svg className="absolute inset-0 h-full w-full" viewBox={`0 0 ${timelineWidth} ${timelineHeight}`} preserveAspectRatio="none">
-            <defs>
-              <linearGradient id="timelineRoute" x1="0" x2="1" y1="0" y2="0">
-                <stop offset="0%" stopColor="#22D3EE" />
-                <stop offset="100%" stopColor="#818CF8" />
-              </linearGradient>
-              <filter id="timelineGlow" x="-50%" y="-50%" width="200%" height="200%">
-                <feGaussianBlur stdDeviation="3.5" result="coloredBlur" />
-                <feMerge>
-                  <feMergeNode in="coloredBlur" />
-                  <feMergeNode in="SourceGraphic" />
-                </feMerge>
-              </filter>
-            </defs>
-            {timelineYears.map((year, index) => {
-              const x = timelineLeft + index * timelineYearGap + 58;
-              return (
-                <g key={year}>
-                  <line x1={x} x2={x} y1={48} y2={1236} stroke="rgba(148,163,184,0.09)" />
-                  <text x={x} y={32} textAnchor="middle" fill="#94A3B8" fontSize="12" fontWeight="600">{year}</text>
-                </g>
-              );
-            })}
-            {timelineLanes.map((lane, index) => {
-              const y = timelineTop + index * timelineLaneGap;
-              return <line key={lane} x1={20} x2={2110} y1={y + 76} y2={y + 76} stroke="rgba(148,163,184,0.09)" />;
-            })}
-            {graphEdges.map((edge) => {
-              const from = nodeMap.get(edge.from);
-              const to = nodeMap.get(edge.to);
-              if (!from || !to) return null;
-              const key = edgeKey(edge);
-              const isRelated = !hoveredId || related.edgeIds.has(key);
-              const planned = isPlannedNode(from) || isPlannedNode(to);
-              return (
-                <path
-                  key={key}
-                  d={curvePath(nodeCenter(from, timelineNodeSize), nodeCenter(to, timelineNodeSize))}
-                  fill="none"
-                  stroke={edge.recommended ? "url(#timelineRoute)" : planned ? "rgba(148,163,184,0.30)" : "rgba(125,211,252,0.24)"}
-                  strokeWidth={edge.recommended ? (isRelated ? 4 : 2.8) : isRelated ? 1.8 : 1}
-                  strokeDasharray={planned && !edge.recommended ? "7 8" : undefined}
-                  opacity={isRelated ? (edge.recommended ? 0.98 : 0.48) : 0.1}
-                  filter={edge.recommended && isRelated ? "url(#timelineGlow)" : undefined}
-                />
-              );
-            })}
-          </svg>
-
-          {timelineLanes.map((lane, index) => (
-            <div key={lane} className="absolute left-4 flex h-16 w-32 items-center rounded-2xl border border-white/10 bg-white/5 px-3 text-sm font-semibold text-slate-200" style={{ top: timelineTop - 4 + index * timelineLaneGap }}>
-              {lane}
-            </div>
-          ))}
-
-          {positioned.map((node) => (
-            <MapNode key={node.id} node={node} hoveredId={hoveredId} relatedIds={related.nodeIds} onHover={setHoveredId} onOpen={onOpen} compact />
-          ))}
-        </div>
-      </div>
-    </SectionCard>
+    <ElkGraphView
+      title="模型发展时间线"
+      description="ELKjs Multiple Handles 使用独立输入/输出端口呈现模型依赖和演化关系。"
+      nodes={nodes}
+      edges={graphEdges}
+      mode="timeline"
+      onOpen={onOpen}
+    />
   );
 }
 

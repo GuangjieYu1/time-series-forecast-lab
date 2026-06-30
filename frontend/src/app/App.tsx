@@ -161,9 +161,9 @@ function TopStatusBar({ dark, onToggle, mobileOpen, onMenuToggle }: { dark: bool
   );
 
   return (
-    <header className="sticky top-0 z-30 px-3 py-3 backdrop-blur-2xl sm:px-4 sm:py-4 lg:pl-80">
-      <div className={`${surface.glass} px-3 py-3 sm:px-4`}>
-        <div className="flex items-center gap-3">
+    <header className="sticky top-0 z-30 px-3 py-3 backdrop-blur-2xl sm:px-4 sm:py-4 lg:ml-72 lg:px-6">
+      <div className={`${surface.glass} flex flex-col gap-3 px-3 py-3 sm:px-4 xl:flex-row xl:items-center`}>
+        <div className="flex min-w-0 items-center gap-3 xl:flex-1">
           <MobileMenuButton open={mobileOpen} onClick={onMenuToggle} />
           <div className="min-w-0">
             <div className="text-xs font-medium text-slate-400">当前页面</div>
@@ -173,7 +173,7 @@ function TopStatusBar({ dark, onToggle, mobileOpen, onMenuToggle }: { dark: bool
             <ThemeToggle dark={dark} onToggle={onToggle} />
           </div>
         </div>
-        <div className="mt-3 flex min-w-0 items-center gap-2 xl:mt-0 xl:justify-end">
+        <div className="flex min-w-0 items-center gap-2 xl:max-w-[70%] xl:justify-end">
           <div className="flex min-w-0 flex-1 gap-2 overflow-x-auto pb-1 xl:justify-end">
             <Badge tone={backendOk ? "good" : backendOk === false ? "bad" : "warn"}>
               后端：{backendOk ? "在线" : backendOk === false ? "离线" : "检测中"}

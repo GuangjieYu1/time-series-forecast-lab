@@ -18,14 +18,15 @@ SEASONAL_PERIODS = {
 class SeasonalNaiveModel:
     model_id = "seasonal_naive"
 
-    def __init__(self) -> None:
+    def __init__(self, period: int | None = None) -> None:
         self.values: list[float] = []
         self.period = 1
+        self.period_override = period
         self.warnings: list[str] = []
 
     def fit(self, times: list[datetime], values: list[float], frequency: str) -> None:
         self.values = [float(value) for value in values]
-        self.period = SEASONAL_PERIODS.get(frequency, 1)
+        self.period = self.period_override or SEASONAL_PERIODS.get(frequency, 1)
         if len(self.values) < self.period:
             self.warnings.append("Not enough history for a full seasonal period; fell back to naive repetition.")
             self.period = 1

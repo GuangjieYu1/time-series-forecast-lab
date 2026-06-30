@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -26,12 +27,71 @@ from app.schemas import (
 from app.services.backtest_runner import ModelProgressEvent, run_holdout_backtest
 from app.services.file_parser import read_sheet_dataframe
 from app.services.forecast_runner import run_final_forecast
-from app.services.model_registry import MODEL_CAPABILITIES
+from app.services.model_registry import MODEL_CAPABILITIES, MODEL_FACTORIES
 from app.services.progress_tracker import progress_tracker
 from app.services.series_builder import build_time_series
 
 
 router = APIRouter(prefix="/api/forecast", tags=["forecast"])
+logger = logging.getLogger(__name__)
+
+MAX_TARGET_COLUMNS = 8
+MAX_MODEL_RUNS = 32
+MAX_HEAVY_MODEL_RUNS = 4
+HEAVY_MODEL_IDS = {"prophet", "timesfm"}
+
+
+def _validate_run_budget(request: ForecastRunRequest) -> None:
+    if not request.targetColumns:
+        raise AppError("请选择至少一个预测目标列。", code="NO_TARGET_COLUMNS")
+    if not request.selectedModels:
+        raise AppError("请选择至少一个可运行模型。", code="NO_MODELS_SELECTED")
+
+    unknown_models = [model_id for model_id in request.selectedModels if model_id not in MODEL_CAPABILITIES]
+    if unknown_models:
+        raise AppError(
+            f"未知模型：{', '.join(unknown_models)}。",
+            code="UNKNOWN_MODEL",
+            details={"unknownModels": unknown_models},
+        )
+
+    disconnected_models = [model_id for model_id in request.selectedModels if model_id not in MODEL_FACTORIES]
+    if disconnected_models:
+        names = [MODEL_CAPABILITIES[model_id].name for model_id in disconnected_models]
+        raise AppError(
+            f"这些模型还没有接入执行器：{', '.join(names)}。",
+            code="MODEL_NOT_RUNNABLE",
+            details={"models": disconnected_models},
+        )
+
+    target_count = len(request.targetColumns)
+    model_count = len(request.selectedModels)
+    total_model_runs = target_count * model_count
+    heavy_model_runs = target_count * sum(1 for model_id in request.selectedModels if model_id in HEAVY_MODEL_IDS)
+
+    if target_count > MAX_TARGET_COLUMNS:
+        raise AppError(
+            f"一次实验最多选择 {MAX_TARGET_COLUMNS} 个目标列；宽表请分批运行。",
+            code="TOO_MANY_TARGET_COLUMNS",
+            details={"targetCount": target_count, "maxTargetColumns": MAX_TARGET_COLUMNS},
+        )
+    if total_model_runs > MAX_MODEL_RUNS:
+        raise AppError(
+            f"一次实验最多运行 {MAX_MODEL_RUNS} 个目标-模型组合；当前是 {total_model_runs} 个，请减少目标列或模型。",
+            code="TOO_MANY_MODEL_RUNS",
+            details={
+                "targetCount": target_count,
+                "modelCount": model_count,
+                "modelRunCount": total_model_runs,
+                "maxModelRuns": MAX_MODEL_RUNS,
+            },
+        )
+    if heavy_model_runs > MAX_HEAVY_MODEL_RUNS:
+        raise AppError(
+            f"Prophet / TimesFM 属于重模型，一次最多运行 {MAX_HEAVY_MODEL_RUNS} 个重模型组合；当前是 {heavy_model_runs} 个。",
+            code="TOO_MANY_HEAVY_MODEL_RUNS",
+            details={"heavyModelRunCount": heavy_model_runs, "maxHeavyModelRuns": MAX_HEAVY_MODEL_RUNS},
+        )
 
 
 def _dump(value) -> str:
@@ -77,21 +137,33 @@ async def forecast_progress_events(run_id: str, request: Request):
 @router.post("/run", response_model=ForecastRunResponse)
 def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
     run_id = request.runId or f"run_{uuid.uuid4().hex}"
-    model_rows = [
-        ModelProgress(
-            modelId=model_id,
-            modelName=MODEL_CAPABILITIES[model_id].name if model_id in MODEL_CAPABILITIES else model_id,
-            targetColumn=target_column,
-        )
-        for target_column in request.targetColumns
-        for model_id in request.selectedModels
-    ]
-    progress_tracker.start(run_id, "backtest", model_rows, "正在校验实验配置。")
+    progress_tracker.start(run_id, "backtest", [], "正在校验实验配置。")
     cleanup_upload = False
+    metadata = None
     try:
-        if not request.targetColumns:
-            raise AppError("Select at least one target column.")
+        _validate_run_budget(request)
+        model_rows = [
+            ModelProgress(
+                modelId=model_id,
+                modelName=MODEL_CAPABILITIES[model_id].name,
+                targetColumn=target_column,
+            )
+            for target_column in request.targetColumns
+            for model_id in request.selectedModels
+        ]
+        progress_tracker.start(run_id, "backtest", model_rows, "正在校验实验配置。")
         metadata = read_upload_metadata(request.uploadId)
+        logger.info(
+            "forecast run started run_id=%s upload_id=%s file=%s sheet=%s targets=%s models=%s horizon=%s test_size=%s",
+            run_id,
+            request.uploadId,
+            metadata.get("fileName"),
+            request.sheetName,
+            request.targetColumns,
+            request.selectedModels,
+            request.horizon,
+            request.testSize,
+        )
         cleanup_upload = True
         progress_tracker.update(run_id, phase="parsing", overallPercent=4, message="正在读取上传文件和 Sheet。")
         df = read_sheet_dataframe(request.uploadId, request.sheetName)
@@ -150,6 +222,7 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
                 request.selectedModels,
                 request.horizon,
                 request.testSize,
+                model_parameters=request.modelParameters,
                 progress_callback=report_model_progress,
             )
             target_result = TargetResult(
@@ -214,11 +287,36 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
             targetResults=target_results,
         )
         progress_tracker.finish(run_id, "completed", "实验完成，结果已保存。")
+        logger.info(
+            "forecast run completed run_id=%s experiment_id=%s recommended_model=%s targets=%s models=%s",
+            run_id,
+            experiment_id,
+            response.recommendedModelId,
+            request.targetColumns,
+            request.selectedModels,
+        )
         return response
     except AppError as exc:
+        logger.warning(
+            "forecast run rejected run_id=%s upload_id=%s sheet=%s code=%s message=%s",
+            run_id,
+            request.uploadId,
+            request.sheetName,
+            exc.code,
+            exc.message,
+        )
         progress_tracker.finish(run_id, "failed", "实验运行失败。", exc.message)
         raise as_http_error(exc) from exc
     except Exception as exc:
+        logger.exception(
+            "forecast run failed run_id=%s upload_id=%s file=%s sheet=%s targets=%s models=%s",
+            run_id,
+            request.uploadId,
+            metadata.get("fileName") if metadata else None,
+            request.sheetName,
+            request.targetColumns,
+            request.selectedModels,
+        )
         progress_tracker.finish(run_id, "failed", "实验运行失败。", str(exc))
         error = AppError(str(exc), 500, "FORECAST_RUN_FAILED")
         raise as_http_error(error) from exc
@@ -250,6 +348,7 @@ def final_forecast(request: FinalForecastRequest, db: Session = Depends(get_db))
         data_profile = json.loads(record.data_profile_json)
         first_profile = data_profile["targets"][0]
         history = json.loads(record.series_json)
+        saved_config = json.loads(record.config_json)
 
         def report_final_progress(stage: str):
             if stage == "fitting":
@@ -279,6 +378,7 @@ def final_forecast(request: FinalForecastRequest, db: Session = Depends(get_db))
             horizon=request.horizon,
             frequency=first_profile["detectedFrequency"],
             history=history,
+            model_parameters=saved_config.get("modelParameters", {}),
             progress_callback=report_final_progress,
         )
         progress_tracker.update_model(
@@ -294,11 +394,33 @@ def final_forecast(request: FinalForecastRequest, db: Session = Depends(get_db))
         db.add(record)
         db.commit()
         progress_tracker.finish(run_id, "completed", "最终预测完成。")
+        logger.info(
+            "final forecast completed run_id=%s experiment_id=%s model=%s horizon=%s",
+            run_id,
+            request.experimentId,
+            request.finalModelId,
+            request.horizon,
+        )
         return response
     except AppError as exc:
+        logger.warning(
+            "final forecast rejected run_id=%s experiment_id=%s model=%s code=%s message=%s",
+            run_id,
+            request.experimentId,
+            request.finalModelId,
+            exc.code,
+            exc.message,
+        )
         progress_tracker.finish(run_id, "failed", "最终预测失败。", exc.message)
         raise as_http_error(exc) from exc
     except Exception as exc:
+        logger.exception(
+            "final forecast failed run_id=%s experiment_id=%s model=%s horizon=%s",
+            run_id,
+            request.experimentId,
+            request.finalModelId,
+            request.horizon,
+        )
         progress_tracker.finish(run_id, "failed", "最终预测失败。", str(exc))
         error = AppError(str(exc), 500, "FINAL_FORECAST_FAILED")
         raise as_http_error(error) from exc
