@@ -1,0 +1,25 @@
+{
+  "profile": "fast",
+  "generatedAt": "2026-07-01T03:47:25.272703+00:00",
+  "seconds": 0.8802,
+  "totalCases": 1,
+  "successfulRuns": 1,
+  "failedRuns": 0,
+  "cases": [
+    {
+      "name": "etth1_smoke",
+      "category": "clean",
+      "uploadStatus": "200",
+      "runStatus": "200",
+      "seconds": 0.8801,
+      "memoryMb": 42.25,
+      "warningCount": 1,
+      "modelStatuses": {
+        "naive": "success",
+        "xgboost": "failed"
+      },
+      "experimentId": "exp_224e3dd330d9",
+      "error": null
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+      args:
+        INSTALL_OPTIONAL: "true"
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+    restart: unless-stopped
+    expose:
+      - "8100"
+    volumes:
+      - ./backend/data:/app/data
+      - ./backend/tmp:/app/tmp
+      - ./backend/.model_cache:/app/.model_cache
+    environment:
+      - HF_HOME=/app/.model_cache/huggingface
+      - TIMESFM_CACHE_DIR=/app/.model_cache/timesfm
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
