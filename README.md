@@ -36,7 +36,7 @@ v0.1 focuses on real-file acceptance and core forecast workflow hardening:
 
 ```powershell
 cd backend
-uv run --with-requirements requirements.txt uvicorn app.main:app --reload --port 8100
+uv run --with-requirements requirements.txt --with-requirements requirements-optional.txt uvicorn app.main:app --reload --port 8100
 ```
 
 Python venv alternative:
@@ -46,6 +46,7 @@ cd backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+pip install -r requirements-optional.txt
 uvicorn app.main:app --reload --port 8100
 ```
 
@@ -59,14 +60,16 @@ npm run dev
 
 ## Optional Model Dependencies
 
-The core environment can run without Prophet, TimesFM, XGBoost, LightGBM, or scikit-learn.
+Prophet, TimesFM, XGBoost, LightGBM, and Random Forest rely on `requirements-optional.txt`.
 
-Install optional dependencies only when you want those model adapters to run:
+默认建议在本地开发和一键重建时一起安装这份依赖，这样模型状态不会在重建后回退成 `not_installed`：
 
 ```powershell
 cd backend
 pip install -r requirements-optional.txt
 ```
+
+`deploy/local_rebuild.py` 现在会默认重装基础依赖 + 可选模型依赖；只有在明确传入 `--skip-optional-models` 时才会跳过。
 
 Prophet may require platform-specific build dependencies depending on your Python environment.
 

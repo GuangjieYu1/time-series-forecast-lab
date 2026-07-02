@@ -10,6 +10,7 @@ from app.core.errors import AppError, as_http_error
 from app.db.models import ExperimentRecord, ReportRecord
 from app.db.session import get_db
 from app.schemas import GenerateReportRequest, ReportResponse
+from app.services.data_health import build_data_health_report, extract_detected_frequency
 from app.services.deepseek import build_report_context, generate_deepseek_report
 
 
@@ -22,7 +23,24 @@ def _loads(value: str | None, default):
     return json.loads(value)
 
 
+def _to_int(value, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _experiment_payload(record: ExperimentRecord) -> dict:
+    config = _loads(record.config_json, {})
+    data_profile = _loads(record.data_profile_json, {})
+    diagnostics = _loads(record.diagnostics_json, {})
+    manifest = _loads(record.manifest_json, None)
+    data_health = build_data_health_report(
+        diagnostics,
+        detected_frequency=extract_detected_frequency(data_profile=data_profile, manifest=manifest),
+        horizon=_to_int(config.get("horizon"), 1) if isinstance(config, dict) else 1,
+        test_size=_to_int(config.get("testSize"), 1) if isinstance(config, dict) else 1,
+    )
     return {
         "experimentId": record.id,
         "experimentName": record.name,
@@ -32,14 +50,15 @@ def _experiment_payload(record: ExperimentRecord) -> dict:
         "recommendedModelId": record.recommended_model_id,
         "bestMae": float(record.best_mae) if record.best_mae is not None else None,
         "createdAt": record.created_at.isoformat(),
-        "config": _loads(record.config_json, {}),
-        "dataProfile": _loads(record.data_profile_json, {}),
+        "config": config,
+        "dataProfile": data_profile,
         "rankedModels": _loads(record.metrics_json, []),
         "backtest": _loads(record.backtest_json, {}),
-        "diagnostics": _loads(record.diagnostics_json, {}),
+        "diagnostics": diagnostics,
+        "dataHealth": data_health.model_dump() if data_health else None,
         "finalForecast": _loads(record.final_forecast_json, None),
         "modelLogs": _loads(record.model_logs_json, []),
-        "manifest": _loads(record.manifest_json, None),
+        "manifest": manifest,
     }
 
 

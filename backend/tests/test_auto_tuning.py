@@ -4,7 +4,12 @@ from datetime import datetime, timedelta
 
 import app.services.auto_tuning.service as tuning_service
 from app.models.base import ForecastOutput
-from app.services.deepseek import _build_tuning_appendix, build_report_context
+from app.services.deepseek import (
+    _build_feature_workflow_appendix,
+    _build_recommendation_appendix,
+    _build_tuning_appendix,
+    build_report_context,
+)
 from app.schemas import ReportOptions
 
 
@@ -53,7 +58,45 @@ def test_report_context_and_appendix_include_tuning_trials():
         "recommendedModelId": "moving_average",
         "bestMae": 0.12,
         "createdAt": "2026-07-01T00:00:00Z",
-        "config": {"parameterStrategy": "auto", "runProfile": "balanced"},
+        "config": {
+            "parameterStrategy": "auto",
+            "runProfile": "balanced",
+            "selectedModels": ["moving_average", "xgboost"],
+            "timeColumn": "ds",
+            "horizon": 7,
+            "testSize": 5,
+            "covariateColumns": ["promo"],
+            "featureConfig": {
+                "lagFeatures": True,
+                "rollingFeatures": True,
+                "calendarFeatures": True,
+                "covariates": True,
+            },
+        },
+        "dataProfile": {
+            "mode": "raw",
+            "timeColumn": "ds",
+            "covariateColumns": ["promo"],
+            "featureConfig": {
+                "lagFeatures": True,
+                "rollingFeatures": True,
+                "calendarFeatures": True,
+                "covariates": True,
+            },
+            "aggregation": "sum",
+            "detectedFrequency": "D",
+            "sourceFrequency": "D",
+            "history": [{"time": "2026-01-01T00:00:00", "value": 1.0}],
+            "covariateHistory": [{"time": "2026-01-01T00:00:00", "promo": 1.0}],
+            "cleaning": {
+                "missingValueStrategy": "ffill",
+                "fillMissingTimeSteps": True,
+                "duplicateTimeStrategy": "mean",
+                "outlierStrategy": "none",
+                "outlierIqrMultiplier": 1.5,
+                "trimStrings": True,
+            },
+        },
         "rankedModels": [],
         "diagnostics": {},
         "backtest": {"predictions": {}},
@@ -109,7 +152,51 @@ def test_report_context_and_appendix_include_tuning_trials():
                                     },
                                 ],
                             },
-                        }
+                        },
+                        {
+                            "modelId": "xgboost",
+                            "modelName": "XGBoost",
+                            "rank": 2,
+                            "status": "success",
+                            "metrics": {"mae": 0.18, "mse": 0.04, "rmse": 0.2, "wape": 0.03},
+                            "runtime": {"fitSeconds": 0.05, "predictSeconds": 0.02},
+                            "warnings": [],
+                            "error": None,
+                            "tuning": {
+                                "enabled": True,
+                                "profile": "balanced",
+                                "strategy": "auto",
+                                "selectedParams": {"nEstimators": 200, "maxDepth": 3, "learningRate": 0.05},
+                                "candidateCount": 2,
+                                "bestMetric": 0.18,
+                                "tuningSeconds": 0.35,
+                                "candidateLimit": 7,
+                                "timeBudgetSeconds": 8.0,
+                                "validationSize": 5,
+                                "stoppedEarly": False,
+                                "warnings": [],
+                                "trials": [
+                                    {
+                                        "round": 1,
+                                        "params": {"nEstimators": 120, "maxDepth": 3, "learningRate": 0.05},
+                                        "status": "success",
+                                        "metrics": {"mae": 0.19, "mse": 0.05, "rmse": 0.2236, "wape": 0.03},
+                                        "elapsedSeconds": 0.05,
+                                        "selected": False,
+                                        "message": "评估成功。",
+                                    },
+                                    {
+                                        "round": 2,
+                                        "params": {"nEstimators": 200, "maxDepth": 3, "learningRate": 0.05},
+                                        "status": "success",
+                                        "metrics": {"mae": 0.18, "mse": 0.04, "rmse": 0.2, "wape": 0.03},
+                                        "elapsedSeconds": 0.06,
+                                        "selected": True,
+                                        "message": "评估成功。",
+                                    },
+                                ],
+                            },
+                        },
                     ],
                 }
             ]
@@ -117,11 +204,20 @@ def test_report_context_and_appendix_include_tuning_trials():
     }
 
     context = build_report_context(experiment)
+    feature_workflow_appendix = _build_feature_workflow_appendix(context, ReportOptions())
+    recommendation_appendix = _build_recommendation_appendix(context, ReportOptions())
     appendix = _build_tuning_appendix(context, ReportOptions())
 
     assert context["autoTuning"]["enabled"] is True
-    assert context["autoTuning"]["trialCount"] == 2
+    assert context["autoTuning"]["trialCount"] == 4
+    assert context["featurePipeline"]["covariateColumns"] == ["promo"]
+    assert context["workflowReport"]["modelCount"] == 2
+    assert context["modelRecommendation"]["recommendations"][0]["runnerUpModelId"] == "xgboost"
     assert context["targets"][0]["models"][0]["tuning"]["trials"][1]["selected"] is True
+    assert "附录：Feature Pipeline" in feature_workflow_appendix
+    assert "附录：Workflow Report" in feature_workflow_appendix
+    assert "附录：模型推荐依据" in recommendation_appendix
+    assert "相比第二名 XGBoost，MAE 再下降 0.0600" in recommendation_appendix
     assert "附录：自动优化策略与逐轮结果" in appendix
     assert '"window": 7' in appendix
     assert "| 2 | success | 是 | 0.1200 |" in appendix

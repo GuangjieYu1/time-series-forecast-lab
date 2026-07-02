@@ -14,6 +14,8 @@ from app.models.seasonal_naive import SeasonalNaiveModel
 from app.models.timesfm_model import TimesFmModel
 from app.schemas import ModelCapability
 
+OPTIONAL_REQUIREMENTS_INSTALL = "pip install -r requirements-optional.txt"
+
 
 def _module_available(module: str) -> bool:
     return importlib.util.find_spec(module) is not None
@@ -269,7 +271,7 @@ MODEL_CAPABILITIES: dict[str, ModelCapability] = {
         isFoundationModel=False,
         enabledInMvp=True,
         dependencyPackage="prophet",
-        installCommand="pip install -r requirements-optional.txt",
+        installCommand=OPTIONAL_REQUIREMENTS_INSTALL,
         modelFamily="Statistical",
         priority=12,
     ),
@@ -301,7 +303,7 @@ MODEL_CAPABILITIES: dict[str, ModelCapability] = {
         representativePaperUrl="https://arxiv.org/abs/1603.02754",
         supportsUnivariate=True,
         supportsMultipleTargets=False,
-        supportsCovariates=False,
+        supportsCovariates=True,
         supportsPredictionInterval=True,
         minHorizon=1,
         maxHorizon=120,
@@ -309,7 +311,7 @@ MODEL_CAPABILITIES: dict[str, ModelCapability] = {
         isFoundationModel=False,
         enabledInMvp=True,
         dependencyPackage="xgboost",
-        installCommand="pip install xgboost",
+        installCommand=OPTIONAL_REQUIREMENTS_INSTALL,
         paperTitle="XGBoost: A Scalable Tree Boosting System",
         paperUrl="https://arxiv.org/abs/1603.02754",
         modelFamily="Machine Learning",
@@ -324,7 +326,7 @@ MODEL_CAPABILITIES: dict[str, ModelCapability] = {
         representativePaperUrl="https://papers.nips.cc/paper_files/paper/2017/hash/6449f44a102fde848669bdd9eb6b76fa-Abstract.html",
         supportsUnivariate=True,
         supportsMultipleTargets=False,
-        supportsCovariates=False,
+        supportsCovariates=True,
         supportsPredictionInterval=True,
         minHorizon=1,
         maxHorizon=120,
@@ -332,7 +334,7 @@ MODEL_CAPABILITIES: dict[str, ModelCapability] = {
         isFoundationModel=False,
         enabledInMvp=True,
         dependencyPackage="lightgbm",
-        installCommand="pip install lightgbm",
+        installCommand=OPTIONAL_REQUIREMENTS_INSTALL,
         paperTitle="LightGBM: A Highly Efficient Gradient Boosting Decision Tree",
         paperUrl="https://papers.nips.cc/paper_files/paper/2017/hash/6449f44a102fde848669bdd9eb6b76fa-Abstract.html",
         modelFamily="Machine Learning",
@@ -347,7 +349,7 @@ MODEL_CAPABILITIES: dict[str, ModelCapability] = {
         representativePaperUrl="https://link.springer.com/article/10.1023/A:1010933404324",
         supportsUnivariate=True,
         supportsMultipleTargets=False,
-        supportsCovariates=False,
+        supportsCovariates=True,
         supportsPredictionInterval=True,
         minHorizon=1,
         maxHorizon=120,
@@ -355,7 +357,7 @@ MODEL_CAPABILITIES: dict[str, ModelCapability] = {
         isFoundationModel=False,
         enabledInMvp=True,
         dependencyPackage="scikit-learn",
-        installCommand="pip install scikit-learn",
+        installCommand=OPTIONAL_REQUIREMENTS_INSTALL,
         paperTitle="Random Forests",
         paperUrl="https://link.springer.com/article/10.1023/A:1010933404324",
         modelFamily="Machine Learning",
@@ -515,13 +517,13 @@ def get_model_capabilities() -> list[ModelCapability]:
             item.availabilityStatus = "unavailable"
             item.installStatus = "not_installed"
             item.dependencyPackage = "prophet"
-            item.installCommand = "pip install -r requirements-optional.txt"
+            item.installCommand = OPTIONAL_REQUIREMENTS_INSTALL
             item.unavailableReason = "Install optional dependency 'prophet' to enable this model."
         if item.id == "timesfm" and not _module_available("timesfm"):
             item.availabilityStatus = "unavailable"
             item.installStatus = "not_installed"
             item.dependencyPackage = "timesfm"
-            item.installCommand = "pip install -r requirements-optional.txt"
+            item.installCommand = OPTIONAL_REQUIREMENTS_INSTALL
             item.unavailableReason = "Install optional dependency 'timesfm' and allow first checkpoint download."
         elif item.id == "timesfm" and not _timesfm_cache_has_files():
             item.availabilityStatus = "downloading"
@@ -530,14 +532,17 @@ def get_model_capabilities() -> list[ModelCapability]:
         if item.id == "xgboost" and not _module_available("xgboost"):
             item.availabilityStatus = "unavailable"
             item.installStatus = "not_installed"
+            item.installCommand = OPTIONAL_REQUIREMENTS_INSTALL
             item.unavailableReason = "Install optional dependency 'xgboost' to enable this model."
         if item.id == "lightgbm" and not _module_available("lightgbm"):
             item.availabilityStatus = "unavailable"
             item.installStatus = "not_installed"
+            item.installCommand = OPTIONAL_REQUIREMENTS_INSTALL
             item.unavailableReason = "Install optional dependency 'lightgbm' to enable this model."
         if item.id == "random_forest" and not _module_available("sklearn"):
             item.availabilityStatus = "unavailable"
             item.installStatus = "not_installed"
+            item.installCommand = OPTIONAL_REQUIREMENTS_INSTALL
             item.unavailableReason = "Install optional dependency 'scikit-learn' to enable this model."
         models.append(item)
     return sorted(models, key=lambda model: model.priority)

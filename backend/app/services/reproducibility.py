@@ -24,6 +24,7 @@ def build_config_hash_payload(request: ForecastRunRequest) -> dict[str, Any]:
         "sheetName": request.sheetName,
         "timeColumn": request.timeColumn,
         "targetColumns": request.targetColumns,
+        "covariateColumns": request.covariateColumns,
         "aggregation": request.aggregation.model_dump(),
         "frequency": request.frequency,
         "horizon": request.horizon,
@@ -33,6 +34,7 @@ def build_config_hash_payload(request: ForecastRunRequest) -> dict[str, Any]:
             model_id: normalize_model_parameters(model_id, request.modelParameters.get(model_id))
             for model_id in request.selectedModels
         },
+        "featureConfig": request.featureConfig.model_dump(),
         "missingValueStrategy": request.missingValueStrategy,
         "fillMissingTimeSteps": request.fillMissingTimeSteps,
         "duplicateTimeStrategy": request.duplicateTimeStrategy,
@@ -139,6 +141,7 @@ def build_manifest(
                 "columns": input_columns,
                 "timeColumn": request.timeColumn,
                 "targetColumns": request.targetColumns,
+                "covariateColumns": request.covariateColumns,
             },
             "configuration": build_config_hash_payload(request),
             "targets": targets,

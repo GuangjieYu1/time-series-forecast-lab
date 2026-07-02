@@ -242,6 +242,11 @@ def start_detached(command: list[str], cwd: Path, log_path: Path, env: dict[str,
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="一键重建并重启本地 Forecast Lab。")
     parser.add_argument("--delay-seconds", type=int, default=0)
+    parser.add_argument(
+        "--skip-optional-models",
+        action="store_true",
+        help="只安装基础依赖，不安装 Prophet / TimesFM / XGBoost / LightGBM / scikit-learn 等可选模型依赖。",
+    )
     return parser.parse_args()
 
 
@@ -256,6 +261,10 @@ def main() -> int:
     npm_binary, frontend_env = resolve_node_runtime()
 
     run_command([backend_python, "-m", "pip", "install", "-r", "requirements.txt"], BACKEND_DIR)
+    if args.skip_optional_models:
+        log("已跳过可选模型依赖安装；模型库中部分模型可能显示为未安装。")
+    else:
+        run_command([backend_python, "-m", "pip", "install", "-r", "requirements-optional.txt"], BACKEND_DIR)
     run_command([npm_binary, "install"], FRONTEND_DIR, env=frontend_env)
     run_command([npm_binary, "run", "build"], FRONTEND_DIR, env=frontend_env)
 

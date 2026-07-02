@@ -54,6 +54,27 @@ def test_config_hash_changes_when_cleaning_or_model_selection_changes():
     assert compute_config_hash(base) != compute_config_hash(changed_models)
 
 
+def test_config_hash_includes_covariates_and_feature_config():
+    base = _request(
+        covariateColumns=["temperature"],
+        featureConfig={"lagFeatures": True, "rollingFeatures": True, "calendarFeatures": True, "covariates": True},
+    )
+    changed_covariates = _request(
+        covariateColumns=["promo_flag"],
+        featureConfig={"lagFeatures": True, "rollingFeatures": True, "calendarFeatures": True, "covariates": True},
+    )
+    changed_features = _request(
+        covariateColumns=["temperature"],
+        featureConfig={"lagFeatures": True, "rollingFeatures": False, "calendarFeatures": True, "covariates": True},
+    )
+
+    payload = build_config_hash_payload(base)
+    assert payload["covariateColumns"] == ["temperature"]
+    assert payload["featureConfig"]["rollingFeatures"] is True
+    assert compute_config_hash(base) != compute_config_hash(changed_covariates)
+    assert compute_config_hash(base) != compute_config_hash(changed_features)
+
+
 def test_schema_compatibility_adds_v03_columns(tmp_path: Path):
     database_path = tmp_path / "compat.sqlite"
     connection = sqlite3.connect(database_path)

@@ -6,7 +6,7 @@ import { DataTable } from "../../shared/components/Table";
 import { EmptyState, ErrorBanner } from "../../shared/components/Status";
 import { Badge, controls, PageHeader, SectionCard, StatCard, Stepper, surface, Tabs } from "../../shared/components/Ui";
 import { zhCN } from "../../shared/i18n/zhCN";
-import type { DeviceInfo, ForecastProgress, ForecastRunRequest, ForecastRunResponse, ModelCapability, RankedModel, SheetPreview, UploadPreviewResponse } from "../../shared/types/api";
+import type { DeviceInfo, FeatureConfig, ForecastProgress, ForecastRunRequest, ForecastRunResponse, ModelCapability, RankedModel, SheetPreview, UploadPreviewResponse } from "../../shared/types/api";
 import { useLabStore } from "../../app/store";
 import {
   AbsoluteErrorTimelineChart,
@@ -20,7 +20,9 @@ import {
   ResidualTimelineChart
 } from "../visualization/Charts";
 import { ReportPanel } from "../reports/ReportPanel";
+import { DataHealthPanel } from "./DataHealthPanel";
 import { getParameterHelp } from "./parameterHelp";
+import { ReproducibilityPanel } from "./ReproducibilityPanel";
 
 const modelDefaults = ["naive", "seasonal_naive", "moving_average", "arima", "ets", "prophet", "xgboost", "lightgbm", "random_forest"];
 const steps = ["选择数据模式", "选择字段", "选择模型", "设置回测", "运行实验"];
@@ -29,6 +31,12 @@ const maxModelRuns = 32;
 const maxHeavyModelRuns = 4;
 const heavyModelIds = new Set(["prophet", "timesfm"]);
 const selectedModelsStorageKey = "tsfl_forecast_selected_models_v1";
+const defaultFeatureConfig: FeatureConfig = {
+  lagFeatures: true,
+  rollingFeatures: true,
+  calendarFeatures: true,
+  covariates: true
+};
 
 type ModelParameterValue = number | string | boolean;
 
@@ -98,7 +106,7 @@ const modelParameterFields: Record<string, ModelParameterField[]> = {
   ]
 };
 
-type ResultTab = "overview" | "residual" | "metrics" | "distribution" | "final" | "report";
+type ResultTab = "dataHealth" | "overview" | "residual" | "metrics" | "distribution" | "final" | "reproducibility" | "report";
 
 function isRunnableModel(model: ModelCapability) {
   return model.enabledInMvp && model.installStatus === "available";
@@ -123,6 +131,20 @@ function modelStatusTone(model: ModelCapability): "neutral" | "good" | "warn" | 
 function metricText(value: number | null | undefined) {
   if (value === null || value === undefined) return "-";
   return value < 1 ? value.toFixed(4) : value.toFixed(2);
+}
+
+function dataHealthTone(level: ForecastRunResponse["dataHealth"]["level"]): "good" | "info" | "warn" | "bad" {
+  if (level === "excellent") return "good";
+  if (level === "good") return "info";
+  if (level === "fair") return "warn";
+  return "bad";
+}
+
+function dataHealthLevelText(level: ForecastRunResponse["dataHealth"]["level"]) {
+  if (level === "excellent") return "优秀";
+  if (level === "good") return "良好";
+  if (level === "fair") return "一般";
+  return "偏弱";
 }
 
 function loadPersistedSelectedModels(): { hasValue: boolean; values: string[] } {
@@ -607,22 +629,23 @@ function ResultsDashboard({
   metric: "mae" | "mse" | "rmse" | "wape";
   setMetric: (metric: "mae" | "mse" | "rmse" | "wape") => void;
 }) {
-  const [tab, setTab] = useState<ResultTab>("overview");
+  const [tab, setTab] = useState<ResultTab>("dataHealth");
   const best = result.rankedModels.find((model) => model.rank === 1 && model.metrics);
   const successfulModels = result.rankedModels.filter((model) => model.status === "success");
 
   return (
     <section className="space-y-5">
-      <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-6">
+      <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-7">
         <StatCard label="目标列" value={result.targetColumn} hint="当前分析目标" tone="info" />
         <StatCard label="时间范围" value={result.diagnostics.timeStart ?? "-"} hint={result.diagnostics.timeEnd ?? "结束时间未知"} />
         <StatCard label="样本数" value={result.diagnostics.validRowCount} hint={`丢弃 ${result.diagnostics.droppedRowCount} 行`} />
+        <StatCard label="数据健康" value={`${result.dataHealth.score}/100`} hint={`等级：${dataHealthLevelText(result.dataHealth.level)}`} tone={dataHealthTone(result.dataHealth.level)} />
         <StatCard label="推荐模型" value={result.recommendedModelId ?? "暂无"} hint="按 MAE 最低推荐" tone="good" />
         <StatCard label="最佳 MAE" value={metricText(best?.metrics?.mae)} hint="越低越好" tone="good" />
         <StatCard label="最佳 WAPE" value={metricText(best?.metrics?.wape)} hint="总绝对误差占比" tone="warn" />
       </div>
 
-      <SectionCard title="数据清洁摘要" description="清洁只作用于本次实验构建的时间序列，不修改上传原文件。">
+      <SectionCard title="数据健康快照" description="清洁只作用于本次实验构建的时间序列，不修改上传原文件。">
         <div className="grid divide-y divide-slate-200 border-y border-slate-200 dark:divide-white/10 dark:border-white/10 sm:grid-cols-2 sm:divide-x sm:divide-y-0 xl:grid-cols-6">
           {[
             ["无效时间", result.diagnostics.invalidTimeCount],
@@ -654,7 +677,7 @@ function ResultsDashboard({
             <div className="rounded-2xl bg-slate-50 p-4 dark:bg-[#151b2e]">
               <div className="text-xs text-slate-500 dark:text-slate-400">推荐最佳模型</div>
               <div className="mt-2 text-2xl font-semibold text-slate-950 dark:text-white">{best?.modelName ?? "暂无"}</div>
-              <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">推荐原因：测试集 MAE 最低。失败模型已被保留在排行榜，但不参与推荐。</p>
+              <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">推荐原因：测试集 MAE 最低。失败模型已被保留在排行榜，但不参与推荐。数据健康分可帮助判断当前结论的可信度。</p>
             </div>
             <label className="space-y-2">
               <span className="text-sm font-medium text-slate-700 dark:text-slate-200">最终模型</span>
@@ -697,14 +720,18 @@ function ResultsDashboard({
         value={tab}
         onChange={setTab}
         items={[
+          { id: "dataHealth", label: "数据健康" },
           { id: "overview", label: "预测对比" },
-          { id: "residual", label: "残差分析" },
+          { id: "residual", label: "残差诊断" },
           { id: "metrics", label: "指标排名" },
           { id: "distribution", label: "误差分布" },
           { id: "final", label: "最终预测" },
+          { id: "reproducibility", label: "实验复现" },
           { id: "report", label: "AI 报告" }
         ]}
       />
+
+      {tab === "dataHealth" ? <DataHealthPanel dataHealth={result.dataHealth} /> : null}
 
       {tab === "overview" ? (
         <div className="grid gap-5 xl:grid-cols-2">
@@ -752,6 +779,8 @@ function ResultsDashboard({
         <div className={surface.chartPanel}><FinalForecastChart finalForecast={finalForecast} /></div>
       ) : null}
 
+      {tab === "reproducibility" ? <ReproducibilityPanel experimentId={result.experimentId} manifest={result.manifest} /> : null}
+
       {tab === "report" ? <div id="ai-report"><ReportPanel experimentId={result.experimentId} /></div> : null}
     </section>
   );
@@ -766,6 +795,7 @@ export function ForecastPage() {
   const [dataMode, setDataMode] = useState<"aggregated" | "raw">("aggregated");
   const [timeColumn, setTimeColumn] = useState("");
   const [targetColumns, setTargetColumns] = useState<string[]>([]);
+  const [covariateColumns, setCovariateColumns] = useState<string[]>([]);
   const [aggregationMethod, setAggregationMethod] = useState<ForecastRunRequest["aggregation"]["method"]>("sum");
   const [missingValueStrategy, setMissingValueStrategy] = useState<ForecastRunRequest["missingValueStrategy"]>("drop");
   const [fillMissingTimeSteps, setFillMissingTimeSteps] = useState(true);
@@ -776,6 +806,7 @@ export function ForecastPage() {
   const [testSize, setTestSize] = useState(7);
   const [selectedModels, setSelectedModels] = useState<string[]>(persistedSelection.values);
   const [modelParameters, setModelParameters] = useState<Record<string, Record<string, ModelParameterValue>>>(modelParameterDefaults);
+  const [featureConfig, setFeatureConfig] = useState<FeatureConfig>(defaultFeatureConfig);
   const [runProfile, setRunProfile] = useState<ForecastRunRequest["runProfile"]>("balanced");
   const [parameterStrategy, setParameterStrategy] = useState<ForecastRunRequest["parameterStrategy"]>("default");
   const [randomSeed] = useState(42);
@@ -811,8 +842,15 @@ export function ForecastPage() {
     if (!selectedSheet) return;
     const firstTime = selectedSheet.columns.find((column) => column.inferredType === "datetime")?.name ?? selectedSheet.columns[0]?.name ?? "";
     const firstNumber = selectedSheet.columns.find((column) => column.inferredType === "number")?.name ?? selectedSheet.columns[1]?.name ?? "";
+    const nextTargetColumns = firstNumber ? [firstNumber] : [];
     setTimeColumn(firstTime);
-    setTargetColumns(firstNumber ? [firstNumber] : []);
+    setTargetColumns(nextTargetColumns);
+    setCovariateColumns(
+      selectedSheet.columns
+        .filter((column) => (column.inferredType === "number" || column.inferredType === "boolean") && column.name !== firstTime && !nextTargetColumns.includes(column.name))
+        .map((column) => column.name)
+    );
+    setFeatureConfig(defaultFeatureConfig);
   }, [selectedSheet]);
 
   useEffect(() => {
@@ -829,6 +867,7 @@ export function ForecastPage() {
     setDataMode(template.dataMode ?? "aggregated");
     setTimeColumn(template.timeColumn ?? selectedSheet.columns.find((column) => column.inferredType === "datetime")?.name ?? "");
     setTargetColumns(template.targetColumns ?? []);
+    setCovariateColumns(template.covariateColumns ?? []);
     setAggregationMethod(template.aggregation?.method ?? "sum");
     setMissingValueStrategy(template.missingValueStrategy ?? "drop");
     setFillMissingTimeSteps(template.fillMissingTimeSteps ?? true);
@@ -841,6 +880,10 @@ export function ForecastPage() {
     setModelParameters({
       ...modelParameterDefaults,
       ...(template.modelParameters ?? {})
+    });
+    setFeatureConfig({
+      ...defaultFeatureConfig,
+      ...(template.featureConfig ?? {})
     });
     setRunProfile(template.runProfile ?? "balanced");
     setParameterStrategy(template.parameterStrategy ?? "default");
@@ -860,6 +903,20 @@ export function ForecastPage() {
       return score(left.inferredType) - score(right.inferredType);
     });
   }, [selectedSheet]);
+
+  const availableCovariateColumns = useMemo(() => {
+    return orderedColumns.filter(
+      (column) =>
+        (column.inferredType === "number" || column.inferredType === "boolean") &&
+        column.name !== timeColumn &&
+        !targetColumns.includes(column.name)
+    );
+  }, [orderedColumns, targetColumns, timeColumn]);
+
+  useEffect(() => {
+    const allowed = new Set(availableCovariateColumns.map((column) => column.name));
+    setCovariateColumns((current) => current.filter((column) => allowed.has(column)));
+  }, [availableCovariateColumns]);
 
   const resourceAssessments = useMemo(() => {
     return new Map(
@@ -909,6 +966,11 @@ export function ForecastPage() {
     const max = Math.min(...selected.map((model) => model.maxHorizon));
     return { min, max, compatible: min <= max };
   }, [models, selectedModels]);
+  const selectedFeatureAwareModels = useMemo(
+    () => models.filter((model) => selectedModels.includes(model.id) && model.supportsCovariates),
+    [models, selectedModels]
+  );
+  const featureConfigHasAnyEnabled = useMemo(() => Object.values(featureConfig).some(Boolean), [featureConfig]);
   const modelRunCount = targetColumns.length * selectedModels.length;
   const heavyModelRunCount = targetColumns.length * selectedModels.filter((modelId) => heavyModelIds.has(modelId)).length;
   const runLimitMessage = useMemo(() => {
@@ -923,6 +985,7 @@ export function ForecastPage() {
       horizonRange.compatible &&
       horizon >= horizonRange.min &&
       horizon <= horizonRange.max &&
+      (!selectedFeatureAwareModels.length || featureConfigHasAnyEnabled) &&
       testSize >= 1 &&
       !runLimitMessage &&
       !loading
@@ -973,12 +1036,14 @@ export function ForecastPage() {
         dataMode,
         timeColumn,
         targetColumns,
+        covariateColumns,
         aggregation: { enabled: dataMode === "raw", method: aggregationMethod },
         frequency: "auto",
         horizon,
         testSize,
         selectedModels,
         modelParameters: Object.fromEntries(selectedModels.map((modelId) => [modelId, modelParameters[modelId] ?? {}])),
+        featureConfig,
         missingValueStrategy,
         fillMissingTimeSteps,
         duplicateTimeStrategy,
@@ -1151,6 +1216,33 @@ export function ForecastPage() {
                   <p className="text-xs text-slate-500 dark:text-slate-400">已选择 {targetColumns.length} / {maxTargetColumns} 个目标列。</p>
                   {targetColumns.length > 1 ? <p className="text-xs text-amber-600 dark:text-amber-300">多目标会按目标列分别运行单变量预测。</p> : null}
                 </div>
+                <div className="space-y-2">
+                  <span className="text-sm font-medium text-slate-700 dark:text-slate-200">协变量列（可选）</span>
+                  <div className="max-h-44 overflow-auto rounded-2xl border border-slate-200 p-2 dark:border-white/10">
+                    {availableCovariateColumns.length ? availableCovariateColumns.map((column) => {
+                      const selected = covariateColumns.includes(column.name);
+                      return (
+                        <label key={column.name} className="flex items-center gap-2 rounded-xl px-2 py-2 text-sm hover:bg-slate-50 dark:hover:bg-white/5">
+                          <input
+                            type="checkbox"
+                            checked={selected}
+                            onChange={(event) =>
+                              setCovariateColumns((current) => {
+                                if (!event.target.checked) return current.filter((item) => item !== column.name);
+                                return current.includes(column.name) ? current : [...current, column.name];
+                              })
+                            }
+                          />
+                          <span className="min-w-0 flex-1 truncate">{column.name}</span>
+                          <Badge tone={column.inferredType === "boolean" ? "info" : "good"}>{column.inferredType}</Badge>
+                        </label>
+                      );
+                    }) : (
+                      <div className="px-2 py-3 text-sm text-slate-500 dark:text-slate-400">当前没有可选协变量。协变量只支持数值或布尔列，且不能与时间列、目标列重复。</div>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">已选择 {covariateColumns.length} 个协变量。当前同一时间桶内多行协变量会按均值对齐。</p>
+                </div>
               </div>
               <div className="mt-5 border-t border-slate-200 pt-5 dark:border-white/10">
                 <div className="mb-3">
@@ -1225,6 +1317,45 @@ export function ForecastPage() {
                     <br />
                     {parameterStrategy === "auto" ? "自动优化会按运行模式控制候选数量和时间预算。" : "默认参数会直接使用高级设置中的模型参数。"}
                   </div>
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-[#151b2e]">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-slate-900 dark:text-white">featureConfig</div>
+                      <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">当前只会被支持特征工程的模型消费：XGBoost、LightGBM、Random Forest。</p>
+                    </div>
+                    <div className="text-xs text-slate-500 dark:text-slate-400">
+                      生效模型：{selectedFeatureAwareModels.length ? selectedFeatureAwareModels.map((model) => model.name).join(" / ") : "当前未选中"}
+                    </div>
+                  </div>
+                  <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                    {[
+                      ["lagFeatures", "Lag 特征", "lag_1 / lag_7 等历史滞后值"],
+                      ["rollingFeatures", "滚动统计", "rolling mean / std"],
+                      ["calendarFeatures", "日历/趋势", "time index、weekday、month"],
+                      ["covariates", "用户协变量", "使用左侧勾选的协变量列"]
+                    ].map(([key, label, description]) => (
+                      <label key={key} className="rounded-2xl border border-slate-200 p-3 text-sm dark:border-white/10">
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="checkbox"
+                            checked={featureConfig[key as keyof FeatureConfig]}
+                            onChange={(event) => setFeatureConfig((current) => ({ ...current, [key]: event.target.checked }))}
+                          />
+                          <span className="font-medium text-slate-800 dark:text-slate-100">{label}</span>
+                        </div>
+                        <div className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">{description}</div>
+                      </label>
+                    ))}
+                  </div>
+                  {!featureConfigHasAnyEnabled && selectedFeatureAwareModels.length ? (
+                    <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
+                      当前已经选中了会消费 featureConfig 的模型，请至少保留一种特征族，否则这些模型没有可用输入。
+                    </div>
+                  ) : null}
+                  {covariateColumns.length && !featureConfig.covariates ? (
+                    <div className="mt-3 text-xs text-slate-500 dark:text-slate-400">你已经选中了 {covariateColumns.length} 个协变量，但“用户协变量”开关当前关闭，运行时不会使用它们。</div>
+                  ) : null}
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
                   <label className="space-y-2">

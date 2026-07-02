@@ -13,6 +13,7 @@ from app.core.storage import read_upload_metadata
 from app.db.models import ExperimentRecord, ReportRecord
 from app.db.session import get_db
 from app.schemas import ExperimentDetail, ExperimentListItem, ExperimentManifest, ExperimentRerunFileMatch, ExperimentRerunRequest, ExperimentRerunResponse
+from app.services.data_health import build_data_health_report, extract_detected_frequency
 
 
 router = APIRouter(prefix="/api/experiments", tags=["experiments"])
@@ -22,6 +23,13 @@ def _loads(value: str | None, default):
     if not value:
         return default
     return json.loads(value)
+
+
+def _to_int(value, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 @router.post("/rerun", response_model=ExperimentRerunResponse)
@@ -96,6 +104,16 @@ def get_experiment(experiment_id: str, db: Session = Depends(get_db)):
         reports = db.scalars(
             select(ReportRecord).where(ReportRecord.experiment_id == experiment_id).order_by(ReportRecord.created_at.desc())
         ).all()
+        config = _loads(record.config_json, {})
+        data_profile = _loads(record.data_profile_json, {})
+        manifest = _loads(record.manifest_json, None)
+        diagnostics = _loads(record.diagnostics_json, {})
+        data_health = build_data_health_report(
+            diagnostics,
+            detected_frequency=extract_detected_frequency(data_profile=data_profile, manifest=manifest),
+            horizon=_to_int(config.get("horizon"), 1) if isinstance(config, dict) else 1,
+            test_size=_to_int(config.get("testSize"), 1) if isinstance(config, dict) else 1,
+        )
         return ExperimentDetail(
             experimentId=record.id,
             experimentName=record.name,
@@ -105,15 +123,16 @@ def get_experiment(experiment_id: str, db: Session = Depends(get_db)):
             recommendedModelId=record.recommended_model_id,
             bestMae=float(record.best_mae) if record.best_mae is not None else None,
             createdAt=record.created_at.isoformat(),
-            config=_loads(record.config_json, {}),
-            dataProfile=_loads(record.data_profile_json, {}),
+            config=config,
+            dataProfile=data_profile,
             rankedModels=_loads(record.metrics_json, []),
             backtest=_loads(record.backtest_json, {}),
-            diagnostics=_loads(record.diagnostics_json, {}),
+            diagnostics=diagnostics,
+            dataHealth=data_health.model_dump() if data_health else None,
             series=_loads(record.series_json, []),
             finalForecast=_loads(record.final_forecast_json, None),
             modelLogs=_loads(record.model_logs_json, []),
-            manifest=_loads(record.manifest_json, None),
+            manifest=manifest,
             configHash=record.config_hash,
             sourceFileSha256=record.source_file_sha256,
             appVersion=record.app_version,

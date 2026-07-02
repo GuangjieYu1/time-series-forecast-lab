@@ -29,6 +29,7 @@ from app.schemas import (
     TargetResult,
 )
 from app.services.backtest_runner import ModelProgressEvent, run_holdout_backtest
+from app.services.data_health import build_data_health_report
 from app.services.file_parser import read_sheet_dataframe
 from app.services.forecast_runner import run_final_forecast
 from app.services.model_registry import MODEL_CAPABILITIES, MODEL_FACTORIES
@@ -51,6 +52,16 @@ def _validate_run_budget(request: ForecastRunRequest) -> None:
         raise AppError("请选择至少一个预测目标列。", code="NO_TARGET_COLUMNS")
     if not request.selectedModels:
         raise AppError("请选择至少一个可运行模型。", code="NO_MODELS_SELECTED")
+    if request.timeColumn in request.targetColumns:
+        raise AppError("时间列不能同时作为预测目标列。", code="TIME_COLUMN_AS_TARGET")
+
+    covariate_overlap = sorted(set(request.covariateColumns) & ({request.timeColumn} | set(request.targetColumns)))
+    if covariate_overlap:
+        raise AppError(
+            f"协变量不能与时间列或目标列重复：{', '.join(covariate_overlap)}。",
+            code="INVALID_COVARIATE_SELECTION",
+            details={"overlapColumns": covariate_overlap},
+        )
 
     unknown_models = [model_id for model_id in request.selectedModels if model_id not in MODEL_CAPABILITIES]
     if unknown_models:
@@ -67,6 +78,13 @@ def _validate_run_budget(request: ForecastRunRequest) -> None:
             f"这些模型还没有接入执行器：{', '.join(names)}。",
             code="MODEL_NOT_RUNNABLE",
             details={"models": disconnected_models},
+        )
+    feature_models = [model_id for model_id in request.selectedModels if MODEL_CAPABILITIES[model_id].supportsCovariates]
+    if feature_models and not any(request.featureConfig.model_dump().values()):
+        raise AppError(
+            "当前已选择需要特征工程的模型，请至少启用一种特征族。",
+            code="NO_FEATURES_ENABLED",
+            details={"models": feature_models},
         )
 
     target_count = len(request.targetColumns)
@@ -259,8 +277,17 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
                 parameter_strategy=request.parameterStrategy,
                 run_profile=request.runProfile,
                 random_seed=request.randomSeed,
+                feature_config=request.featureConfig.model_dump(),
                 progress_callback=report_model_progress,
             )
+            data_health = build_data_health_report(
+                build.series.diagnostics,
+                detected_frequency=build.series.frequency,
+                horizon=request.horizon,
+                test_size=request.testSize,
+            )
+            if data_health is None:
+                raise AppError("无法生成数据健康报告。", code="DATA_HEALTH_BUILD_FAILED")
             target_result = TargetResult(
                 targetColumn=target_column,
                 detectedFrequency=build.series.frequency,
@@ -268,6 +295,7 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
                 rankedModels=backtest.rankedModels,
                 backtest=backtest.backtest,
                 diagnostics=build.series.diagnostics,
+                dataHealth=data_health,
             )
             target_results.append(target_result)
             series_profiles.append(build.data_profile)
@@ -349,7 +377,9 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
             rankedModels=first.rankedModels,
             backtest=first.backtest,
             diagnostics=first.diagnostics,
+            dataHealth=first.dataHealth,
             targetResults=target_results,
+            manifest=manifest,
         )
         progress_tracker.finish(run_id, "completed", "实验完成，结果已保存。")
         logger.info(
@@ -414,6 +444,10 @@ def final_forecast(request: FinalForecastRequest, db: Session = Depends(get_db))
         first_profile = data_profile["targets"][0]
         history = json.loads(record.series_json)
         saved_config = json.loads(record.config_json)
+        covariate_history = [
+            {key: float(value) for key, value in row.items() if key != "time"}
+            for row in first_profile.get("covariateHistory", [])
+        ]
 
         def report_final_progress(stage: str):
             if stage == "fitting":
@@ -444,6 +478,8 @@ def final_forecast(request: FinalForecastRequest, db: Session = Depends(get_db))
             frequency=first_profile["detectedFrequency"],
             history=history,
             model_parameters=_selected_model_parameters_for_final_forecast(record, request.finalModelId, saved_config),
+            covariate_history=covariate_history or None,
+            feature_config=saved_config.get("featureConfig"),
             progress_callback=report_final_progress,
         )
         progress_tracker.update_model(

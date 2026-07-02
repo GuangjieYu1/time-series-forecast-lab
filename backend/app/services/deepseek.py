@@ -8,6 +8,17 @@ import httpx
 from app.core.errors import AppError
 from app.schemas import DeepSeekConnectionResponse, ReportOptions
 from app.services.auto_tuning.service import describe_tuning_profile
+from app.services.model_registry import MODEL_CAPABILITIES
+
+
+FEATURE_FAMILY_LABELS = {
+    "lagFeatures": "Lag features",
+    "rollingFeatures": "Rolling statistics",
+    "calendarFeatures": "Calendar features",
+    "covariates": "Covariates",
+}
+
+FEATURE_MODEL_IDS = {model_id for model_id, capability in MODEL_CAPABILITIES.items() if capability.supportsCovariates}
 
 
 def _endpoint(base_url: str) -> str:
@@ -26,6 +37,59 @@ def _sanitize_error(exc: Exception) -> str:
     if isinstance(exc, httpx.RequestError):
         return "无法连接 DeepSeek，请检查 Base URL 或网络连接。"
     return "DeepSeek 调用失败，请检查 API Key、模型名称、余额或网络连接。"
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _model_sort_key(model: dict[str, Any]) -> tuple[float, float, str]:
+    metrics = _as_dict(model.get("metrics"))
+    mae = _safe_float(metrics.get("mae"))
+    rank = _safe_float(model.get("rank"))
+    return (
+        mae if mae is not None else float("inf"),
+        rank if rank is not None else float("inf"),
+        str(model.get("modelId") or ""),
+    )
+
+
+def _model_display_name(model: dict[str, Any]) -> str:
+    return str(model.get("modelName") or model.get("modelId") or "unknown")
+
+
+def _join_inline(items: list[str], empty: str = "无") -> str:
+    filtered = [item for item in items if item]
+    return "、".join(filtered) if filtered else empty
+
+
+def _window_label(start: Any, end: Any) -> str:
+    if start and end:
+        return f"{start} → {end}"
+    if start:
+        return str(start)
+    if end:
+        return str(end)
+    return "—"
+
+
+def _format_model_ref(model: dict[str, Any] | None) -> str:
+    if not model:
+        return "—"
+    return f"{_model_display_name(model)} (`{model.get('modelId') or 'unknown'}`)"
 
 
 def test_deepseek_connection(api_key: str, base_url: str, model: str) -> DeepSeekConnectionResponse:
@@ -79,6 +143,9 @@ def build_report_context(experiment: dict[str, Any]) -> dict[str, Any]:
             )
     top_residuals.sort(key=lambda item: abs(float(item.get("residual") or 0)), reverse=True)
     targets = _build_target_context(experiment)
+    feature_pipeline = _build_feature_pipeline_summary(experiment, targets)
+    workflow_report = _build_workflow_report(experiment, targets)
+    model_recommendation = _build_model_recommendation_summary(experiment, targets, feature_pipeline)
 
     return {
         "experiment": {
@@ -93,8 +160,12 @@ def build_report_context(experiment: dict[str, Any]) -> dict[str, Any]:
         },
         "config": experiment.get("config", {}),
         "diagnostics": diagnostics,
+        "dataHealth": experiment.get("dataHealth"),
         "rankedModels": ranked_models,
         "targets": targets,
+        "featurePipeline": feature_pipeline,
+        "workflowReport": workflow_report,
+        "modelRecommendation": model_recommendation,
         "autoTuning": _build_auto_tuning_summary(experiment, targets),
         "topResidualPoints": top_residuals[:12],
         "finalForecastSummary": _forecast_summary(final_forecast),
@@ -138,6 +209,210 @@ def _build_target_context(experiment: dict[str, Any]) -> list[dict[str, Any]]:
             "models": [_compact_model_entry(model) for model in experiment.get("rankedModels", []) if isinstance(model, dict)],
         }
     ]
+
+
+def _build_feature_pipeline_summary(experiment: dict[str, Any], targets: list[dict[str, Any]]) -> dict[str, Any]:
+    config = _as_dict(experiment.get("config"))
+    data_profile = _as_dict(experiment.get("dataProfile"))
+    manifest = _as_dict(experiment.get("manifest"))
+    manifest_data = _as_dict(manifest.get("data"))
+    feature_config = _as_dict(data_profile.get("featureConfig") or config.get("featureConfig"))
+    covariate_columns = _as_list(
+        data_profile.get("covariateColumns")
+        or config.get("covariateColumns")
+        or manifest_data.get("covariateColumns")
+    )
+    enabled_feature_families = [
+        label for key, label in FEATURE_FAMILY_LABELS.items() if bool(feature_config.get(key))
+    ]
+    disabled_feature_families = [
+        label for key, label in FEATURE_FAMILY_LABELS.items() if not bool(feature_config.get(key))
+    ]
+    selected_model_ids = _as_list(config.get("selectedModels"))
+    if not selected_model_ids:
+        selected_model_ids = list(
+            dict.fromkeys(
+                model.get("modelId")
+                for target in targets
+                for model in _as_list(target.get("models"))
+                if isinstance(model, dict) and model.get("modelId")
+            )
+        )
+    feature_ready_models = [
+        f"{MODEL_CAPABILITIES[model_id].name} ({model_id})"
+        for model_id in selected_model_ids
+        if model_id in MODEL_CAPABILITIES and MODEL_CAPABILITIES[model_id].supportsCovariates
+    ]
+    cleaning = _as_dict(data_profile.get("cleaning"))
+    data_mode = str(data_profile.get("mode") or config.get("dataMode") or "unknown")
+    aggregation = data_profile.get("aggregation")
+    alignment_strategy = (
+        "本次未选择协变量，特征管线只使用时间序列派生特征。"
+        if not covariate_columns
+        else "协变量先在同一时间桶内按均值聚合，再与目标序列按规则频率对齐；缺失值先前向/后向填充，仍为空时补 0。"
+    )
+    return {
+        "dataMode": data_mode,
+        "timeColumn": data_profile.get("timeColumn") or config.get("timeColumn") or manifest_data.get("timeColumn"),
+        "targetColumns": [target.get("targetColumn") for target in targets if target.get("targetColumn")],
+        "covariateColumns": covariate_columns,
+        "enabledFeatureFamilies": enabled_feature_families,
+        "disabledFeatureFamilies": disabled_feature_families,
+        "featureReadyModels": feature_ready_models,
+        "featureConfig": feature_config,
+        "aggregation": aggregation,
+        "detectedFrequency": data_profile.get("detectedFrequency"),
+        "sourceFrequency": data_profile.get("sourceFrequency"),
+        "historyPointCount": len(_as_list(data_profile.get("history"))),
+        "covariatePointCount": len(_as_list(data_profile.get("covariateHistory"))),
+        "cleaning": cleaning,
+        "alignmentStrategy": alignment_strategy,
+        "usesCovariates": bool(covariate_columns and feature_config.get("covariates", True)),
+    }
+
+
+def _build_workflow_report(experiment: dict[str, Any], targets: list[dict[str, Any]]) -> dict[str, Any]:
+    config = _as_dict(experiment.get("config"))
+    selected_models = _as_list(config.get("selectedModels"))
+    if not selected_models:
+        selected_models = list(
+            dict.fromkeys(
+                model.get("modelId")
+                for target in targets
+                for model in _as_list(target.get("models"))
+                if isinstance(model, dict) and model.get("modelId")
+            )
+        )
+    selected_model_names = [
+        f"{MODEL_CAPABILITIES[model_id].name} ({model_id})"
+        if model_id in MODEL_CAPABILITIES
+        else str(model_id)
+        for model_id in selected_models
+    ]
+    target_summaries: list[dict[str, Any]] = []
+    success_count = 0
+    failed_count = 0
+    for target in targets:
+        models = [model for model in _as_list(target.get("models")) if isinstance(model, dict)]
+        successful_models = [_model_display_name(model) for model in models if model.get("status") == "success"]
+        failed_models = [_model_display_name(model) for model in models if model.get("status") == "failed"]
+        success_count += len(successful_models)
+        failed_count += len(failed_models)
+        target_summaries.append(
+            {
+                "targetColumn": target.get("targetColumn"),
+                "detectedFrequency": target.get("detectedFrequency"),
+                "trainWindow": _window_label(target.get("trainStart"), target.get("trainEnd")),
+                "testWindow": _window_label(target.get("testStart"), target.get("testEnd")),
+                "recommendedModelId": target.get("recommendedModelId"),
+                "successfulModels": successful_models,
+                "failedModels": failed_models,
+            }
+        )
+    return {
+        "targetCount": len(targets),
+        "modelCount": len(selected_models),
+        "modelRunCount": sum(len(_as_list(target.get("models"))) for target in targets),
+        "successfulModelRuns": success_count,
+        "failedModelRuns": failed_count,
+        "selectedModels": selected_models,
+        "selectedModelNames": selected_model_names,
+        "horizon": config.get("horizon"),
+        "testSize": config.get("testSize"),
+        "holdoutPolicy": f"最后 {config.get('testSize')} 个时间点作为 Holdout。" if config.get("testSize") else None,
+        "runProfile": config.get("runProfile"),
+        "parameterStrategy": config.get("parameterStrategy"),
+        "randomSeed": config.get("randomSeed"),
+        "finalForecastGenerated": bool(experiment.get("finalForecast")),
+        "targets": target_summaries,
+    }
+
+
+def _build_model_recommendation_summary(
+    experiment: dict[str, Any],
+    targets: list[dict[str, Any]],
+    feature_pipeline: dict[str, Any],
+) -> dict[str, Any]:
+    recommendations: list[dict[str, Any]] = []
+    uses_covariates = bool(feature_pipeline.get("usesCovariates"))
+    enabled_features = _as_list(feature_pipeline.get("enabledFeatureFamilies"))
+    for target in targets:
+        models = [model for model in _as_list(target.get("models")) if isinstance(model, dict)]
+        successful_models = [model for model in models if model.get("status") == "success"]
+        successful_models.sort(key=_model_sort_key)
+        recommended_model_id = target.get("recommendedModelId")
+        recommended_model = next((model for model in models if model.get("modelId") == recommended_model_id), None)
+        if recommended_model is None and successful_models:
+            recommended_model = successful_models[0]
+            recommended_model_id = recommended_model.get("modelId")
+        runner_up = next(
+            (
+                model
+                for model in successful_models
+                if recommended_model and model.get("modelId") != recommended_model.get("modelId")
+            ),
+            None,
+        )
+        reasons: list[str] = []
+        caveats: list[str] = []
+        if recommended_model is None:
+            caveats.append("该目标列没有成功模型，因此当前没有可靠推荐。")
+        else:
+            metrics = _as_dict(recommended_model.get("metrics"))
+            mae = _safe_float(metrics.get("mae"))
+            rmse = _safe_float(metrics.get("rmse"))
+            wape = _safe_float(metrics.get("wape"))
+            if mae is not None:
+                reasons.append(f"在成功模型中 MAE 最低，为 {mae:.4f}。")
+            if rmse is not None:
+                reasons.append(f"RMSE 为 {rmse:.4f}，可作为误差波动量级的补充参考。")
+            if wape is not None:
+                reasons.append(f"WAPE 为 {wape:.4f}，说明相对误差处于可对比区间。")
+            if runner_up is not None:
+                runner_mae = _safe_float(_as_dict(runner_up.get("metrics")).get("mae"))
+                if mae is not None and runner_mae is not None:
+                    gap = runner_mae - mae
+                    if gap > 0:
+                        reasons.append(f"相比第二名 {_model_display_name(runner_up)}，MAE 再下降 {gap:.4f}。")
+                    elif gap == 0:
+                        caveats.append(f"与第二名 {_model_display_name(runner_up)} 的 MAE 持平，建议结合业务可解释性一起判断。")
+            tuning = _as_dict(recommended_model.get("tuning"))
+            if tuning and (tuning.get("enabled") or tuning.get("strategy") == "auto"):
+                reasons.append(
+                    f"该模型经历了自动优化，共评估 {tuning.get('candidateCount', 0)} 个候选，最终最佳 MAE 为 {_format_metric(tuning.get('bestMetric'))}。"
+                )
+            elif tuning:
+                reasons.append("该模型未启用自动优化，沿用了默认参数或手动高级参数。")
+            if uses_covariates and recommended_model.get("modelId") in FEATURE_MODEL_IDS:
+                reasons.append(f"该模型可直接消费已启用的特征管线：{_join_inline(enabled_features)}。")
+            warnings = [str(warning) for warning in _as_list(recommended_model.get("warnings")) if warning]
+            if warnings:
+                caveats.extend(warnings[:3])
+        recommendations.append(
+            {
+                "targetColumn": target.get("targetColumn"),
+                "recommendedModelId": recommended_model_id,
+                "recommendedModelName": _model_display_name(recommended_model) if recommended_model else None,
+                "runnerUpModelId": runner_up.get("modelId") if runner_up else None,
+                "runnerUpModelName": _model_display_name(runner_up) if runner_up else None,
+                "maeGapVsRunnerUp": (
+                    None
+                    if recommended_model is None or runner_up is None
+                    else (
+                        (_safe_float(_as_dict(runner_up.get("metrics")).get("mae")) or 0.0)
+                        - (_safe_float(_as_dict(recommended_model.get("metrics")).get("mae")) or 0.0)
+                    )
+                ),
+                "bestMetrics": _as_dict(recommended_model.get("metrics")) if recommended_model else {},
+                "tuning": _as_dict(recommended_model.get("tuning")) if recommended_model else {},
+                "reasons": reasons,
+                "caveats": caveats,
+            }
+        )
+    return {
+        "experimentRecommendedModelId": experiment.get("recommendedModelId"),
+        "recommendations": recommendations,
+    }
 
 
 def _compact_model_entry(model: dict[str, Any]) -> dict[str, Any]:
@@ -239,34 +514,49 @@ def _forecast_summary(final_forecast: dict[str, Any] | None) -> dict[str, Any] |
 
 def build_report_prompt(context: dict[str, Any], options: ReportOptions) -> list[dict[str, str]]:
     compact_context = json.dumps(context, ensure_ascii=False, indent=2)
+    required_sections: list[str] = []
+    if options.includeFeaturePipeline:
+        required_sections.append("特征管线（Feature Pipeline）：说明 featureConfig、covariates、聚合/对齐/补值策略，以及哪些模型会消费这些特征。")
+    if options.includeWorkflowReport:
+        required_sections.append("实验工作流（Workflow Report）：说明数据模式、频率、Holdout 切分、run profile、自动优化开关，以及最终预测是否已生成。")
+    required_sections.append("数据健康与清洁概览。")
+    if options.includeModelComparison:
+        required_sections.append("模型对比结论。")
+    required_sections.append("自动优化策略说明（如果本次开启了自动优化）。")
+    required_sections.append("参数变化与结果变化分析。")
+    if options.includeModelRecommendation:
+        required_sections.append("模型推荐结论：单独解释为什么推荐当前模型，并与第二名或主要备选模型比较。")
+    if options.includeResidualAnalysis:
+        required_sections.append("残差分析。")
+    if options.includeFinalForecast:
+        required_sections.append("最终预测结果。")
+    required_sections.extend(["业务解释。", "建议。", "风险与限制。"])
+    section_lines = "\n".join(f"{index}. {section}" for index, section in enumerate(required_sections, start=1))
     system = (
         "你是资深时间序列预测分析师。请基于给定实验摘要生成中文 Markdown 报告。"
         "不要声称看过原始文件或完整业务明细；只使用摘要、指标、残差、调参记录和预测结果。"
         "残差定义必须保持为 residual = actual - predicted。"
         "如果启用了自动优化，必须解释优化策略、候选参数变化与指标变化的关系，以及最终参数为何被选中。"
+        "如果上下文里提供了 featurePipeline、workflowReport、modelRecommendation，请在正文中准确引用。"
     )
     user = f"""
 请生成一份{options.style}风格、{options.length}长度的中文时间序列预测分析报告。
 
 报告必须包含：
-1. 数据概览
-2. 模型对比结论
-3. 自动优化策略说明（如果本次开启了自动优化）
-4. 参数变化与结果变化分析
-5. 残差分析
-6. 最终预测结果
-7. 业务解释
-8. 建议
-9. 风险与限制
+{section_lines}
 
 写作要求：
 - 使用 Markdown，并优先使用二级、三级标题组织结构。
 - 保留 MAE、MSE、RMSE、WAPE、Residual、Holdout 等术语，并给中文解释。
 - 明确说明 residual = actual - predicted，正残差代表模型低估，负残差代表模型高估。
+- 如果提供了 Data Health，请解释健康分、关键 warnings，以及这些问题如何影响模型可信度。
 - 如果某些模型失败，要解释为单模型失败，不影响其他模型比较。
 - 如果有自动调参记录，要分析候选参数如何影响 MAE / RMSE / WAPE，并解释最终选型逻辑。
+- 如果上下文提供了模型推荐摘要，要解释推荐模型、第二名、MAE 差值、是否使用自动优化，以及启用的特征管线如何影响最终推荐。
+- 如果上下文提供了 feature pipeline / workflow，请把它们写成正文独立小节，而不是只在结尾一笔带过。
 - 可以使用 Markdown 表格总结关键候选，但不要把整段 JSON 原样重复到正文里。
 - 不要输出 API Key、不要编造不存在的原始明细。
+- 如果某个可选章节未开启，就不要输出该章节。
 
 实验摘要如下：
 ```json
@@ -278,10 +568,10 @@ def build_report_prompt(context: dict[str, Any], options: ReportOptions) -> list
 
 def _report_max_tokens(length: str) -> int:
     if length == "long":
-        return 3600
+        return 4600
     if length == "medium":
-        return 2400
-    return 1400
+        return 3200
+    return 1800
 
 
 def _request_completion(
@@ -348,6 +638,168 @@ def _format_metric(value: Any) -> str:
 def _md_cell(value: Any) -> str:
     text = str(value)
     return text.replace("|", "\\|").replace("\n", "<br/>")
+
+
+def _build_feature_workflow_appendix(context: dict[str, Any], options: ReportOptions) -> str:
+    lines: list[str] = []
+    feature_pipeline = _as_dict(context.get("featurePipeline"))
+    workflow_report = _as_dict(context.get("workflowReport"))
+
+    if options.includeFeaturePipeline:
+        covariates = [str(item) for item in _as_list(feature_pipeline.get("covariateColumns")) if item]
+        enabled_features = [str(item) for item in _as_list(feature_pipeline.get("enabledFeatureFamilies")) if item]
+        ready_models = [str(item) for item in _as_list(feature_pipeline.get("featureReadyModels")) if item]
+        lines.extend(
+            [
+                "## 附录：Feature Pipeline",
+                "",
+                "### 配置摘要",
+                "",
+                f"- 数据模式：`{feature_pipeline.get('dataMode') or 'unknown'}`",
+                f"- 时间列：`{feature_pipeline.get('timeColumn') or 'unknown'}`",
+                f"- 目标列：{_join_inline([f'`{item}`' for item in _as_list(feature_pipeline.get('targetColumns')) if item], '无')}",
+                f"- 协变量列：{_join_inline([f'`{item}`' for item in covariates], '未选择')}",
+                f"- 启用特征族：{_join_inline(enabled_features, '未启用')}",
+                f"- 关闭特征族：{_join_inline([str(item) for item in _as_list(feature_pipeline.get('disabledFeatureFamilies')) if item], '无')}",
+                f"- 可直接消费这些特征的模型：{_join_inline(ready_models, '当前未选择特征模型')}",
+                f"- 聚合 / 去重策略：`{feature_pipeline.get('aggregation') or 'none'}`",
+                f"- 识别频率：`{feature_pipeline.get('detectedFrequency') or 'unknown'}`（源频率 `{feature_pipeline.get('sourceFrequency') or 'unknown'}`）",
+                f"- 历史点数：{feature_pipeline.get('historyPointCount', 0)} / 协变量对齐点数：{feature_pipeline.get('covariatePointCount', 0)}",
+                f"- 对齐策略：{feature_pipeline.get('alignmentStrategy') or '—'}",
+                "",
+                "原始 featureConfig：",
+                "```json",
+                json.dumps(_as_dict(feature_pipeline.get("featureConfig")), ensure_ascii=False, indent=2),
+                "```",
+                "",
+            ]
+        )
+        cleaning = _as_dict(feature_pipeline.get("cleaning"))
+        if cleaning:
+            lines.extend(
+                [
+                    "清洗与补值配置：",
+                    "```json",
+                    json.dumps(cleaning, ensure_ascii=False, indent=2),
+                    "```",
+                    "",
+                ]
+            )
+
+    if options.includeWorkflowReport:
+        lines.extend(
+            [
+                "## 附录：Workflow Report",
+                "",
+                "### 运行摘要",
+                "",
+                f"- 目标列数量：{workflow_report.get('targetCount', 0)}",
+                f"- 选择模型数量：{workflow_report.get('modelCount', 0)}",
+                f"- 实际目标-模型组合：{workflow_report.get('modelRunCount', 0)}",
+                f"- 成功组合：{workflow_report.get('successfulModelRuns', 0)}",
+                f"- 失败组合：{workflow_report.get('failedModelRuns', 0)}",
+                f"- 运行模式：`{workflow_report.get('runProfile') or 'balanced'}`",
+                f"- 参数策略：`{workflow_report.get('parameterStrategy') or 'default'}`",
+                f"- Holdout 策略：{workflow_report.get('holdoutPolicy') or '—'}",
+                f"- 预测 Horizon：{workflow_report.get('horizon') or '—'}",
+                f"- Test Size：{workflow_report.get('testSize') or '—'}",
+                f"- 随机种子：{workflow_report.get('randomSeed') or '—'}",
+                f"- 已生成最终预测：{'是' if workflow_report.get('finalForecastGenerated') else '否'}",
+                f"- 选择模型：{_join_inline([str(item) for item in _as_list(workflow_report.get('selectedModelNames')) if item], '无')}",
+                "",
+            ]
+        )
+        targets = [target for target in _as_list(workflow_report.get("targets")) if isinstance(target, dict)]
+        if targets:
+            lines.extend(
+                [
+                    "| 目标列 | 频率 | 训练窗口 | 测试窗口 | 成功模型 | 失败模型 | 推荐模型 |",
+                    "| --- | --- | --- | --- | --- | --- | --- |",
+                ]
+            )
+            for target in targets:
+                lines.append(
+                    "| "
+                    + " | ".join(
+                        [
+                            _md_cell(target.get("targetColumn") or "—"),
+                            _md_cell(target.get("detectedFrequency") or "—"),
+                            _md_cell(target.get("trainWindow") or "—"),
+                            _md_cell(target.get("testWindow") or "—"),
+                            _md_cell(_join_inline([str(item) for item in _as_list(target.get("successfulModels")) if item])),
+                            _md_cell(_join_inline([str(item) for item in _as_list(target.get("failedModels")) if item], "无")),
+                            _md_cell(target.get("recommendedModelId") or "—"),
+                        ]
+                    )
+                    + " |"
+                )
+            lines.append("")
+
+    return "\n".join(lines).strip()
+
+
+def _build_recommendation_appendix(context: dict[str, Any], options: ReportOptions) -> str:
+    if not options.includeModelRecommendation:
+        return ""
+    summary = _as_dict(context.get("modelRecommendation"))
+    recommendations = [item for item in _as_list(summary.get("recommendations")) if isinstance(item, dict)]
+    lines = [
+        "## 附录：模型推荐依据",
+        "",
+        f"- 实验级推荐模型：`{summary.get('experimentRecommendedModelId') or '未产生'}`",
+        "",
+    ]
+    if recommendations:
+        lines.extend(
+            [
+                "| 目标列 | 推荐模型 | MAE | RMSE | WAPE | 第二名 | MAE 差值 | 调参候选 |",
+                "| --- | --- | --- | --- | --- | --- | --- | --- |",
+            ]
+        )
+        for item in recommendations:
+            metrics = _as_dict(item.get("bestMetrics"))
+            tuning = _as_dict(item.get("tuning"))
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        _md_cell(item.get("targetColumn") or "—"),
+                        _md_cell(item.get("recommendedModelName") or item.get("recommendedModelId") or "—"),
+                        _md_cell(_format_metric(metrics.get("mae"))),
+                        _md_cell(_format_metric(metrics.get("rmse"))),
+                        _md_cell(_format_metric(metrics.get("wape"))),
+                        _md_cell(item.get("runnerUpModelName") or item.get("runnerUpModelId") or "—"),
+                        _md_cell(_format_metric(item.get("maeGapVsRunnerUp"))),
+                        _md_cell(tuning.get("candidateCount", 0)),
+                    ]
+                )
+                + " |"
+            )
+        lines.append("")
+
+    for item in recommendations:
+        lines.extend(
+            [
+                f"### 目标列：`{item.get('targetColumn') or 'unknown'}`",
+                "",
+                f"- 推荐模型：`{item.get('recommendedModelId') or '未产生'}` / {_md_cell(item.get('recommendedModelName') or '—')}",
+                f"- 第二名：`{item.get('runnerUpModelId') or '—'}` / {_md_cell(item.get('runnerUpModelName') or '—')}",
+                "",
+                "推荐理由：",
+            ]
+        )
+        reasons = [str(reason) for reason in _as_list(item.get("reasons")) if reason]
+        if reasons:
+            lines.extend([f"- {reason}" for reason in reasons])
+        else:
+            lines.append("- 暂无可解释推荐理由。")
+        caveats = [str(caveat) for caveat in _as_list(item.get("caveats")) if caveat]
+        if caveats:
+            lines.extend(["", "注意事项："])
+            lines.extend([f"- {caveat}" for caveat in caveats])
+        lines.append("")
+
+    return "\n".join(lines).strip()
 
 
 def _build_tuning_appendix(context: dict[str, Any], options: ReportOptions) -> str:
@@ -497,13 +949,23 @@ def generate_deepseek_report(api_key: str, base_url: str, model: str, context: d
         if not narrative:
             raise AppError("DeepSeek returned an empty report.", code="DEEPSEEK_EMPTY_REPORT")
 
-        appendix = _build_tuning_appendix(context, options)
+        appendices = [
+            appendix
+            for appendix in [
+                _build_feature_workflow_appendix(context, options),
+                _build_recommendation_appendix(context, options),
+                _build_tuning_appendix(context, options),
+            ]
+            if appendix.strip()
+        ]
         if last_finish_reason == "length":
             narrative = (
                 narrative.rstrip()
-                + "\n\n> 注：上方 AI 叙述达到模型输出上限；完整的自动优化逐轮明细和最终选型信息已在下方附录补齐。"
+                + "\n\n> 注：上方 AI 叙述达到模型输出上限；完整的 feature pipeline、workflow、模型推荐与自动优化逐轮明细已在下方附录补齐。"
             )
-        return f"{narrative.strip()}\n\n---\n\n{appendix.strip()}"
+        if not appendices:
+            return narrative.strip()
+        return f"{narrative.strip()}\n\n---\n\n" + "\n\n---\n\n".join(appendices)
     except AppError:
         raise
     except Exception as exc:

@@ -181,6 +181,9 @@ def test_raw_multi_sheet_end_to_end_history_and_cleanup(generated_fixtures: Path
     assert "invalidTimeCount" in forecast_body["diagnostics"]
     assert "outlierCount" in forecast_body["diagnostics"]
     assert forecast_body["diagnostics"]["cleaningActions"]
+    assert 0 <= forecast_body["dataHealth"]["score"] <= 100
+    assert forecast_body["manifest"]["configHash"]
+    assert forecast_body["targetResults"][0]["dataHealth"]["diagnostics"]["frequency"] == forecast_body["detectedFrequency"]
 
     progress_response = client.get("/api/forecast/progress/run_api_contract")
     assert progress_response.status_code == 200
@@ -212,6 +215,8 @@ def test_raw_multi_sheet_end_to_end_history_and_cleanup(generated_fixtures: Path
     assert detail["backtest"]["predictions"]
     assert detail["finalForecast"]["forecast"]
     assert "flight_no" not in detail["series"][0]
+    assert 0 <= detail["dataHealth"]["score"] <= 100
+    assert detail["dataHealth"]["diagnostics"]["frequency"] == forecast_body["detectedFrequency"]
 
     delete_response = client.delete(f"/api/experiments/{experiment_id}")
     assert delete_response.status_code == 200

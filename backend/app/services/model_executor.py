@@ -29,6 +29,40 @@ def should_isolate_model(model_id: str) -> bool:
     return model_id in ISOLATED_MODEL_IDS
 
 
+def fit_model_instance(
+    model_id: str,
+    model: Any,
+    times: list[datetime],
+    values: list[float],
+    frequency: str,
+    *,
+    covariates: list[dict[str, float]] | None = None,
+    feature_config: dict[str, bool] | None = None,
+) -> None:
+    from app.services.model_registry import MODEL_CAPABILITIES
+
+    capability = MODEL_CAPABILITIES.get(model_id)
+    if capability and capability.supportsCovariates:
+        model.fit(times, values, frequency, covariates=covariates, feature_config=feature_config)
+        return
+    model.fit(times, values, frequency)
+
+
+def predict_model_instance(
+    model_id: str,
+    model: Any,
+    horizon: int,
+    *,
+    future_covariates: list[dict[str, float]] | None = None,
+):
+    from app.services.model_registry import MODEL_CAPABILITIES
+
+    capability = MODEL_CAPABILITIES.get(model_id)
+    if capability and capability.supportsCovariates:
+        return model.predict(horizon, future_covariates=future_covariates)
+    return model.predict(horizon)
+
+
 def _isolated_fit_predict_worker(
     result_queue,
     model_id: str,
@@ -37,17 +71,28 @@ def _isolated_fit_predict_worker(
     values: list[float],
     frequency: str,
     horizon: int,
+    covariates: list[dict[str, float]] | None,
+    future_covariates: list[dict[str, float]] | None,
+    feature_config: dict[str, bool] | None,
 ) -> None:
     try:
         from app.services.model_registry import create_model
 
         model = create_model(model_id, parameters)
         fit_start = time.perf_counter()
-        model.fit(times, values, frequency)
+        fit_model_instance(
+            model_id,
+            model,
+            times,
+            values,
+            frequency,
+            covariates=covariates,
+            feature_config=feature_config,
+        )
         fit_seconds = time.perf_counter() - fit_start
 
         predict_start = time.perf_counter()
-        output = model.predict(horizon)
+        output = predict_model_instance(model_id, model, horizon, future_covariates=future_covariates)
         predict_seconds = time.perf_counter() - predict_start
         result_queue.put(
             {
@@ -71,13 +116,16 @@ def run_isolated_fit_predict(
     values: list[float],
     frequency: str,
     horizon: int,
+    covariates: list[dict[str, float]] | None = None,
+    future_covariates: list[dict[str, float]] | None = None,
+    feature_config: dict[str, bool] | None = None,
     timeout_seconds: int = ISOLATED_MODEL_TIMEOUT_SECONDS,
 ) -> IsolatedModelResult:
     context = mp.get_context("spawn")
     result_queue = context.Queue(maxsize=1)
     process = context.Process(
         target=_isolated_fit_predict_worker,
-        args=(result_queue, model_id, parameters, times, values, frequency, horizon),
+        args=(result_queue, model_id, parameters, times, values, frequency, horizon, covariates, future_covariates, feature_config),
         daemon=True,
     )
     process.start()

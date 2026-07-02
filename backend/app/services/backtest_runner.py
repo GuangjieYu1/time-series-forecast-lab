@@ -19,7 +19,7 @@ from app.schemas import (
 from app.services.auto_tuning import resolve_model_parameters
 from app.services.metrics import calculate_metrics
 from app.services.model_registry import MODEL_CAPABILITIES, create_model, validate_horizon
-from app.services.model_executor import run_isolated_fit_predict, should_isolate_model
+from app.services.model_executor import fit_model_instance, predict_model_instance, run_isolated_fit_predict, should_isolate_model
 from app.services.series_builder import TimeSeriesData
 
 
@@ -56,6 +56,7 @@ def run_holdout_backtest(
     parameter_strategy: str = "default",
     run_profile: str = "balanced",
     random_seed: int = 42,
+    feature_config: dict[str, bool] | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> BacktestResult:
     if not selected_models:
@@ -75,6 +76,8 @@ def run_holdout_backtest(
         raise AppError("Test size is too large for the available time series length.")
     train = points[:-test_size]
     test = points[-test_size:]
+    train_covariates = series.covariateRows[:-test_size] if series.covariateRows else None
+    test_covariates = series.covariateRows[-test_size:] if series.covariateRows else None
     min_train_size = 30
     if len(train) < min_train_size:
         series.diagnostics.warnings.append("Training points are fewer than 30; model comparison may be unstable.")
@@ -115,6 +118,9 @@ def run_holdout_backtest(
             train_values=[point.value for point in train],
             frequency=series.frequency,
             test_size=test_size,
+            train_covariates=train_covariates,
+            future_covariates=test_covariates,
+            feature_config=feature_config,
             progress_callback=report_tuning_progress,
         )
         selected_parameters = tuning.selectedParams
@@ -142,13 +148,24 @@ def run_holdout_backtest(
                     train_values,
                     series.frequency,
                     test_size,
+                    covariates=train_covariates,
+                    future_covariates=test_covariates,
+                    feature_config=feature_config,
                 )
                 fit_seconds = output.fit_seconds
                 predict_seconds = output.predict_seconds
             else:
                 model = create_model(model_id, selected_parameters)
                 fit_start = time.perf_counter()
-                model.fit(train_times, train_values, series.frequency)
+                fit_model_instance(
+                    model_id,
+                    model,
+                    train_times,
+                    train_values,
+                    series.frequency,
+                    covariates=train_covariates,
+                    feature_config=feature_config,
+                )
                 fit_seconds = time.perf_counter() - fit_start
 
                 if progress_callback:
@@ -156,7 +173,12 @@ def run_holdout_backtest(
                         ModelProgressEvent(modelId=model_id, stage="predicting", fitSeconds=fit_seconds)
                     )
                 predict_start = time.perf_counter()
-                output = model.predict(test_size)
+                output = predict_model_instance(
+                    model_id,
+                    model,
+                    test_size,
+                    future_covariates=test_covariates,
+                )
                 predict_seconds = time.perf_counter() - predict_start
             if should_isolate_model(model_id) and progress_callback:
                 progress_callback(ModelProgressEvent(modelId=model_id, stage="predicting", fitSeconds=fit_seconds))

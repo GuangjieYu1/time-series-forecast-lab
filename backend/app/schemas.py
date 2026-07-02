@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import datetime
 from typing import Any, Literal
 
@@ -72,6 +74,13 @@ class AggregationConfig(BaseModel):
     method: Literal["sum", "mean", "count", "max", "min"] = "sum"
 
 
+class FeatureConfig(BaseModel):
+    lagFeatures: bool = True
+    rollingFeatures: bool = True
+    calendarFeatures: bool = True
+    covariates: bool = True
+
+
 class ForecastRunRequest(BaseModel):
     runId: str | None = None
     uploadId: str
@@ -79,12 +88,14 @@ class ForecastRunRequest(BaseModel):
     dataMode: Literal["aggregated", "raw"]
     timeColumn: str
     targetColumns: list[str]
+    covariateColumns: list[str] = Field(default_factory=list)
     aggregation: AggregationConfig = Field(default_factory=AggregationConfig)
     frequency: str = "auto"
     horizon: int = Field(ge=1)
     testSize: int = Field(ge=1)
     selectedModels: list[str]
     modelParameters: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    featureConfig: FeatureConfig = Field(default_factory=FeatureConfig)
     missingValueStrategy: Literal["drop", "zero", "ffill", "interpolate"] = "drop"
     fillMissingTimeSteps: bool = True
     duplicateTimeStrategy: Literal["mean", "sum", "first", "last"] = "mean"
@@ -184,6 +195,35 @@ class Diagnostics(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class DataHealthDiagnostics(BaseModel):
+    frequency: str | None = None
+    validPointCount: int
+    trainPointCount: int
+    testPointCount: int
+    originalRowCount: int
+    droppedRowRate: float
+    invalidTimeRate: float
+    targetMissingRate: float
+    duplicateTimeRate: float
+    missingTimeRate: float
+    outlierRate: float
+    continuityCoverage: float
+    timeContinuous: bool
+    trainSizeSufficient: bool
+    testSizeReasonable: bool
+    timeStart: str | None = None
+    timeEnd: str | None = None
+    timeSpanDays: float | None = None
+
+
+class DataHealthReport(BaseModel):
+    score: int = Field(ge=0, le=100)
+    level: Literal["excellent", "good", "fair", "poor"]
+    warnings: list[str] = Field(default_factory=list)
+    suggestions: list[str] = Field(default_factory=list)
+    diagnostics: DataHealthDiagnostics
+
+
 class TargetResult(BaseModel):
     targetColumn: str
     detectedFrequency: str
@@ -191,6 +231,7 @@ class TargetResult(BaseModel):
     rankedModels: list[RankedModel]
     backtest: BacktestData
     diagnostics: Diagnostics
+    dataHealth: DataHealthReport
 
 
 class ForecastRunResponse(BaseModel):
@@ -203,7 +244,9 @@ class ForecastRunResponse(BaseModel):
     rankedModels: list[RankedModel]
     backtest: BacktestData
     diagnostics: Diagnostics
+    dataHealth: DataHealthReport
     targetResults: list[TargetResult]
+    manifest: ExperimentManifest | None = None
 
 
 class FinalForecastRequest(BaseModel):
@@ -288,6 +331,7 @@ class ExperimentDetail(BaseModel):
     rankedModels: list[dict[str, Any]]
     backtest: dict[str, Any]
     diagnostics: dict[str, Any]
+    dataHealth: dict[str, Any] | None = None
     series: list[dict[str, Any]]
     finalForecast: dict[str, Any] | None
     modelLogs: list[dict[str, Any]]
@@ -318,6 +362,7 @@ class ManifestDataSnapshot(BaseModel):
     columns: list[str]
     timeColumn: str
     targetColumns: list[str]
+    covariateColumns: list[str] = Field(default_factory=list)
 
 
 class ManifestModelResult(BaseModel):
@@ -410,6 +455,9 @@ class ReportOptions(BaseModel):
     language: str = "zh-CN"
     style: Literal["business", "technical"] = "business"
     length: Literal["short", "medium", "long"] = "medium"
+    includeFeaturePipeline: bool = True
+    includeWorkflowReport: bool = True
+    includeModelRecommendation: bool = True
     includeModelComparison: bool = True
     includeResidualAnalysis: bool = True
     includeFinalForecast: bool = True

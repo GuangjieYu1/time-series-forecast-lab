@@ -8,7 +8,7 @@ import pandas as pd
 
 from app.core.errors import AppError
 from app.schemas import FinalForecastResponse, ForecastPoint, HistoryPoint
-from app.services.model_executor import run_isolated_fit_predict, should_isolate_model
+from app.services.model_executor import fit_model_instance, predict_model_instance, run_isolated_fit_predict, should_isolate_model
 from app.services.model_registry import MODEL_CAPABILITIES, create_model, validate_horizon
 from app.services.series_builder import PANDAS_FREQ
 
@@ -30,6 +30,8 @@ def run_final_forecast(
     frequency: str,
     history: list[dict],
     model_parameters: dict[str, dict] | None = None,
+    covariate_history: list[dict[str, float]] | None = None,
+    feature_config: dict[str, bool] | None = None,
     progress_callback: FinalProgressCallback | None = None,
 ) -> FinalForecastResponse:
     if final_model_id not in MODEL_CAPABILITIES:
@@ -57,15 +59,32 @@ def run_final_forecast(
             should_isolate_model(final_model_id),
         )
         if should_isolate_model(final_model_id):
-            output = run_isolated_fit_predict(final_model_id, model_params, times, values, frequency, horizon)
+            output = run_isolated_fit_predict(
+                final_model_id,
+                model_params,
+                times,
+                values,
+                frequency,
+                horizon,
+                covariates=covariate_history,
+                feature_config=feature_config,
+            )
             if progress_callback:
                 progress_callback("predicting")
         else:
             model = create_model(final_model_id, model_params)
-            model.fit(times, values, frequency)
+            fit_model_instance(
+                final_model_id,
+                model,
+                times,
+                values,
+                frequency,
+                covariates=covariate_history,
+                feature_config=feature_config,
+            )
             if progress_callback:
                 progress_callback("predicting")
-            output = model.predict(horizon)
+            output = predict_model_instance(final_model_id, model, horizon)
     except Exception as exc:
         logger.exception(
             "final model run failed experiment_id=%s model=%s frequency=%s points=%s horizon=%s",

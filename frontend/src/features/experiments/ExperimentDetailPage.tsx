@@ -17,8 +17,9 @@ import {
   ResidualTimelineChart
 } from "../visualization/Charts";
 import { ReportPanel } from "../reports/ReportPanel";
+import { DataHealthPanel } from "../forecast/DataHealthPanel";
 
-type DetailTab = "overview" | "residual" | "metrics" | "distribution" | "final" | "report";
+type DetailTab = "dataHealth" | "overview" | "residual" | "metrics" | "distribution" | "final" | "report";
 
 function asForecastResult(experiment: ExperimentDetail): ForecastRunResponse {
   return {
@@ -31,7 +32,34 @@ function asForecastResult(experiment: ExperimentDetail): ForecastRunResponse {
     rankedModels: experiment.rankedModels,
     backtest: experiment.backtest,
     diagnostics: experiment.diagnostics,
-    targetResults: []
+    dataHealth: experiment.dataHealth ?? {
+      score: 0,
+      level: "poor",
+      warnings: [],
+      suggestions: [],
+      diagnostics: {
+        frequency: null,
+        validPointCount: 0,
+        trainPointCount: 0,
+        testPointCount: 0,
+        originalRowCount: 0,
+        droppedRowRate: 0,
+        invalidTimeRate: 0,
+        targetMissingRate: 0,
+        duplicateTimeRate: 0,
+        missingTimeRate: 0,
+        outlierRate: 0,
+        continuityCoverage: 0,
+        timeContinuous: true,
+        trainSizeSufficient: true,
+        testSizeReasonable: true,
+        timeStart: null,
+        timeEnd: null,
+        timeSpanDays: null
+      }
+    },
+    targetResults: [],
+    manifest: experiment.manifest,
   };
 }
 
@@ -69,7 +97,7 @@ export function ExperimentDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [tab, setTab] = useState<DetailTab>("overview");
+  const [tab, setTab] = useState<DetailTab>("dataHealth");
   const [copyState, setCopyState] = useState<"idle" | "done" | "failed">("idle");
 
   useEffect(() => {
@@ -149,8 +177,9 @@ export function ExperimentDetailPage() {
             value={tab}
             onChange={setTab}
             items={[
+              { id: "dataHealth", label: "数据健康" },
               { id: "overview", label: "预测对比" },
-              { id: "residual", label: "残差分析" },
+              { id: "residual", label: "残差诊断" },
               { id: "metrics", label: "指标排名" },
               { id: "distribution", label: "误差分布" },
               { id: "final", label: "最终预测" },
@@ -159,6 +188,8 @@ export function ExperimentDetailPage() {
           />
 
           <div className="mt-5">
+            {tab === "dataHealth" ? <DataHealthPanel dataHealth={experiment.dataHealth} /> : null}
+
             {tab === "overview" ? (
               <div className="grid gap-5">
                 <div className={`${surface.chartPanel} p-3`}>

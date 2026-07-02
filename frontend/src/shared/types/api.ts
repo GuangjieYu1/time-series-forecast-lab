@@ -109,6 +109,66 @@ export interface BacktestPredictionPoint {
   squaredError: number;
 }
 
+export interface Diagnostics {
+  originalRowCount: number;
+  validRowCount: number;
+  droppedRowCount: number;
+  duplicateTimeCount: number;
+  missingTimeCount: number;
+  invalidTimeCount: number;
+  inputMissingTargetCount: number;
+  invalidTargetCount: number;
+  filledValueCount: number;
+  outlierCount: number;
+  outlierAdjustedCount: number;
+  cleaningActions: string[];
+  timeStart: string | null;
+  timeEnd: string | null;
+  warnings: string[];
+}
+
+export interface DataHealthDiagnostics {
+  frequency: string | null;
+  validPointCount: number;
+  trainPointCount: number;
+  testPointCount: number;
+  originalRowCount: number;
+  droppedRowRate: number;
+  invalidTimeRate: number;
+  targetMissingRate: number;
+  duplicateTimeRate: number;
+  missingTimeRate: number;
+  outlierRate: number;
+  continuityCoverage: number;
+  timeContinuous: boolean;
+  trainSizeSufficient: boolean;
+  testSizeReasonable: boolean;
+  timeStart: string | null;
+  timeEnd: string | null;
+  timeSpanDays: number | null;
+}
+
+export interface DataHealth {
+  score: number;
+  level: "excellent" | "good" | "fair" | "poor";
+  warnings: string[];
+  suggestions: string[];
+  diagnostics: DataHealthDiagnostics;
+}
+
+export interface TargetResult {
+  targetColumn: string;
+  detectedFrequency: string;
+  recommendedModelId: string | null;
+  rankedModels: RankedModel[];
+  backtest: {
+    actual: { time: string; value: number }[];
+    predictions: Record<string, BacktestPredictionPoint[]>;
+  };
+  diagnostics: Diagnostics;
+  dataHealth: DataHealth;
+}
+
 export interface ForecastRunResponse {
   experimentId: string;
   targetColumn: string;
@@ -121,24 +181,17 @@ export interface ForecastRunResponse {
     actual: { time: string; value: number }[];
     predictions: Record<string, BacktestPredictionPoint[]>;
   };
-  diagnostics: {
-    originalRowCount: number;
-    validRowCount: number;
-    droppedRowCount: number;
-    duplicateTimeCount: number;
-    missingTimeCount: number;
-    invalidTimeCount: number;
-    inputMissingTargetCount: number;
-    invalidTargetCount: number;
-    filledValueCount: number;
-    outlierCount: number;
-    outlierAdjustedCount: number;
-    cleaningActions: string[];
-    timeStart: string | null;
-    timeEnd: string | null;
-    warnings: string[];
-  };
-  targetResults: unknown[];
+  diagnostics: Diagnostics;
+  dataHealth: DataHealth;
+  targetResults: TargetResult[];
+  manifest: ExperimentManifest | null;
+}
+
+export interface FeatureConfig {
+  lagFeatures: boolean;
+  rollingFeatures: boolean;
+  calendarFeatures: boolean;
+  covariates: boolean;
 }
 
 export interface ForecastRunRequest {
@@ -148,6 +201,7 @@ export interface ForecastRunRequest {
   dataMode: "aggregated" | "raw";
   timeColumn: string;
   targetColumns: string[];
+  covariateColumns: string[];
   aggregation: {
     enabled: boolean;
     method: "sum" | "mean" | "count" | "max" | "min";
@@ -157,6 +211,7 @@ export interface ForecastRunRequest {
   testSize: number;
   selectedModels: string[];
   modelParameters: Record<string, Record<string, number | string | boolean>>;
+  featureConfig: FeatureConfig;
   missingValueStrategy: "drop" | "zero" | "ffill" | "interpolate";
   fillMissingTimeSteps: boolean;
   duplicateTimeStrategy: "mean" | "sum" | "first" | "last";
@@ -229,7 +284,8 @@ export interface ExperimentDetail extends ExperimentListItem {
   dataProfile: Record<string, unknown>;
   rankedModels: RankedModel[];
   backtest: ForecastRunResponse["backtest"];
-  diagnostics: ForecastRunResponse["diagnostics"];
+  diagnostics: Diagnostics;
+  dataHealth: DataHealth | null;
   series: { time: string; value: number }[];
   finalForecast: FinalForecastResponse | null;
   modelLogs: unknown[];
@@ -266,6 +322,7 @@ export interface ExperimentManifest {
     columns: string[];
     timeColumn: string;
     targetColumns: string[];
+    covariateColumns: string[];
   };
   configuration: Record<string, unknown>;
   targets: Array<{
@@ -333,6 +390,9 @@ export interface ReportOptions {
   language: string;
   style: "business" | "technical";
   length: "short" | "medium" | "long";
+  includeFeaturePipeline: boolean;
+  includeWorkflowReport: boolean;
+  includeModelRecommendation: boolean;
   includeModelComparison: boolean;
   includeResidualAnalysis: boolean;
   includeFinalForecast: boolean;

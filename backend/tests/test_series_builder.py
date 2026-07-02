@@ -134,3 +134,29 @@ def test_missing_time_steps_can_be_interpolated():
     assert [point.value for point in result.series.points] == [100, 120, 140, 160]
     assert result.series.diagnostics.missingTimeCount == 1
     assert result.series.diagnostics.filledValueCount == 1
+
+
+def test_covariates_are_aligned_and_missing_values_are_filled():
+    df = pd.DataFrame(
+        {
+            "date": ["2026-06-01", "2026-06-02", "2026-06-03", "2026-06-04"],
+            "passenger_count": [100, 120, 140, 160],
+            "temperature": [26.0, None, 30.0, 31.0],
+            "promo_flag": [1, 0, 1, 1],
+        }
+    )
+    result = build_time_series(
+        df,
+        request(
+            covariateColumns=["temperature", "promo_flag"],
+            missingValueStrategy="ffill",
+        ),
+        "passenger_count",
+    )
+
+    assert result.series.covariateColumns == ["temperature", "promo_flag"]
+    assert len(result.series.covariateRows) == len(result.series.points)
+    assert result.series.covariateRows[0]["temperature"] == 26.0
+    assert result.series.covariateRows[1]["temperature"] == 26.0
+    assert result.series.covariateRows[2]["promo_flag"] == 1.0
+    assert result.data_profile["featureConfig"]["covariates"] is True

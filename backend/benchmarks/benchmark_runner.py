@@ -7,10 +7,10 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.main import app
-from benchmarks.cases import build_cases
+from benchmarks.benchmark_cases import build_cases
+from benchmarks.benchmark_metrics import elapsed_seconds, max_rss_mb, now
+from benchmarks.benchmark_report import write_summary
 from benchmarks.generators.generate_fixtures import ensure_benchmark_fixtures
-from benchmarks.metrics import elapsed_seconds, max_rss_mb, now
-from benchmarks.reporting import write_summary
 
 
 def _parse_args() -> argparse.Namespace:
@@ -48,9 +48,15 @@ def main() -> None:
         upload_status = "failed"
         run_status = "skipped"
         warning_count = 0
+        best_mae = None
+        data_health_score = None
         model_statuses: dict[str, str] = {}
+        model_results: list[dict] = []
         error: str | None = None
         experiment_id: str | None = None
+        row_count = None
+        column_count = None
+        selected_sheet: dict | None = None
         try:
             with case.path.open("rb") as handle:
                 upload_response = client.post("/api/upload/preview", files={"file": (case.path.name, handle, case.content_type)})
@@ -60,6 +66,13 @@ def main() -> None:
                 raise RuntimeError(error)
 
             upload_body = upload_response.json()
+            selected_sheet = next((sheet for sheet in upload_body.get("sheets", []) if sheet.get("sheetName") == case.request["sheetName"]), None)
+            if selected_sheet is None:
+                sheets = upload_body.get("sheets", [])
+                selected_sheet = sheets[0] if sheets else None
+            if isinstance(selected_sheet, dict):
+                row_count = selected_sheet.get("rowCountApprox")
+                column_count = len(selected_sheet.get("columns", []))
             run_request = {
                 "runId": f"bench_{case.name}",
                 "uploadId": upload_body["uploadId"],
@@ -76,7 +89,27 @@ def main() -> None:
                 warning_count = len(body["diagnostics"].get("warnings", [])) + sum(
                     len(model.get("warnings", [])) for model in body.get("rankedModels", [])
                 )
+                best_mae = next(
+                    (
+                        model["metrics"]["mae"]
+                        for model in body.get("rankedModels", [])
+                        if model.get("status") == "success" and isinstance(model.get("metrics"), dict) and model["metrics"].get("mae") is not None
+                    ),
+                    None,
+                )
+                data_health_score = (body.get("dataHealth") or {}).get("score")
                 model_statuses = {model["modelId"]: model["status"] for model in body.get("rankedModels", [])}
+                model_results = [
+                    {
+                        "modelId": model.get("modelId"),
+                        "modelName": model.get("modelName"),
+                        "status": model.get("status"),
+                        "warnings": model.get("warnings", []),
+                        "error": model.get("error"),
+                        "metrics": model.get("metrics"),
+                    }
+                    for model in body.get("rankedModels", [])
+                ]
                 client.delete(f"/api/experiments/{experiment_id}")
             else:
                 error = run_response.text
@@ -87,12 +120,21 @@ def main() -> None:
             {
                 "name": case.name,
                 "category": case.category,
+                "fileFormat": case.path.suffix.lstrip("."),
+                "rowCount": row_count,
+                "columnCount": column_count,
+                "targetColumns": case.request.get("targetColumns", []),
+                "covariateColumns": case.request.get("covariateColumns", []),
+                "selectedModels": case.request.get("selectedModels", []),
                 "uploadStatus": upload_status,
                 "runStatus": run_status,
                 "seconds": elapsed_seconds(case_started),
                 "memoryMb": max(0.0, round(max_rss_mb() - memory_before, 2)),
                 "warningCount": warning_count,
+                "bestMae": best_mae,
+                "dataHealthScore": data_health_score,
                 "modelStatuses": model_statuses,
+                "modelResults": model_results,
                 "experimentId": experiment_id,
                 "error": error,
             }
@@ -107,8 +149,7 @@ def main() -> None:
         "failedRuns": sum(1 for result in results if result["runStatus"] != "200"),
         "cases": results,
     }
-    output_dir = backend_root / "benchmarks" / "output"
-    json_path, md_path = write_summary(output_dir, summary)
+    json_path, md_path = write_summary(backend_root, summary)
     print(f"benchmark summary written to {json_path}")
     print(f"benchmark report written to {md_path}")
 

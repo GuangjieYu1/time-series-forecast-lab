@@ -10,15 +10,39 @@ const defaultOptions: ReportOptions = {
   language: "zh-CN",
   style: "business",
   length: "medium",
+  includeFeaturePipeline: true,
+  includeWorkflowReport: true,
+  includeModelRecommendation: true,
   includeModelComparison: true,
   includeResidualAnalysis: true,
   includeFinalForecast: true,
   includeWarnings: true
 };
 
-const loadingMessages = ["正在读取模型排行榜...", "正在分析自动优化轮次...", "正在分析残差分布...", "正在整理最终预测摘要...", "正在生成中文业务建议..."];
+const loadingMessages = ["正在整理 feature pipeline...", "正在梳理 workflow report...", "正在生成模型推荐理由...", "正在分析自动优化轮次...", "正在整理最终预测摘要..."];
 
 type PreviewMode = "rendered" | "source";
+
+const reportContentToggles: Array<{
+  key:
+    | "includeFeaturePipeline"
+    | "includeWorkflowReport"
+    | "includeModelRecommendation"
+    | "includeModelComparison"
+    | "includeResidualAnalysis"
+    | "includeFinalForecast"
+    | "includeWarnings";
+  label: string;
+  description: string;
+}> = [
+  { key: "includeFeaturePipeline", label: "Feature pipeline", description: "把协变量、featureConfig、对齐与补值策略写进报告。" },
+  { key: "includeWorkflowReport", label: "Workflow report", description: "把数据模式、Holdout、run profile、成功/失败组合写进报告。" },
+  { key: "includeModelRecommendation", label: "模型推荐", description: "单独解释为什么推荐当前模型，并与第二名比较。" },
+  { key: "includeModelComparison", label: "模型对比", description: "保留排行榜与关键指标比较。" },
+  { key: "includeResidualAnalysis", label: "残差分析", description: "解释 residual、误差集中区间和异常点。" },
+  { key: "includeFinalForecast", label: "最终预测", description: "保留 final forecast 的区间与趋势总结。" },
+  { key: "includeWarnings", label: "Warnings", description: "把清洗与调参 warning 一并写入报告。" }
+];
 
 function escapeHtml(value: string) {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -248,7 +272,7 @@ export function ReportPanel({ experimentId, initialReports = [] }: { experimentI
     }
     setLoading(true);
     setError(null);
-    setMessage("正在分析模型结果、自动优化轮次和最终预测，并生成完整 Markdown 报告...");
+    setMessage("正在分析 feature pipeline、workflow、模型推荐、自动优化轮次和最终预测，并生成完整 Markdown 报告...");
     try {
       const report = await generateReport(
         experimentId,
@@ -286,7 +310,7 @@ export function ReportPanel({ experimentId, initialReports = [] }: { experimentI
   return (
     <SectionCard
       title="AI 预测总结报告"
-      description="报告基于实验摘要、指标、残差、自动优化记录和最终预测生成，不发送原始文件或完整明细。"
+      description="报告基于实验摘要、feature pipeline、workflow、模型指标、残差、自动优化记录和最终预测生成，不发送原始文件或完整明细。"
       action={<Badge tone={activeReport ? "good" : "neutral"}>{activeReport ? "已有报告" : "未生成"}</Badge>}
       className="overflow-hidden"
     >
@@ -315,6 +339,25 @@ export function ReportPanel({ experimentId, initialReports = [] }: { experimentI
               <option value="long">详细</option>
             </select>
           </label>
+          <div className="space-y-2">
+            <span className="text-sm font-medium text-slate-700 dark:text-slate-200">报告内容</span>
+            <div className="space-y-2 rounded-2xl border border-slate-200 p-3 dark:border-white/10">
+              {reportContentToggles.map((toggle) => (
+                <label key={toggle.key} className="flex items-start gap-3 rounded-2xl px-2 py-2 text-sm text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-white/5">
+                  <input
+                    className="mt-1"
+                    type="checkbox"
+                    checked={options[toggle.key]}
+                    onChange={(event) => setOptions((current) => ({ ...current, [toggle.key]: event.target.checked }))}
+                  />
+                  <span>
+                    <span className="font-medium text-slate-800 dark:text-slate-100">{toggle.label}</span>
+                    <span className="mt-0.5 block text-xs leading-5 text-slate-500 dark:text-slate-400">{toggle.description}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </div>
           {reports.length ? (
             <label className="space-y-2">
               <span className="text-sm font-medium text-slate-700 dark:text-slate-200">历史报告</span>
@@ -376,7 +419,7 @@ export function ReportPanel({ experimentId, initialReports = [] }: { experimentI
               )
             ) : (
               <div className="flex h-full min-h-[360px] items-center justify-center text-center text-sm text-slate-500 dark:text-slate-400">
-                还没有报告。配置 DeepSeek 后，可以基于当前实验一键生成中文预测总结，并把自动优化策略与逐轮结果一起写入报告。
+                还没有报告。配置 DeepSeek 后，可以基于当前实验一键生成中文预测总结，并把 feature pipeline、workflow、模型推荐、自动优化策略与逐轮结果一起写入报告。
               </div>
             )}
           </div>

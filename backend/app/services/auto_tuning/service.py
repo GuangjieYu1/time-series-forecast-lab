@@ -7,7 +7,7 @@ from typing import Any, Callable
 from app.models.seasonal_naive import SEASONAL_PERIODS
 from app.schemas import MetricValues, ModelTuning, TuningTrial
 from app.services.metrics import calculate_metrics
-from app.services.model_executor import run_isolated_fit_predict, should_isolate_model
+from app.services.model_executor import fit_model_instance, predict_model_instance, run_isolated_fit_predict, should_isolate_model
 from app.services.model_registry import create_model, normalize_model_parameters
 
 
@@ -148,13 +148,34 @@ def _evaluate_candidate(
     train_values: list[float],
     frequency: str,
     test_size: int,
+    train_covariates: list[dict[str, float]] | None = None,
+    future_covariates: list[dict[str, float]] | None = None,
+    feature_config: dict[str, bool] | None = None,
 ) -> MetricValues:
     if should_isolate_model(model_id):
-        output = run_isolated_fit_predict(model_id, parameters, train_times, train_values, frequency, test_size)
+        output = run_isolated_fit_predict(
+            model_id,
+            parameters,
+            train_times,
+            train_values,
+            frequency,
+            test_size,
+            covariates=train_covariates,
+            future_covariates=future_covariates,
+            feature_config=feature_config,
+        )
     else:
         model = create_model(model_id, parameters)
-        model.fit(train_times, train_values, frequency)
-        output = model.predict(test_size)
+        fit_model_instance(
+            model_id,
+            model,
+            train_times,
+            train_values,
+            frequency,
+            covariates=train_covariates,
+            feature_config=feature_config,
+        )
+        output = predict_model_instance(model_id, model, test_size, future_covariates=future_covariates)
     metrics, _warnings = calculate_metrics(train_values[-test_size:], output.predictions[:test_size])
     return metrics
 
@@ -170,6 +191,9 @@ def resolve_model_parameters(
     train_values: list[float],
     frequency: str,
     test_size: int,
+    train_covariates: list[dict[str, float]] | None = None,
+    future_covariates: list[dict[str, float]] | None = None,
+    feature_config: dict[str, bool] | None = None,
     progress_callback: TuningProgressCallback | None = None,
 ) -> ModelTuning:
     del random_seed
@@ -232,6 +256,8 @@ def resolve_model_parameters(
     tune_train_times = train_times[:-validation_size]
     tune_train_values = train_values[:-validation_size]
     tune_test_values = train_values[-validation_size:]
+    tune_train_covariates = train_covariates[:-validation_size] if train_covariates else None
+    tune_future_covariates = train_covariates[-validation_size:] if train_covariates else future_covariates
 
     if len(tune_train_values) < 12:
         return ModelTuning(
@@ -281,12 +307,28 @@ def resolve_model_parameters(
                     tune_train_values,
                     frequency,
                     validation_size,
+                    covariates=tune_train_covariates,
+                    future_covariates=tune_future_covariates,
+                    feature_config=feature_config,
                 )
                 predictions = output.predictions[:validation_size]
             else:
                 model = create_model(model_id, normalized_candidate)
-                model.fit(tune_train_times, tune_train_values, frequency)
-                predictions = model.predict(validation_size).predictions[:validation_size]
+                fit_model_instance(
+                    model_id,
+                    model,
+                    tune_train_times,
+                    tune_train_values,
+                    frequency,
+                    covariates=tune_train_covariates,
+                    feature_config=feature_config,
+                )
+                predictions = predict_model_instance(
+                    model_id,
+                    model,
+                    validation_size,
+                    future_covariates=tune_future_covariates,
+                ).predictions[:validation_size]
             metrics, metric_warnings = calculate_metrics(tune_test_values, predictions)
             warnings.extend(metric_warnings)
             mae = metrics.mae
