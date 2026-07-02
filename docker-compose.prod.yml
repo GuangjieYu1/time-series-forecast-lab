@@ -7,6 +7,8 @@ services:
       dockerfile: Dockerfile.prod
       args:
         PYTHON_BASE_IMAGE: ${BACKEND_PYTHON_BASE_IMAGE:-python:3.12-slim}
+        DEBIAN_MIRROR: ${BACKEND_DEBIAN_MIRROR:-https://mirrors.aliyun.com/debian}
+        DEBIAN_SECURITY_MIRROR: ${BACKEND_DEBIAN_SECURITY_MIRROR:-https://mirrors.aliyun.com/debian-security}
         INSTALL_OPTIONAL: "true"
         PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
     restart: unless-stopped
