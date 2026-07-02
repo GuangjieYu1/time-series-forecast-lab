@@ -27,6 +27,11 @@ class ExperimentRecord(Base):
     series_json: Mapped[str] = mapped_column(Text, nullable=False)
     final_forecast_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     model_logs_json: Mapped[str] = mapped_column(Text, nullable=False)
+    manifest_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    config_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    source_file_sha256: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    app_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    git_commit: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
 
 

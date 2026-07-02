@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
-import { fetchExperiment } from "../../shared/api/client";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { fetchExperiment, prepareExperimentRerun } from "../../shared/api/client";
+import { useLabStore } from "../../app/store";
 import { DataTable } from "../../shared/components/Table";
 import { EmptyState, ErrorBanner, LoadingBlock } from "../../shared/components/Status";
 import { Badge, controls, PageHeader, SectionCard, StatCard, surface, Tabs } from "../../shared/components/Ui";
@@ -62,10 +63,14 @@ function Leaderboard({ rows, recommendedModelId }: { rows: RankedModel[]; recomm
 
 export function ExperimentDetailPage() {
   const { id } = useParams();
+  const navigate = useNavigate();
+  const { beginRerunDraft } = useLabStore();
   const [experiment, setExperiment] = useState<ExperimentDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [tab, setTab] = useState<DetailTab>("overview");
+  const [copyState, setCopyState] = useState<"idle" | "done" | "failed">("idle");
 
   useEffect(() => {
     if (!id) return;
@@ -73,6 +78,7 @@ export function ExperimentDetailPage() {
     async function load() {
       setLoading(true);
       setError(null);
+      setActionError(null);
       try {
         setExperiment(await fetchExperiment(experimentId));
       } catch (err) {
@@ -93,6 +99,29 @@ export function ExperimentDetailPage() {
   const failedModels = experiment.rankedModels.length - successfulModels;
   const best = experiment.rankedModels.find((model) => model.rank === 1 && model.metrics);
 
+  async function handleCopyHash() {
+    const currentExperiment = experiment;
+    if (!currentExperiment?.configHash) return;
+    try {
+      await navigator.clipboard.writeText(currentExperiment.configHash);
+      setCopyState("done");
+      window.setTimeout(() => setCopyState("idle"), 2000);
+    } catch {
+      setCopyState("failed");
+    }
+  }
+
+  async function handleRerun() {
+    if (!experiment) return;
+    try {
+      const draft = await prepareExperimentRerun(experiment.experimentId);
+      beginRerunDraft(draft);
+      navigate("/upload");
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "重跑模板准备失败。");
+    }
+  }
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -105,6 +134,7 @@ export function ExperimentDetailPage() {
           </Link>
         }
       />
+      <ErrorBanner message={actionError} />
 
       <div className="grid gap-4 md:grid-cols-4">
         <StatCard label="推荐模型" value={experiment.recommendedModelId ?? "暂无"} hint="默认按 MAE 最低推荐" tone="good" />
@@ -194,6 +224,43 @@ export function ExperimentDetailPage() {
             <pre className="max-h-96 overflow-auto rounded-2xl bg-slate-950 p-4 text-xs leading-5 text-slate-100">
               {JSON.stringify(experiment.diagnostics, null, 2)}
             </pre>
+          </SectionCard>
+
+          <SectionCard
+            title="实验可复现"
+            description="配置 hash、源文件 hash 和运行环境都会跟随实验一起保存。"
+            action={
+              <div className="flex flex-wrap gap-2">
+                <button className={controls.secondaryButton} onClick={() => window.open(`/api/experiments/${experiment.experimentId}/manifest/download`, "_blank")}>
+                  下载 Manifest
+                </button>
+                <button className={controls.secondaryButton} onClick={() => void handleCopyHash()}>
+                  {copyState === "done" ? "已复制 Hash" : copyState === "failed" ? "复制失败" : "复制 Hash"}
+                </button>
+                <button className={controls.primaryButton} onClick={() => void handleRerun()}>
+                  重新运行实验
+                </button>
+              </div>
+            }
+          >
+            <div className="grid gap-3 text-sm md:grid-cols-2">
+              {[
+                ["配置 Hash", experiment.configHash ?? "-"],
+                ["源文件 Hash", experiment.sourceFileSha256 ?? "-"],
+                ["随机种子", String((experiment.manifest?.configuration.randomSeed as number | undefined) ?? 42)],
+                ["运行模式", String((experiment.manifest?.configuration.runProfile as string | undefined) ?? "balanced")],
+                ["参数策略", String((experiment.manifest?.configuration.parameterStrategy as string | undefined) ?? "default")],
+                ["应用版本", experiment.appVersion ?? experiment.manifest?.environment.appVersion ?? "-"],
+                ["Git Commit", experiment.gitCommit ?? experiment.manifest?.environment.gitCommit ?? "-"],
+                ["运行设备", experiment.manifest?.environment.device ?? "-"],
+                ["Python 版本", experiment.manifest?.environment.pythonVersion ?? "-"],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-2xl bg-slate-50 p-3 dark:bg-[#151b2e]">
+                  <div className="text-xs text-slate-500 dark:text-slate-400">{label}</div>
+                  <div className="mt-2 break-all font-medium text-slate-900 dark:text-white">{value}</div>
+                </div>
+              ))}
+            </div>
           </SectionCard>
         </div>
       </div>

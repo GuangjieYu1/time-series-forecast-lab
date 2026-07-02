@@ -3,6 +3,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from app.core.constants import DEFAULT_RANDOM_SEED
+
 
 class ColumnProfile(BaseModel):
     name: str
@@ -23,6 +25,7 @@ class UploadPreviewResponse(BaseModel):
     uploadId: str
     fileName: str
     fileSize: int
+    fileSha256: str
     sheets: list[SheetPreview]
 
 
@@ -88,6 +91,9 @@ class ForecastRunRequest(BaseModel):
     outlierStrategy: Literal["none", "clip_iqr"] = "none"
     outlierIqrMultiplier: float = Field(default=1.5, ge=1.0, le=5.0)
     trimStrings: bool = True
+    runProfile: Literal["fast", "balanced", "accurate"] = "balanced"
+    parameterStrategy: Literal["default", "auto"] = "default"
+    randomSeed: int = DEFAULT_RANDOM_SEED
     experimentName: str | None = None
 
 
@@ -98,9 +104,35 @@ class MetricValues(BaseModel):
     wape: float | None = None
 
 
+class TuningTrial(BaseModel):
+    round: int
+    params: dict[str, Any] = Field(default_factory=dict)
+    status: Literal["success", "failed"] = "success"
+    metrics: MetricValues | None = None
+    elapsedSeconds: float = 0.0
+    selected: bool = False
+    message: str | None = None
+
+
 class ModelRuntime(BaseModel):
     fitSeconds: float = 0.0
     predictSeconds: float = 0.0
+
+
+class ModelTuning(BaseModel):
+    enabled: bool
+    profile: Literal["fast", "balanced", "accurate"]
+    strategy: Literal["default", "auto"]
+    selectedParams: dict[str, Any] = Field(default_factory=dict)
+    candidateCount: int = 0
+    bestMetric: float | None = None
+    tuningSeconds: float = 0.0
+    candidateLimit: int = 0
+    timeBudgetSeconds: float = 0.0
+    validationSize: int = 0
+    stoppedEarly: bool = False
+    trials: list[TuningTrial] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class RankedModel(BaseModel):
@@ -112,6 +144,7 @@ class RankedModel(BaseModel):
     status: Literal["success", "failed"] = "success"
     warnings: list[str] = Field(default_factory=list)
     error: str | None = None
+    tuning: ModelTuning | None = None
 
 
 class BacktestActualPoint(BaseModel):
@@ -204,7 +237,7 @@ class ModelProgress(BaseModel):
     modelId: str
     modelName: str
     targetColumn: str
-    status: Literal["queued", "fitting", "predicting", "scoring", "success", "failed"] = "queued"
+    status: Literal["queued", "tuning", "fitting", "predicting", "scoring", "success", "failed"] = "queued"
     percent: int = Field(default=0, ge=0, le=100)
     message: str = "Waiting to run."
     fitSeconds: float | None = None
@@ -258,7 +291,94 @@ class ExperimentDetail(BaseModel):
     series: list[dict[str, Any]]
     finalForecast: dict[str, Any] | None
     modelLogs: list[dict[str, Any]]
+    manifest: dict[str, Any] | None = None
+    configHash: str | None = None
+    sourceFileSha256: str | None = None
+    appVersion: str | None = None
+    gitCommit: str | None = None
     reports: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ManifestEnvironment(BaseModel):
+    appVersion: str
+    gitCommit: str | None = None
+    pythonVersion: str
+    platform: str
+    device: str
+    memoryTotalMb: int | None = None
+    memoryAvailableMb: int | None = None
+    modelCapabilityVersions: dict[str, Any] | None = None
+
+
+class ManifestDataSnapshot(BaseModel):
+    fileName: str
+    fileSize: int
+    fileSha256: str
+    sheetName: str
+    columns: list[str]
+    timeColumn: str
+    targetColumns: list[str]
+
+
+class ManifestModelResult(BaseModel):
+    modelId: str
+    modelName: str
+    status: Literal["success", "failed"]
+    metrics: dict[str, Any] | None = None
+    runtime: dict[str, Any]
+    warnings: list[str] = Field(default_factory=list)
+    error: str | None = None
+    tuning: dict[str, Any] | None = None
+
+
+class ManifestTargetSnapshot(BaseModel):
+    targetColumn: str
+    detectedFrequency: str
+    timeStart: str | None = None
+    timeEnd: str | None = None
+    trainStart: str | None = None
+    trainEnd: str | None = None
+    testStart: str | None = None
+    testEnd: str | None = None
+    recommendedModelId: str | None = None
+    models: list[ManifestModelResult] = Field(default_factory=list)
+
+
+class ExperimentManifest(BaseModel):
+    schemaVersion: Literal["0.3"] = "0.3"
+    experimentId: str
+    experimentName: str
+    createdAt: str | None = None
+    configHash: str
+    sourceFileSha256: str
+    environment: ManifestEnvironment
+    data: ManifestDataSnapshot
+    configuration: dict[str, Any]
+    targets: list[ManifestTargetSnapshot] = Field(default_factory=list)
+
+
+class ExperimentRerunFileMatch(BaseModel):
+    uploadId: str | None = None
+    uploadedFileName: str | None = None
+    uploadedFileSha256: str | None = None
+    fileNameMatches: bool | None = None
+    sha256Matches: bool | None = None
+    exactMatch: bool | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ExperimentRerunRequest(BaseModel):
+    experimentId: str
+    uploadId: str | None = None
+
+
+class ExperimentRerunResponse(BaseModel):
+    experimentId: str
+    configHash: str
+    sourceFileSha256: str
+    manifest: ExperimentManifest
+    runRequestTemplate: dict[str, Any]
+    fileMatch: ExperimentRerunFileMatch
 
 
 class DeepSeekConnectionRequest(BaseModel):
@@ -272,6 +392,18 @@ class DeepSeekConnectionResponse(BaseModel):
     model: str
     message: str
     code: str | None = None
+
+
+class LocalRebuildRequest(BaseModel):
+    password: str = Field(min_length=1)
+    delaySeconds: int = Field(default=2, ge=0, le=30)
+
+
+class LocalRebuildResponse(BaseModel):
+    accepted: bool
+    message: str
+    scriptPath: str
+    logPath: str | None = None
 
 
 class ReportOptions(BaseModel):

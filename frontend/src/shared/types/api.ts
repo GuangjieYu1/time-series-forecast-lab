@@ -19,6 +19,7 @@ export interface UploadPreviewResponse {
   uploadId: string;
   fileName: string;
   fileSize: number;
+  fileSha256: string;
   sheets: SheetPreview[];
 }
 
@@ -74,6 +75,29 @@ export interface RankedModel {
   status: "success" | "failed";
   warnings: string[];
   error: string | null;
+  tuning: {
+    enabled: boolean;
+    profile: "fast" | "balanced" | "accurate";
+    strategy: "default" | "auto";
+    selectedParams: Record<string, number | string | boolean>;
+    candidateCount: number;
+    bestMetric: number | null;
+    tuningSeconds: number;
+    candidateLimit: number;
+    timeBudgetSeconds: number;
+    validationSize: number;
+    stoppedEarly: boolean;
+    trials: {
+      round: number;
+      params: Record<string, number | string | boolean>;
+      status: "success" | "failed";
+      metrics: MetricValues | null;
+      elapsedSeconds: number;
+      selected: boolean;
+      message: string | null;
+    }[];
+    warnings: string[];
+  } | null;
 }
 
 export interface BacktestPredictionPoint {
@@ -139,6 +163,9 @@ export interface ForecastRunRequest {
   outlierStrategy: "none" | "clip_iqr";
   outlierIqrMultiplier: number;
   trimStrings: boolean;
+  runProfile: "fast" | "balanced" | "accurate";
+  parameterStrategy: "default" | "auto";
+  randomSeed: number;
   experimentName?: string;
 }
 
@@ -154,7 +181,7 @@ export interface FinalForecastResponse {
 }
 
 export type ForecastProgressStatus = "running" | "completed" | "failed";
-export type ModelProgressStatus = "queued" | "fitting" | "predicting" | "scoring" | "success" | "failed";
+export type ModelProgressStatus = "queued" | "tuning" | "fitting" | "predicting" | "scoring" | "success" | "failed";
 
 export interface ModelProgress {
   modelId: string;
@@ -206,7 +233,79 @@ export interface ExperimentDetail extends ExperimentListItem {
   series: { time: string; value: number }[];
   finalForecast: FinalForecastResponse | null;
   modelLogs: unknown[];
+  manifest: ExperimentManifest | null;
+  configHash: string | null;
+  sourceFileSha256: string | null;
+  appVersion: string | null;
+  gitCommit: string | null;
   reports: ReportResponse[];
+}
+
+export interface ExperimentManifest {
+  schemaVersion: "0.3";
+  experimentId: string;
+  experimentName: string;
+  createdAt: string | null;
+  configHash: string;
+  sourceFileSha256: string;
+  environment: {
+    appVersion: string;
+    gitCommit: string | null;
+    pythonVersion: string;
+    platform: string;
+    device: string;
+    memoryTotalMb: number | null;
+    memoryAvailableMb: number | null;
+    modelCapabilityVersions: Record<string, unknown> | null;
+  };
+  data: {
+    fileName: string;
+    fileSize: number;
+    fileSha256: string;
+    sheetName: string;
+    columns: string[];
+    timeColumn: string;
+    targetColumns: string[];
+  };
+  configuration: Record<string, unknown>;
+  targets: Array<{
+    targetColumn: string;
+    detectedFrequency: string;
+    timeStart: string | null;
+    timeEnd: string | null;
+    trainStart: string | null;
+    trainEnd: string | null;
+    testStart: string | null;
+    testEnd: string | null;
+    recommendedModelId: string | null;
+    models: Array<{
+      modelId: string;
+      modelName: string;
+      status: "success" | "failed";
+      metrics: Record<string, unknown> | null;
+      runtime: Record<string, unknown>;
+      warnings: string[];
+      error: string | null;
+      tuning: Record<string, unknown> | null;
+    }>;
+  }>;
+}
+
+export interface ExperimentRerunResponse {
+  experimentId: string;
+  configHash: string;
+  sourceFileSha256: string;
+  manifest: ExperimentManifest;
+  runRequestTemplate: Record<string, unknown>;
+  fileMatch: {
+    uploadId: string | null;
+    uploadedFileName: string | null;
+    uploadedFileSha256: string | null;
+    fileNameMatches: boolean | null;
+    sha256Matches: boolean | null;
+    exactMatch: boolean | null;
+    warnings: string[];
+  };
 }
 
 export interface DeepSeekSettings {
@@ -221,6 +320,13 @@ export interface DeepSeekConnectionResponse {
   model: string;
   message: string;
   code: string | null;
+}
+
+export interface LocalRebuildResponse {
+  accepted: boolean;
+  message: string;
+  scriptPath: string;
+  logPath: string | null;
 }
 
 export interface ReportOptions {

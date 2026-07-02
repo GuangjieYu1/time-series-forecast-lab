@@ -63,13 +63,13 @@ def _choice_param(params: dict[str, Any], key: str, default: str, choices: set[s
     return value if isinstance(value, str) and value in choices else default
 
 
-def sanitize_model_parameters(model_id: str, params: dict[str, Any] | None) -> dict[str, Any]:
+def normalize_model_parameters(model_id: str, params: dict[str, Any] | None) -> dict[str, Any]:
     raw = params or {}
     if model_id == "moving_average":
         return {"window": _int_param(raw, "window", 7, 2, 720)}
     if model_id == "seasonal_naive":
         period = _int_param(raw, "period", 0, 0, 8760)
-        return {"period": period or None}
+        return {"period": period or 0}
     if model_id == "arima":
         return {
             "p": _int_param(raw, "p", 1, 0, 5),
@@ -80,36 +80,80 @@ def sanitize_model_parameters(model_id: str, params: dict[str, Any] | None) -> d
         return {"trend": _choice_param(raw, "trend", "auto", {"auto", "none", "add"})}
     if model_id == "prophet":
         seasonality_choices = {"auto", "on", "off"}
+        seasonality_mode = raw.get("seasonalityMode", "additive")
+        if seasonality_mode not in {"additive", "multiplicative"}:
+            seasonality_mode = "additive"
         return {
-            "interval_width": _float_param(raw, "intervalWidth", 0.8, 0.5, 0.99),
-            "daily_seasonality": _choice_param(raw, "dailySeasonality", "auto", seasonality_choices),
-            "weekly_seasonality": _choice_param(raw, "weeklySeasonality", "auto", seasonality_choices),
-            "yearly_seasonality": _choice_param(raw, "yearlySeasonality", "auto", seasonality_choices),
+            "intervalWidth": _float_param(raw, "intervalWidth", 0.8, 0.5, 0.99),
+            "seasonalityMode": seasonality_mode,
+            "changepointPriorScale": _float_param(raw, "changepointPriorScale", 0.05, 0.001, 1.0),
+            "dailySeasonality": _choice_param(raw, "dailySeasonality", "auto", seasonality_choices),
+            "weeklySeasonality": _choice_param(raw, "weeklySeasonality", "auto", seasonality_choices),
+            "yearlySeasonality": _choice_param(raw, "yearlySeasonality", "auto", seasonality_choices),
         }
     if model_id == "timesfm":
         return {
-            "max_context": _int_param(raw, "maxContext", 512, 32, 512),
-            "normalize_inputs": _bool_param(raw, "normalizeInputs", True),
+            "maxContext": _int_param(raw, "maxContext", 512, 32, 512),
+            "normalizeInputs": _bool_param(raw, "normalizeInputs", True),
         }
     if model_id == "xgboost":
         return {
-            "n_estimators": _int_param(raw, "nEstimators", 200, 20, 500),
-            "max_depth": _int_param(raw, "maxDepth", 3, 1, 10),
-            "learning_rate": _float_param(raw, "learningRate", 0.05, 0.01, 0.5),
+            "nEstimators": _int_param(raw, "nEstimators", 200, 20, 500),
+            "maxDepth": _int_param(raw, "maxDepth", 3, 1, 10),
+            "learningRate": _float_param(raw, "learningRate", 0.05, 0.01, 0.5),
         }
     if model_id == "lightgbm":
         return {
-            "n_estimators": _int_param(raw, "nEstimators", 250, 20, 600),
-            "num_leaves": _int_param(raw, "numLeaves", 31, 7, 255),
-            "learning_rate": _float_param(raw, "learningRate", 0.05, 0.01, 0.5),
+            "nEstimators": _int_param(raw, "nEstimators", 250, 20, 600),
+            "numLeaves": _int_param(raw, "numLeaves", 31, 7, 255),
+            "learningRate": _float_param(raw, "learningRate", 0.05, 0.01, 0.5),
         }
     if model_id == "random_forest":
         return {
-            "n_estimators": _int_param(raw, "nEstimators", 120, 20, 300),
-            "max_depth": _int_param(raw, "maxDepth", 18, 2, 40),
-            "min_samples_leaf": _int_param(raw, "minSamplesLeaf", 2, 1, 20),
+            "nEstimators": _int_param(raw, "nEstimators", 120, 20, 300),
+            "maxDepth": _int_param(raw, "maxDepth", 18, 2, 40),
+            "minSamplesLeaf": _int_param(raw, "minSamplesLeaf", 2, 1, 20),
         }
     return {}
+
+
+def sanitize_model_parameters(model_id: str, params: dict[str, Any] | None) -> dict[str, Any]:
+    normalized = normalize_model_parameters(model_id, params)
+    if model_id == "seasonal_naive":
+        return {"period": normalized["period"] or None}
+    if model_id == "prophet":
+        return {
+            "interval_width": normalized["intervalWidth"],
+            "seasonality_mode": normalized["seasonalityMode"],
+            "changepoint_prior_scale": normalized["changepointPriorScale"],
+            "daily_seasonality": normalized["dailySeasonality"],
+            "weekly_seasonality": normalized["weeklySeasonality"],
+            "yearly_seasonality": normalized["yearlySeasonality"],
+        }
+    if model_id == "timesfm":
+        return {
+            "max_context": normalized["maxContext"],
+            "normalize_inputs": normalized["normalizeInputs"],
+        }
+    if model_id == "xgboost":
+        return {
+            "n_estimators": normalized["nEstimators"],
+            "max_depth": normalized["maxDepth"],
+            "learning_rate": normalized["learningRate"],
+        }
+    if model_id == "lightgbm":
+        return {
+            "n_estimators": normalized["nEstimators"],
+            "num_leaves": normalized["numLeaves"],
+            "learning_rate": normalized["learningRate"],
+        }
+    if model_id == "random_forest":
+        return {
+            "n_estimators": normalized["nEstimators"],
+            "max_depth": normalized["maxDepth"],
+            "min_samples_leaf": normalized["minSamplesLeaf"],
+        }
+    return normalized
 
 
 MODEL_CAPABILITIES: dict[str, ModelCapability] = {

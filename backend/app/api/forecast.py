@@ -5,17 +5,21 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.errors import AppError, as_http_error
 from app.core.storage import delete_upload, read_upload_metadata
+from app.core.constants import APP_VERSION
 from app.db.models import ExperimentRecord
 from app.db.session import get_db
 from app.schemas import (
+    ExperimentManifest,
     FinalForecastRequest,
     FinalForecastResponse,
     ForecastProgress,
@@ -29,6 +33,7 @@ from app.services.file_parser import read_sheet_dataframe
 from app.services.forecast_runner import run_final_forecast
 from app.services.model_registry import MODEL_CAPABILITIES, MODEL_FACTORIES
 from app.services.progress_tracker import progress_tracker
+from app.services.reproducibility import build_manifest
 from app.services.series_builder import build_time_series
 
 
@@ -96,6 +101,25 @@ def _validate_run_budget(request: ForecastRunRequest) -> None:
 
 def _dump(value) -> str:
     return json.dumps(jsonable_encoder(value), ensure_ascii=True)
+
+
+def _selected_model_parameters_for_final_forecast(
+    record: ExperimentRecord,
+    final_model_id: str,
+    saved_config: dict,
+) -> dict[str, dict]:
+    if record.manifest_json:
+        try:
+            manifest = ExperimentManifest.model_validate(json.loads(record.manifest_json))
+            for target in manifest.targets:
+                if target.targetColumn != record.target_column:
+                    continue
+                for model in target.models:
+                    if model.modelId == final_model_id and model.tuning and model.tuning.get("selectedParams"):
+                        return {final_model_id: model.tuning["selectedParams"]}
+        except Exception:
+            logger.warning("manifest parse failed when restoring final model parameters", exc_info=True)
+    return saved_config.get("modelParameters", {})
 
 
 @router.get("/progress/{run_id}", response_model=ForecastProgress)
@@ -172,10 +196,12 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
         target_results: list[TargetResult] = []
         series_profiles: list[dict] = []
         model_logs: list[dict] = []
+        target_contexts: list[dict] = []
         model_count = len(request.selectedModels)
         total_model_runs = max(len(request.targetColumns) * model_count, 1)
-        stage_fraction = {"fitting": 0.1, "predicting": 0.55, "scoring": 0.8, "success": 1.0, "failed": 1.0}
+        stage_fraction = {"fitting": 0.4, "predicting": 0.7, "scoring": 0.9, "success": 1.0, "failed": 1.0}
         stage_status = {
+            "tuning": ("tuning", None, "正在自动优化参数。"),
             "fitting": ("fitting", 10, "正在拟合训练集。"),
             "predicting": ("predicting", 55, "拟合完成，正在预测测试集。"),
             "scoring": ("scoring", 80, "预测完成，正在计算残差和指标。"),
@@ -194,10 +220,17 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
 
             def report_model_progress(event: ModelProgressEvent, target_index=target_index, target_column=target_column):
                 model_index = request.selectedModels.index(event.modelId)
-                fraction = stage_fraction[event.stage]
+                if event.stage == "tuning":
+                    tuning_percent = min(100, max(0, event.progressPercent or 0))
+                    fraction = 0.05 + (tuning_percent / 100) * 0.25
+                    status = "tuning"
+                    percent = min(35, max(5, 5 + int(tuning_percent * 0.3)))
+                    message = event.message or "正在自动优化参数。"
+                else:
+                    fraction = stage_fraction[event.stage]
+                    status, percent, message = stage_status[event.stage]
                 completed_units = target_index * model_count + model_index + fraction
                 overall = min(90, 10 + int((completed_units / total_model_runs) * 80))
-                status, percent, message = stage_status[event.stage]
                 progress_tracker.update_model(
                     run_id,
                     target_column,
@@ -223,6 +256,9 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
                 request.horizon,
                 request.testSize,
                 model_parameters=request.modelParameters,
+                parameter_strategy=request.parameterStrategy,
+                run_profile=request.runProfile,
+                random_seed=request.randomSeed,
                 progress_callback=report_model_progress,
             )
             target_result = TargetResult(
@@ -235,6 +271,19 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
             )
             target_results.append(target_result)
             series_profiles.append(build.data_profile)
+            points = build.series.points
+            train = points[:-request.testSize]
+            test = points[-request.testSize:]
+            target_contexts.append(
+                {
+                    "timeStart": points[0].time.isoformat() if points else None,
+                    "timeEnd": points[-1].time.isoformat() if points else None,
+                    "trainStart": train[0].time.isoformat() if train else None,
+                    "trainEnd": train[-1].time.isoformat() if train else None,
+                    "testStart": test[0].time.isoformat() if test else None,
+                    "testEnd": test[-1].time.isoformat() if test else None,
+                }
+            )
             model_logs.extend(
                 {
                     "targetColumn": target_column,
@@ -243,6 +292,7 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
                     "warnings": model.warnings,
                     "error": model.error,
                     "runtime": model.runtime.model_dump(),
+                    "tuning": model.tuning.model_dump() if model.tuning else None,
                 }
                 for model in backtest.rankedModels
             )
@@ -252,6 +302,16 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
         experiment_id = f"exp_{uuid.uuid4().hex[:12]}"
         name = request.experimentName or f"{metadata['fileName']} - {first.targetColumn} - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}"
         best = next((item for item in first.rankedModels if item.rank == 1 and item.metrics), None)
+        manifest = build_manifest(
+            experiment_id=experiment_id,
+            experiment_name=name,
+            request=request,
+            upload_metadata=metadata,
+            input_columns=[str(column) for column in df.columns],
+            target_results=target_results,
+            target_contexts=target_contexts,
+            repo_root=get_settings().backend_dir.parent,
+        )
         record = ExperimentRecord(
             id=experiment_id,
             name=name,
@@ -269,6 +329,11 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
             series_json=_dump(series_profiles[0]["history"]),
             final_forecast_json=None,
             model_logs_json=_dump(model_logs),
+            manifest_json=_dump(manifest),
+            config_hash=manifest.configHash,
+            source_file_sha256=metadata["fileSha256"],
+            app_version=APP_VERSION,
+            git_commit=manifest.environment.gitCommit,
         )
         db.add(record)
         progress_tracker.update(run_id, phase="saving", overallPercent=97, message="正在保存实验摘要和图表数据。")
@@ -378,7 +443,7 @@ def final_forecast(request: FinalForecastRequest, db: Session = Depends(get_db))
             horizon=request.horizon,
             frequency=first_profile["detectedFrequency"],
             history=history,
-            model_parameters=saved_config.get("modelParameters", {}),
+            model_parameters=_selected_model_parameters_for_final_forecast(record, request.finalModelId, saved_config),
             progress_callback=report_final_progress,
         )
         progress_tracker.update_model(

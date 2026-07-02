@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useNavigate } from "react-router-dom";
 import { useLabStore } from "../../app/store";
-import { fetchSheetPreview, uploadPreview } from "../../shared/api/client";
+import { fetchSheetPreview, prepareExperimentRerun, uploadPreview } from "../../shared/api/client";
 import { EmptyState, ErrorBanner, LoadingBlock } from "../../shared/components/Status";
 import { DataTable } from "../../shared/components/Table";
 import { Badge, controls, PageHeader, SectionCard, StatCard, surface } from "../../shared/components/Ui";
@@ -95,7 +95,7 @@ function ColumnProfilePanel({ columns }: { columns: ColumnProfile[] }) {
 
 export function UploadPage() {
   const navigate = useNavigate();
-  const { upload, selectedSheet, setUpload, setSelectedSheet } = useLabStore();
+  const { upload, selectedSheet, rerunDraft, setUpload, setSelectedSheet, setRerunDraft } = useLabStore();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -106,6 +106,10 @@ export function UploadPage() {
     try {
       const response = await uploadPreview(file);
       setUpload(response);
+      if (rerunDraft) {
+        const validated = await prepareExperimentRerun(rerunDraft.experimentId, response.uploadId);
+        setRerunDraft(validated);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "文件上传失败，请检查格式或文件大小。");
     } finally {
@@ -137,6 +141,47 @@ export function UploadPage() {
 
       <ErrorBanner message={error} />
       {loading ? <LoadingBlock label="正在由后端解析文件预览..." /> : null}
+      {rerunDraft ? (
+        <SectionCard
+          title="重新运行准备"
+          description={`请重新上传原始文件 ${rerunDraft.manifest.data.fileName}，系统会自动恢复原实验配置。`}
+          action={
+            <button className={controls.secondaryButton} onClick={() => setRerunDraft(null)}>
+              取消重跑
+            </button>
+          }
+        >
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="rounded-2xl bg-slate-50 p-3 text-xs leading-6 text-slate-600 dark:bg-[#151b2e] dark:text-slate-300">
+              原文件名：{rerunDraft.manifest.data.fileName}
+              <br />
+              原文件 SHA256：{rerunDraft.sourceFileSha256}
+            </div>
+            <div className={`rounded-2xl border p-3 text-xs leading-6 ${
+              rerunDraft.fileMatch.exactMatch === false
+                ? "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-400/30 dark:bg-amber-400/10 dark:text-amber-100"
+                : "border-slate-200 bg-white text-slate-600 dark:border-white/10 dark:bg-[#151b2e] dark:text-slate-300"
+            }`}>
+              {upload ? (
+                <>
+                  当前文件：{upload.fileName}
+                  <br />
+                  当前 SHA256：{upload.fileSha256}
+                  <br />
+                  校验：{rerunDraft.fileMatch.exactMatch ? "完全一致" : rerunDraft.fileMatch.exactMatch === false ? "不一致" : "等待校验"}
+                </>
+              ) : (
+                "上传后会在这里显示比对结果。"
+              )}
+            </div>
+          </div>
+          {rerunDraft.fileMatch.warnings.length ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {rerunDraft.fileMatch.warnings.map((warning) => <Badge key={warning} tone="warn">{warning}</Badge>)}
+            </div>
+          ) : null}
+        </SectionCard>
+      ) : null}
 
       <div className="grid min-w-0 gap-6 2xl:grid-cols-[minmax(0,1fr)_380px]">
         <section className={`${surface.workbench} min-w-0 overflow-hidden p-6`}>
@@ -159,7 +204,7 @@ export function UploadPage() {
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div className="min-w-0">
                   <div className="truncate text-sm font-semibold text-slate-950 dark:text-white">{upload.fileName}</div>
-                  <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">{formatFileSize(upload.fileSize)} / {upload.sheets.length} 个 Sheet / {selectedSheet.columns.length} 列</div>
+                  <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">{formatFileSize(upload.fileSize)} / {upload.sheets.length} 个 Sheet / {selectedSheet.columns.length} 列 / SHA256 {upload.fileSha256.slice(0, 12)}...</div>
                 </div>
                 <button className={`${controls.primaryButton} shrink-0`} onClick={() => navigate("/forecast")}>
                   进入预测实验

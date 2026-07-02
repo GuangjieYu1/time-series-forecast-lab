@@ -16,6 +16,7 @@ from app.schemas import (
     ModelRuntime,
     RankedModel,
 )
+from app.services.auto_tuning import resolve_model_parameters
 from app.services.metrics import calculate_metrics
 from app.services.model_registry import MODEL_CAPABILITIES, create_model, validate_horizon
 from app.services.model_executor import run_isolated_fit_predict, should_isolate_model
@@ -30,7 +31,9 @@ class BacktestResult(BaseModel):
 
 class ModelProgressEvent(BaseModel):
     modelId: str
-    stage: Literal["fitting", "predicting", "scoring", "success", "failed"]
+    stage: Literal["tuning", "fitting", "predicting", "scoring", "success", "failed"]
+    progressPercent: int | None = None
+    message: str | None = None
     fitSeconds: float = 0.0
     predictSeconds: float = 0.0
     error: str | None = None
@@ -50,6 +53,9 @@ def run_holdout_backtest(
     horizon: int,
     test_size: int,
     model_parameters: dict[str, dict] | None = None,
+    parameter_strategy: str = "default",
+    run_profile: str = "balanced",
+    random_seed: int = 42,
     progress_callback: ProgressCallback | None = None,
 ) -> BacktestResult:
     if not selected_models:
@@ -84,6 +90,35 @@ def run_holdout_backtest(
         fit_seconds = 0.0
         predict_seconds = 0.0
         warnings: list[str] = []
+
+        def report_tuning_progress(completed: int, total: int, message: str):
+            if not progress_callback:
+                return
+            total_count = max(total, 1)
+            percent = min(100, max(0, int((completed / total_count) * 100)))
+            progress_callback(
+                ModelProgressEvent(
+                    modelId=model_id,
+                    stage="tuning",
+                    progressPercent=percent,
+                    message=message,
+                )
+            )
+
+        tuning = resolve_model_parameters(
+            model_id=model_id,
+            requested_parameters=parameters_by_model.get(model_id),
+            parameter_strategy=parameter_strategy,
+            run_profile=run_profile,
+            random_seed=random_seed,
+            train_times=[point.time for point in train],
+            train_values=[point.value for point in train],
+            frequency=series.frequency,
+            test_size=test_size,
+            progress_callback=report_tuning_progress,
+        )
+        selected_parameters = tuning.selectedParams
+        warnings.extend(tuning.warnings)
         try:
             logger.info(
                 "model run started target=%s model=%s frequency=%s train_points=%s test_size=%s horizon=%s isolated=%s",
@@ -99,11 +134,10 @@ def run_holdout_backtest(
                 progress_callback(ModelProgressEvent(modelId=model_id, stage="fitting"))
             train_times = [point.time for point in train]
             train_values = [point.value for point in train]
-            model_params = parameters_by_model.get(model_id)
             if should_isolate_model(model_id):
                 output = run_isolated_fit_predict(
                     model_id,
-                    model_params,
+                    selected_parameters,
                     train_times,
                     train_values,
                     series.frequency,
@@ -112,7 +146,7 @@ def run_holdout_backtest(
                 fit_seconds = output.fit_seconds
                 predict_seconds = output.predict_seconds
             else:
-                model = create_model(model_id, model_params)
+                model = create_model(model_id, selected_parameters)
                 fit_start = time.perf_counter()
                 model.fit(train_times, train_values, series.frequency)
                 fit_seconds = time.perf_counter() - fit_start
@@ -169,6 +203,7 @@ def run_holdout_backtest(
                     runtime=ModelRuntime(fitSeconds=round(fit_seconds, 4), predictSeconds=round(predict_seconds, 4)),
                     status="success",
                     warnings=warnings,
+                    tuning=tuning,
                 )
             )
             logger.info(
@@ -206,6 +241,7 @@ def run_holdout_backtest(
                     status="failed",
                     warnings=warnings,
                     error=str(exc),
+                    tuning=tuning,
                 )
             )
             if progress_callback:

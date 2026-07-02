@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import re
 import subprocess
@@ -7,7 +9,8 @@ import subprocess
 
 def get_device() -> str:
     try:
-        import torch
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            import torch
 
         if torch.cuda.is_available():
             return "cuda"

@@ -20,6 +20,7 @@ import {
   ResidualTimelineChart
 } from "../visualization/Charts";
 import { ReportPanel } from "../reports/ReportPanel";
+import { getParameterHelp } from "./parameterHelp";
 
 const modelDefaults = ["naive", "seasonal_naive", "moving_average", "arima", "ets", "prophet", "xgboost", "lightgbm", "random_forest"];
 const steps = ["选择数据模式", "选择字段", "选择模型", "设置回测", "运行实验"];
@@ -27,6 +28,7 @@ const maxTargetColumns = 8;
 const maxModelRuns = 32;
 const maxHeavyModelRuns = 4;
 const heavyModelIds = new Set(["prophet", "timesfm"]);
+const selectedModelsStorageKey = "tsfl_forecast_selected_models_v1";
 
 type ModelParameterValue = number | string | boolean;
 
@@ -51,7 +53,7 @@ const modelParameterDefaults: Record<string, Record<string, ModelParameterValue>
   moving_average: { window: 7 },
   arima: { p: 1, d: 1, q: 1 },
   ets: { trend: "auto" },
-  prophet: { intervalWidth: 0.8, dailySeasonality: "auto", weeklySeasonality: "auto", yearlySeasonality: "auto" },
+  prophet: { intervalWidth: 0.8, seasonalityMode: "additive", changepointPriorScale: 0.05, dailySeasonality: "auto", weeklySeasonality: "auto", yearlySeasonality: "auto" },
   timesfm: { maxContext: 512, normalizeInputs: true },
   xgboost: { nEstimators: 200, maxDepth: 3, learningRate: 0.05 },
   lightgbm: { nEstimators: 250, numLeaves: 31, learningRate: 0.05 },
@@ -69,6 +71,8 @@ const modelParameterFields: Record<string, ModelParameterField[]> = {
   ets: [{ key: "trend", label: "趋势项", type: "select", options: [{ value: "auto", label: "auto" }, { value: "none", label: "none" }, { value: "add", label: "add" }] }],
   prophet: [
     { key: "intervalWidth", label: "区间宽度", type: "number", min: 0.5, max: 0.99, step: 0.01 },
+    { key: "seasonalityMode", label: "季节性模式", type: "select", options: [{ value: "additive", label: "additive" }, { value: "multiplicative", label: "multiplicative" }] },
+    { key: "changepointPriorScale", label: "趋势拐点灵活度", type: "number", min: 0.001, max: 1, step: 0.001 },
     { key: "dailySeasonality", label: "日季节性", type: "select", options: seasonalityOptions },
     { key: "weeklySeasonality", label: "周季节性", type: "select", options: seasonalityOptions },
     { key: "yearlySeasonality", label: "年季节性", type: "select", options: seasonalityOptions }
@@ -119,6 +123,31 @@ function modelStatusTone(model: ModelCapability): "neutral" | "good" | "warn" | 
 function metricText(value: number | null | undefined) {
   if (value === null || value === undefined) return "-";
   return value < 1 ? value.toFixed(4) : value.toFixed(2);
+}
+
+function loadPersistedSelectedModels(): { hasValue: boolean; values: string[] } {
+  if (typeof window === "undefined") return { hasValue: false, values: [] };
+  try {
+    const raw = window.localStorage.getItem(selectedModelsStorageKey);
+    if (raw === null) return { hasValue: false, values: [] };
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return { hasValue: false, values: [] };
+    return {
+      hasValue: true,
+      values: parsed.filter((item): item is string => typeof item === "string")
+    };
+  } catch {
+    return { hasValue: false, values: [] };
+  }
+}
+
+function persistSelectedModels(modelIds: string[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(selectedModelsStorageKey, JSON.stringify(Array.from(new Set(modelIds))));
+  } catch {
+    // ignore local storage failures
+  }
 }
 
 function formatElapsed(seconds: number) {
@@ -248,6 +277,7 @@ function RunningProgress({
   models = [],
   finalModelId = "",
   elapsedSeconds = 0,
+  parameterStrategy = "default",
   progress
 }: {
   finalForecastMode?: boolean;
@@ -255,11 +285,14 @@ function RunningProgress({
   models?: ModelCapability[];
   finalModelId?: string;
   elapsedSeconds?: number;
+  parameterStrategy?: ForecastRunRequest["parameterStrategy"];
   progress: ForecastProgress | null;
 }) {
   const items = finalForecastMode
     ? ["读取完整历史数据", "重新训练最终模型", "生成未来预测", "更新预测图表"]
-    : ["校验字段配置", "清洁并构建序列", "运行模型回测", "计算残差指标"];
+    : parameterStrategy === "auto"
+      ? ["校验字段配置", "清洁并构建序列", "自动优化参数", "运行模型回测", "计算残差指标"]
+      : ["校验字段配置", "清洁并构建序列", "运行模型回测", "计算残差指标"];
   const modelMap = new Map(models.map((model) => [model.id, model]));
   const modelIds = finalForecastMode ? [finalModelId].filter(Boolean) : selectedModelIds;
   const runningModels = modelIds.map((modelId) => {
@@ -273,6 +306,7 @@ function RunningProgress({
   });
   const statusMeta = {
     queued: { label: "排队中", tone: "neutral" },
+    tuning: { label: "自动优化", tone: "info" },
     fitting: { label: "拟合中", tone: "info" },
     predicting: { label: "预测中", tone: "info" },
     scoring: { label: "计算指标", tone: "warn" },
@@ -301,8 +335,15 @@ function RunningProgress({
   const overallProgress = progress?.overallPercent ?? 1;
   const phaseIndex = (() => {
     const phase = progress?.phase ?? "preparing";
-    if (phase.startsWith("model_") || phase === "fitting" || phase === "predicting") return 2;
-    if (phase === "ranking" || phase === "saving" || phase === "completed") return 3;
+    if (finalForecastMode) {
+      if (phase === "fitting" || phase === "predicting") return 2;
+      if (phase === "saving" || phase === "completed") return 3;
+      if (phase === "parsing" || phase === "profiling" || phase === "building_series") return 1;
+      return 0;
+    }
+    if (phase === "model_tuning") return 2;
+    if (phase.startsWith("model_") || phase === "fitting" || phase === "predicting") return parameterStrategy === "auto" ? 3 : 2;
+    if (phase === "ranking" || phase === "saving" || phase === "completed") return parameterStrategy === "auto" ? 4 : 3;
     if (phase === "parsing" || phase === "profiling" || phase === "building_series") return 1;
     return 0;
   })();
@@ -310,7 +351,7 @@ function RunningProgress({
   return (
     <SectionCard
       title={finalForecastMode ? "正在运行最终预测" : "正在运行预测实验"}
-      description={finalForecastMode ? "后端正在用完整历史重新拟合最终模型并生成预测。" : "进度来自后端真实阶段事件；模型库不提供内部迭代百分比时，展示拟合、预测和指标计算阶段。"}
+      description={finalForecastMode ? "后端正在用完整历史重新拟合最终模型并生成预测。" : parameterStrategy === "auto" ? "进度来自后端真实阶段事件；自动优化会单独显示候选参数搜索进度。" : "进度来自后端真实阶段事件；模型库不提供内部迭代百分比时，展示拟合、预测和指标计算阶段。"}
       className="overflow-hidden"
     >
       <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
@@ -330,7 +371,7 @@ function RunningProgress({
           style={{ width: `${overallProgress}%` }}
         />
       </div>
-      <div className="mt-4 grid gap-2 md:grid-cols-4">
+      <div className={`mt-4 grid gap-2 ${items.length === 5 ? "md:grid-cols-5" : "md:grid-cols-4"}`}>
         {items.map((item, index) => (
           <div
             key={item}
@@ -389,6 +430,13 @@ function Leaderboard({ rows, recommendedModelId }: { rows: RankedModel[]; recomm
         { header: "WAPE", cell: ({ row }) => metricText(row.original.metrics?.wape) },
         { header: "训练耗时", cell: ({ row }) => `${row.original.runtime.fitSeconds}s` },
         { header: "预测耗时", cell: ({ row }) => `${row.original.runtime.predictSeconds}s` },
+        {
+          header: "参数",
+          cell: ({ row }) =>
+            row.original.tuning?.enabled
+              ? `${row.original.tuning.candidateCount} 候选 / ${row.original.tuning.bestMetric === null ? "未评分" : `最佳 MAE ${metricText(row.original.tuning.bestMetric)}`}`
+              : "默认"
+        },
         { header: "推荐", cell: ({ row }) => (row.original.modelId === recommendedModelId ? <Badge tone="good">推荐模型</Badge> : null) },
         { header: "状态", cell: ({ row }) => (row.original.status === "failed" ? <Badge tone="bad">{row.original.error ?? "运行失败"}</Badge> : <Badge tone="good">成功</Badge>) }
       ]}
@@ -413,10 +461,14 @@ function ModelParameterControls({
     <div className="grid gap-3">
       {fields.map((field) => {
         const value = parameters[field.key] ?? modelParameterDefaults[modelId]?.[field.key] ?? (field.type === "boolean" ? false : "");
+        const help = getParameterHelp(modelId, field.key);
         if (field.type === "select") {
           return (
             <label key={field.key} className="space-y-1 text-xs text-slate-600 dark:text-slate-300">
-              <span className="font-medium">{field.label}</span>
+              <div className="flex items-center gap-2">
+                <span className="font-medium">{help?.title ?? field.label}</span>
+                {help ? <span className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-slate-300 text-[10px] text-slate-500 dark:border-white/20 dark:text-slate-300" title={`${help.description} 建议：${help.recommended}`}>?</span> : null}
+              </div>
               <select className={`${controls.input} h-9 text-xs`} value={String(value)} onChange={(event) => onChange(field.key, event.target.value)}>
                 {(field.options ?? []).map((option) => (
                   <option key={option.value} value={option.value}>
@@ -424,20 +476,28 @@ function ModelParameterControls({
                   </option>
                 ))}
               </select>
+              {help ? <p className="text-[11px] leading-5 text-slate-500 dark:text-slate-400">{help.description} 建议：{help.recommended}</p> : null}
             </label>
           );
         }
         if (field.type === "boolean") {
           return (
-            <label key={field.key} className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-300">
-              <input type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(field.key, event.target.checked)} />
-              {field.label}
+            <label key={field.key} className="space-y-1 text-xs text-slate-600 dark:text-slate-300">
+              <div className="flex items-center gap-2 font-medium">
+                <input type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(field.key, event.target.checked)} />
+                <span>{help?.title ?? field.label}</span>
+                {help ? <span className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-slate-300 text-[10px] text-slate-500 dark:border-white/20 dark:text-slate-300" title={`${help.description} 建议：${help.recommended}`}>?</span> : null}
+              </div>
+              {help ? <p className="pl-6 text-[11px] leading-5 text-slate-500 dark:text-slate-400">{help.description} 建议：{help.recommended}</p> : null}
             </label>
           );
         }
         return (
           <label key={field.key} className="space-y-1 text-xs text-slate-600 dark:text-slate-300">
-            <span className="font-medium">{field.label}</span>
+            <div className="flex items-center gap-2">
+              <span className="font-medium">{help?.title ?? field.label}</span>
+              {help ? <span className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-slate-300 text-[10px] text-slate-500 dark:border-white/20 dark:text-slate-300" title={`${help.description} 增大：${help.increaseEffect} 减小：${help.decreaseEffect} 建议：${help.recommended}`}>?</span> : null}
+            </div>
             <input
               className={`${controls.input} h-9 text-xs`}
               type="number"
@@ -450,6 +510,7 @@ function ModelParameterControls({
                 if (Number.isFinite(next)) onChange(field.key, next);
               }}
             />
+            {help ? <p className="text-[11px] leading-5 text-slate-500 dark:text-slate-400">{help.description} 增大：{help.increaseEffect} 减小：{help.decreaseEffect}</p> : null}
           </label>
         );
       })}
@@ -473,6 +534,7 @@ function ModelCard({
   onParameterChange: (key: string, value: ModelParameterValue) => void;
 }) {
   const runnable = isRunnableModel(model) && resource.level !== "gray";
+  const toggleDisabled = !runnable && !selected;
   return (
     <div
       className={`rounded-2xl border p-4 text-left transition ${
@@ -491,8 +553,8 @@ function ModelCard({
         </div>
         <div className="flex shrink-0 flex-col items-end gap-2">
           <Badge tone={modelStatusTone(model)}>{modelStatusText(model)}</Badge>
-          <label className={`inline-flex items-center gap-2 text-xs font-semibold ${runnable ? "cursor-pointer text-indigo-600 dark:text-indigo-200" : "cursor-not-allowed text-slate-400"}`}>
-            <input type="checkbox" disabled={!runnable} checked={selected} onChange={(event) => onChange(event.target.checked)} />
+          <label className={`inline-flex items-center gap-2 text-xs font-semibold ${toggleDisabled ? "cursor-not-allowed text-slate-400" : "cursor-pointer text-indigo-600 dark:text-indigo-200"}`}>
+            <input type="checkbox" disabled={toggleDisabled} checked={selected} onChange={(event) => onChange(event.target.checked)} />
             {selected ? "已选择" : "选择"}
           </label>
         </div>
@@ -696,7 +758,8 @@ function ResultsDashboard({
 }
 
 export function ForecastPage() {
-  const { upload, selectedSheet, forecastResult, finalForecast, setForecastResult, setFinalForecast } = useLabStore();
+  const { upload, selectedSheet, forecastResult, finalForecast, rerunDraft, setForecastResult, setFinalForecast, setRerunDraft } = useLabStore();
+  const [persistedSelection] = useState(loadPersistedSelectedModels);
   const [models, setModels] = useState<ModelCapability[]>([]);
   const [device, setDevice] = useState("cpu");
   const [deviceInfo, setDeviceInfo] = useState<DeviceInfo | null>(null);
@@ -711,8 +774,11 @@ export function ForecastPage() {
   const [outlierIqrMultiplier, setOutlierIqrMultiplier] = useState(1.5);
   const [horizon, setHorizon] = useState(7);
   const [testSize, setTestSize] = useState(7);
-  const [selectedModels, setSelectedModels] = useState<string[]>([]);
+  const [selectedModels, setSelectedModels] = useState<string[]>(persistedSelection.values);
   const [modelParameters, setModelParameters] = useState<Record<string, Record<string, ModelParameterValue>>>(modelParameterDefaults);
+  const [runProfile, setRunProfile] = useState<ForecastRunRequest["runProfile"]>("balanced");
+  const [parameterStrategy, setParameterStrategy] = useState<ForecastRunRequest["parameterStrategy"]>("default");
+  const [randomSeed] = useState(42);
   const [metric, setMetric] = useState<"mae" | "mse" | "rmse" | "wape">("mae");
   const [finalModelId, setFinalModelId] = useState("");
   const [chartModelIds, setChartModelIds] = useState<string[]>([]);
@@ -727,9 +793,9 @@ export function ForecastPage() {
       .then((modelList) => {
         setModels(modelList);
         const runnableDefaults = modelList.filter((model) => modelDefaults.includes(model.id) && isRunnableModel(model)).map((model) => model.id);
-        setSelectedModels(runnableDefaults);
+        setSelectedModels((current) => (current.length || persistedSelection.hasValue ? current : runnableDefaults));
       })
-      .catch(() => setModels([]));
+      .catch(() => undefined);
     void fetchDeviceInfo()
       .then((info) => {
         setDeviceInfo(info);
@@ -755,6 +821,30 @@ export function ForecastPage() {
       setChartModelIds(defaultVisibleModelIds(forecastResult));
     }
   }, [forecastResult]);
+
+  useEffect(() => {
+    if (!rerunDraft || !upload || !selectedSheet || forecastResult) return;
+    if (rerunDraft.fileMatch.uploadId && rerunDraft.fileMatch.uploadId !== upload.uploadId) return;
+    const template = rerunDraft.runRequestTemplate as Partial<ForecastRunRequest>;
+    setDataMode(template.dataMode ?? "aggregated");
+    setTimeColumn(template.timeColumn ?? selectedSheet.columns.find((column) => column.inferredType === "datetime")?.name ?? "");
+    setTargetColumns(template.targetColumns ?? []);
+    setAggregationMethod(template.aggregation?.method ?? "sum");
+    setMissingValueStrategy(template.missingValueStrategy ?? "drop");
+    setFillMissingTimeSteps(template.fillMissingTimeSteps ?? true);
+    setDuplicateTimeStrategy(template.duplicateTimeStrategy ?? "mean");
+    setOutlierStrategy(template.outlierStrategy ?? "none");
+    setOutlierIqrMultiplier(template.outlierIqrMultiplier ?? 1.5);
+    setHorizon(template.horizon ?? 7);
+    setTestSize(template.testSize ?? 7);
+    setSelectedModels(template.selectedModels ?? []);
+    setModelParameters({
+      ...modelParameterDefaults,
+      ...(template.modelParameters ?? {})
+    });
+    setRunProfile(template.runProfile ?? "balanced");
+    setParameterStrategy(template.parameterStrategy ?? "default");
+  }, [forecastResult, rerunDraft, selectedSheet, upload]);
 
   useEffect(() => {
     if (!loading || runStartedAt === null) return;
@@ -803,9 +893,14 @@ export function ForecastPage() {
   }, [models, resourceAssessments]);
 
   useEffect(() => {
-    const availableIds = new Set(models.filter((model) => resourceAssessments.get(model.id)?.level !== "gray").map((model) => model.id));
-    setSelectedModels((current) => current.filter((modelId) => availableIds.has(modelId)));
-  }, [models, resourceAssessments]);
+    if (!models.length) return;
+    const knownIds = new Set(models.map((model) => model.id));
+    setSelectedModels((current) => current.filter((modelId) => knownIds.has(modelId)));
+  }, [models]);
+
+  useEffect(() => {
+    persistSelectedModels(selectedModels);
+  }, [selectedModels]);
 
   const horizonRange = useMemo(() => {
     const selected = models.filter((model) => selectedModels.includes(model.id));
@@ -889,10 +984,14 @@ export function ForecastPage() {
         duplicateTimeStrategy,
         outlierStrategy,
         outlierIqrMultiplier,
-        trimStrings: true
+        trimStrings: true,
+        runProfile,
+        parameterStrategy,
+        randomSeed
       };
       const response = await runForecast(request);
       setForecastResult(response);
+      if (rerunDraft) setRerunDraft(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "实验运行失败，请检查字段、模型或测试集长度。");
     } finally {
@@ -941,6 +1040,41 @@ export function ForecastPage() {
       />
 
       <ErrorBanner message={error} />
+      {rerunDraft ? (
+        <SectionCard
+          title="重新运行草稿"
+          description={`来源实验 ${rerunDraft.experimentId}，配置 Hash：${rerunDraft.configHash.slice(0, 12)}...`}
+          action={
+            <button className={controls.secondaryButton} onClick={() => setRerunDraft(null)}>
+              清除草稿
+            </button>
+          }
+        >
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="rounded-2xl bg-slate-50 p-3 text-xs leading-6 text-slate-600 dark:bg-[#151b2e] dark:text-slate-300">
+              目标源文件：{rerunDraft.manifest.data.fileName}
+              <br />
+              源文件 SHA256：{rerunDraft.sourceFileSha256}
+            </div>
+            <div className={`rounded-2xl border p-3 text-xs leading-6 ${
+              rerunDraft.fileMatch.exactMatch === false
+                ? "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-400/30 dark:bg-amber-400/10 dark:text-amber-100"
+                : "border-slate-200 bg-white text-slate-600 dark:border-white/10 dark:bg-[#151b2e] dark:text-slate-300"
+            }`}>
+              当前上传文件：{upload.fileName}
+              <br />
+              当前 SHA256：{upload.fileSha256}
+              <br />
+              校验结果：{rerunDraft.fileMatch.exactMatch ? "完全一致" : rerunDraft.fileMatch.exactMatch === false ? "不完全一致" : "等待重新上传比对"}
+            </div>
+          </div>
+          {rerunDraft.fileMatch.warnings.length ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {rerunDraft.fileMatch.warnings.map((warning) => <Badge key={warning} tone="warn">{warning}</Badge>)}
+            </div>
+          ) : null}
+        </SectionCard>
+      ) : null}
       {loading ? (
         <RunningProgress
           finalForecastMode={Boolean(forecastResult)}
@@ -948,6 +1082,7 @@ export function ForecastPage() {
           models={models}
           finalModelId={finalModelId}
           elapsedSeconds={elapsedSeconds}
+          parameterStrategy={parameterStrategy}
           progress={runProgress}
         />
       ) : null}
@@ -1069,6 +1204,28 @@ export function ForecastPage() {
               description={`模型按当前数据规模和主机内存压力排序。主机：${device.toUpperCase()}，可用 RAM：${formatMemory(deviceInfo?.memoryAvailableMb)}，总 RAM：${formatMemory(deviceInfo?.memoryTotalMb)}。`}
             >
               <div className="grid gap-4">
+                <div className="grid gap-3 lg:grid-cols-3">
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-slate-700 dark:text-slate-200">运行模式</span>
+                    <select className={controls.input} value={runProfile} onChange={(event) => setRunProfile(event.target.value as ForecastRunRequest["runProfile"])}>
+                      <option value="fast">快速</option>
+                      <option value="balanced">均衡</option>
+                      <option value="accurate">精确</option>
+                    </select>
+                  </label>
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-slate-700 dark:text-slate-200">参数策略</span>
+                    <select className={controls.input} value={parameterStrategy} onChange={(event) => setParameterStrategy(event.target.value as ForecastRunRequest["parameterStrategy"])}>
+                      <option value="default">默认参数</option>
+                      <option value="auto">自动优化</option>
+                    </select>
+                  </label>
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-6 text-slate-600 dark:border-white/10 dark:bg-[#151b2e] dark:text-slate-300">
+                    随机种子：{randomSeed}
+                    <br />
+                    {parameterStrategy === "auto" ? "自动优化会按运行模式控制候选数量和时间预算。" : "默认参数会直接使用高级设置中的模型参数。"}
+                  </div>
+                </div>
                 <div className="grid gap-3 md:grid-cols-2">
                   <label className="space-y-2">
                     <span className="text-sm font-medium text-slate-700 dark:text-slate-200">预测步长</span>

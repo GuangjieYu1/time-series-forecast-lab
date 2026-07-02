@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Any
 
 
-ISOLATED_MODEL_IDS = {"xgboost"}
+ISOLATED_MODEL_IDS = {"timesfm", "xgboost"}
 ISOLATED_MODEL_TIMEOUT_SECONDS = 120
 logger = logging.getLogger(__name__)
 

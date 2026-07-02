@@ -6,6 +6,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile.prod
       args:
+        PYTHON_BASE_IMAGE: ${BACKEND_PYTHON_BASE_IMAGE:-python:3.12-slim}
         INSTALL_OPTIONAL: "true"
         PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
     restart: unless-stopped
@@ -23,6 +24,9 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        NODE_BASE_IMAGE: ${FRONTEND_NODE_BASE_IMAGE:-node:22-alpine}
+        NGINX_BASE_IMAGE: ${FRONTEND_NGINX_BASE_IMAGE:-nginx:1.27-alpine}
     restart: unless-stopped
     ports:
       - "80:80"

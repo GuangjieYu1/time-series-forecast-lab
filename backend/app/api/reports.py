@@ -39,6 +39,7 @@ def _experiment_payload(record: ExperimentRecord) -> dict:
         "diagnostics": _loads(record.diagnostics_json, {}),
         "finalForecast": _loads(record.final_forecast_json, None),
         "modelLogs": _loads(record.model_logs_json, []),
+        "manifest": _loads(record.manifest_json, None),
     }
 
 

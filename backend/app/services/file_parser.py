@@ -213,6 +213,7 @@ def preview_upload(upload_id: str, limit: int = 100) -> UploadPreviewResponse:
         uploadId=upload_id,
         fileName=metadata["fileName"],
         fileSize=metadata["fileSize"],
+        fileSha256=metadata["fileSha256"],
         sheets=sheets,
     )
 

@@ -24,6 +24,8 @@ class ProphetModel:
     def __init__(
         self,
         interval_width: float = 0.8,
+        seasonality_mode: str = "additive",
+        changepoint_prior_scale: float = 0.05,
         daily_seasonality: str = "auto",
         weekly_seasonality: str = "auto",
         yearly_seasonality: str = "auto",
@@ -33,6 +35,8 @@ class ProphetModel:
         self.last_time: datetime | None = None
         self.values: list[float] = []
         self.interval_width = interval_width
+        self.seasonality_mode = seasonality_mode
+        self.changepoint_prior_scale = changepoint_prior_scale
         self.daily_seasonality = daily_seasonality
         self.weekly_seasonality = weekly_seasonality
         self.yearly_seasonality = yearly_seasonality
@@ -55,6 +59,8 @@ class ProphetModel:
             frame = pd.DataFrame({"ds": times, "y": values})
             model = Prophet(
                 interval_width=self.interval_width,
+                seasonality_mode=self.seasonality_mode,
+                changepoint_prior_scale=self.changepoint_prior_scale,
                 daily_seasonality=self._seasonality_value(self.daily_seasonality),
                 weekly_seasonality=self._seasonality_value(self.weekly_seasonality),
                 yearly_seasonality=self._seasonality_value(self.yearly_seasonality),

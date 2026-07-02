@@ -13,7 +13,14 @@ router = APIRouter(prefix="/api/upload", tags=["upload"])
 async def upload_preview(file: UploadFile = File(...)):
     try:
         metadata = await save_upload_file(file)
-        return preview_upload(metadata["uploadId"], limit=100)
+        preview = preview_upload(metadata["uploadId"], limit=100)
+        return UploadPreviewResponse(
+            uploadId=preview.uploadId,
+            fileName=preview.fileName,
+            fileSize=preview.fileSize,
+            fileSha256=metadata["fileSha256"],
+            sheets=preview.sheets,
+        )
     except AppError as exc:
         raise as_http_error(exc) from exc
 

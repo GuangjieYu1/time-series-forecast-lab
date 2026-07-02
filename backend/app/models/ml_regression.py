@@ -6,6 +6,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from app.core.constants import DEFAULT_RANDOM_SEED
 from app.models.base import ForecastOutput
 
 
@@ -151,7 +152,7 @@ class XGBoostModel(LagFeatureRegressor):
             learning_rate=self.learning_rate,
             subsample=0.9,
             colsample_bytree=0.9,
-            random_state=42,
+            random_state=DEFAULT_RANDOM_SEED,
             n_jobs=WEB_WORKER_N_JOBS,
             verbosity=0,
         )
@@ -177,7 +178,7 @@ class LightGbmModel(LagFeatureRegressor):
             n_estimators=self.n_estimators,
             learning_rate=self.learning_rate,
             num_leaves=self.num_leaves,
-            random_state=42,
+            random_state=DEFAULT_RANDOM_SEED,
             n_jobs=WEB_WORKER_N_JOBS,
             verbose=-1,
         )
@@ -201,7 +202,7 @@ class RandomForestTsModel(LagFeatureRegressor):
             raise RuntimeError(self.unavailable_message) from exc
         return RandomForestRegressor(
             n_estimators=self.n_estimators,
-            random_state=42,
+            random_state=DEFAULT_RANDOM_SEED,
             n_jobs=WEB_WORKER_N_JOBS,
             min_samples_leaf=self.min_samples_leaf,
             max_depth=self.max_depth,

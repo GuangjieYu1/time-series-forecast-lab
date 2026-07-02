@@ -2,6 +2,7 @@ import json
 import logging
 import shutil
 import uuid
+from hashlib import sha256
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -65,6 +66,7 @@ async def save_upload_file(file: UploadFile) -> dict:
     size = 0
 
     with dest.open("wb") as output:
+        hasher = sha256()
         while True:
             chunk = await file.read(1024 * 1024)
             if not chunk:
@@ -74,11 +76,13 @@ async def save_upload_file(file: UploadFile) -> dict:
                 dest.unlink(missing_ok=True)
                 raise AppError(f"File is too large. The current limit is {settings.max_upload_mb} MB.")
             output.write(chunk)
+            hasher.update(chunk)
 
     metadata = {
         "uploadId": upload_id,
         "fileName": original_name,
         "fileSize": size,
+        "fileSha256": hasher.hexdigest(),
         "extension": ext,
         "path": str(dest),
         "createdAt": datetime.now(timezone.utc).isoformat(),

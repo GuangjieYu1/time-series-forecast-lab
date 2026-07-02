@@ -3,11 +3,14 @@ import type {
   DeepSeekSettings,
   DeviceInfo,
   ExperimentDetail,
+  ExperimentManifest,
+  ExperimentRerunResponse,
   ExperimentListItem,
   FinalForecastResponse,
   ForecastProgress,
   ForecastRunRequest,
   ForecastRunResponse,
+  LocalRebuildResponse,
   ModelCapability,
   ReportOptions,
   ReportResponse,
@@ -117,6 +120,20 @@ export async function fetchExperiment(experimentId: string): Promise<ExperimentD
   return parseResponse<ExperimentDetail>(await fetch(`/api/experiments/${experimentId}`));
 }
 
+export async function fetchExperimentManifest(experimentId: string): Promise<ExperimentManifest> {
+  return parseResponse<ExperimentManifest>(await fetch(`/api/experiments/${experimentId}/manifest`));
+}
+
+export async function prepareExperimentRerun(experimentId: string, uploadId?: string): Promise<ExperimentRerunResponse> {
+  return parseResponse<ExperimentRerunResponse>(
+    await fetch("/api/experiments/rerun", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ experimentId, uploadId })
+    })
+  );
+}
+
 export async function deleteExperiment(experimentId: string): Promise<void> {
   await parseResponse<{ ok: boolean }>(
     await fetch(`/api/experiments/${experimentId}`, {
@@ -145,6 +162,16 @@ export async function generateReport(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ experimentId, ...settings, reportOptions })
+    })
+  );
+}
+
+export async function triggerLocalRebuild(password: string): Promise<LocalRebuildResponse> {
+  return parseResponse<LocalRebuildResponse>(
+    await fetch("/api/system/local-rebuild", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password, delaySeconds: 2 })
     })
   );
 }
