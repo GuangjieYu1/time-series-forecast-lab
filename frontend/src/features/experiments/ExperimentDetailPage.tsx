@@ -18,8 +18,10 @@ import {
 } from "../visualization/Charts";
 import { ReportPanel } from "../reports/ReportPanel";
 import { DataHealthPanel } from "../forecast/DataHealthPanel";
+import { FeatureFactoryPanel } from "../runtime/FeatureFactoryPanel";
+import { RuntimeInspectorPanel } from "../runtime/RuntimeInspectorPanel";
 
-type DetailTab = "dataHealth" | "overview" | "residual" | "metrics" | "distribution" | "final" | "report";
+type DetailTab = "runtime" | "featureFactory" | "dataHealth" | "overview" | "residual" | "metrics" | "distribution" | "final" | "report";
 
 function asForecastResult(experiment: ExperimentDetail): ForecastRunResponse {
   return {
@@ -97,7 +99,7 @@ export function ExperimentDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [tab, setTab] = useState<DetailTab>("dataHealth");
+  const [tab, setTab] = useState<DetailTab>("runtime");
   const [copyState, setCopyState] = useState<"idle" | "done" | "failed">("idle");
 
   useEffect(() => {
@@ -177,6 +179,8 @@ export function ExperimentDetailPage() {
             value={tab}
             onChange={setTab}
             items={[
+              { id: "runtime", label: "透明引擎" },
+              { id: "featureFactory", label: "Feature Factory" },
               { id: "dataHealth", label: "数据健康" },
               { id: "overview", label: "预测对比" },
               { id: "residual", label: "残差诊断" },
@@ -188,6 +192,21 @@ export function ExperimentDetailPage() {
           />
 
           <div className="mt-5">
+            {tab === "runtime" ? (
+              <RuntimeInspectorPanel
+                runtime={experiment.runtime}
+                title="Transparent Experiment Engine Replay"
+                description="这里回放的是实验落库后的 runtime 快照：状态机、特征管线、优化过程和日志都可以直接追溯。"
+              />
+            ) : null}
+
+            {tab === "featureFactory" ? (
+              <FeatureFactoryPanel
+                experimentId={experiment.experimentId}
+                initialTargets={experiment.runtime?.featurePipeline ?? []}
+              />
+            ) : null}
+
             {tab === "dataHealth" ? <DataHealthPanel dataHealth={experiment.dataHealth} /> : null}
 
             {tab === "overview" ? (
@@ -236,7 +255,17 @@ export function ExperimentDetailPage() {
               </div>
             ) : null}
 
-            {tab === "report" ? <ReportPanel experimentId={experiment.experimentId} initialReports={experiment.reports} /> : null}
+            {tab === "report" ? (
+              <ReportPanel
+                experimentId={experiment.experimentId}
+                initialReports={experiment.reports}
+                visualization={{
+                  result,
+                  finalForecast: experiment.finalForecast,
+                  metric: "mae"
+                }}
+              />
+            ) : null}
           </div>
         </SectionCard>
 

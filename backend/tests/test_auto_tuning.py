@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+import pytest
+
 import app.services.auto_tuning.service as tuning_service
 from app.models.base import ForecastOutput
 from app.services.deepseek import (
@@ -289,3 +291,65 @@ def test_timesfm_auto_tuning_generates_multiple_candidates(monkeypatch):
     assert any(trial.params["normalizeInputs"] is False for trial in result.trials)
     assert any(trial.params["maxContext"] == 32 for trial in result.trials)
     assert all(trial.params["maxContext"] <= 88 for trial in result.trials)
+
+
+def test_tree_model_auto_tuning_falls_back_when_optuna_is_unavailable(monkeypatch):
+    class FakeXgboostModel:
+        def __init__(self, n_estimators=200, max_depth=3, learning_rate=0.05):
+            self.value = float(n_estimators) / 1000 + float(max_depth) + float(learning_rate)
+
+        def fit(self, times, values, frequency, covariates=None, feature_config=None):
+            return None
+
+        def predict(self, horizon, future_covariates=None):
+            return ForecastOutput(predictions=[self.value] * horizon)
+
+    monkeypatch.setattr(tuning_service, "_try_import_optuna", lambda: None)
+    monkeypatch.setattr(tuning_service, "should_isolate_model", lambda model_id: False)
+    monkeypatch.setattr(tuning_service, "create_model", lambda model_id, parameters=None: FakeXgboostModel(**(parameters or {})))
+
+    result = tuning_service.resolve_model_parameters(
+        model_id="xgboost",
+        requested_parameters={"nEstimators": 120, "maxDepth": 3, "learningRate": 0.05},
+        parameter_strategy="auto",
+        run_profile="balanced",
+        random_seed=42,
+        train_times=[datetime(2026, 1, 1) + timedelta(days=index) for index in range(48)],
+        train_values=[3.0] * 48,
+        frequency="D",
+        test_size=6,
+        feature_config={"lagFeatures": True, "rollingFeatures": True, "calendarFeatures": True, "covariates": False},
+    )
+
+    assert result.enabled is True
+    assert result.strategyLabel == "Transparent Candidate Search"
+    assert result.sampler == "Candidate Queue"
+    assert result.pruner == "Time Budget Stopper"
+    assert result.candidateCount > 1
+    assert any("Optuna" in warning for warning in result.warnings)
+
+
+def test_tree_model_auto_tuning_uses_optuna_when_available():
+    pytest.importorskip("optuna")
+    pytest.importorskip("sklearn")
+
+    result = tuning_service.resolve_model_parameters(
+        model_id="random_forest",
+        requested_parameters={"nEstimators": 40, "maxDepth": 8, "minSamplesLeaf": 2},
+        parameter_strategy="auto",
+        run_profile="fast",
+        random_seed=42,
+        train_times=[datetime(2026, 1, 1) + timedelta(days=index) for index in range(40)],
+        train_values=[float(120 + index * 0.2 + ((index % 7) - 3) * 1.1) for index in range(40)],
+        frequency="D",
+        test_size=4,
+        feature_config={"lagFeatures": True, "rollingFeatures": True, "calendarFeatures": True, "covariates": False},
+    )
+
+    assert result.enabled is True
+    assert result.strategyLabel == "Optuna Optimization Engine"
+    assert result.sampler == "TPE"
+    assert result.pruner == "Median Pruner"
+    assert result.candidateCount > 1
+    assert len(result.trials) >= 1
+    assert any(trial.status in {"success", "pruned"} for trial in result.trials)

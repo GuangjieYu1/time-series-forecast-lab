@@ -8,6 +8,7 @@ import pandas as pd
 
 from app.core.errors import AppError
 from app.schemas import FinalForecastResponse, ForecastPoint, HistoryPoint
+from app.services.covariate_flow import build_future_covariate_rows
 from app.services.model_executor import fit_model_instance, predict_model_instance, run_isolated_fit_predict, should_isolate_model
 from app.services.model_registry import MODEL_CAPABILITIES, create_model, validate_horizon
 from app.services.series_builder import PANDAS_FREQ
@@ -46,6 +47,14 @@ def run_final_forecast(
     times = [datetime.fromisoformat(point["time"]) for point in history]
     values = [float(point["value"]) for point in history]
     model_params = (model_parameters or {}).get(final_model_id)
+    future_times = _future_times(times[-1], frequency, horizon)
+    covariate_columns = list(covariate_history[0].keys()) if covariate_history else []
+    future_covariates = build_future_covariate_rows(
+        covariate_columns=covariate_columns,
+        history_rows=covariate_history,
+        observed_future_rows=None,
+        future_times=future_times,
+    )
     try:
         if progress_callback:
             progress_callback("fitting")
@@ -67,6 +76,7 @@ def run_final_forecast(
                 frequency,
                 horizon,
                 covariates=covariate_history,
+                future_covariates=future_covariates,
                 feature_config=feature_config,
             )
             if progress_callback:
@@ -84,7 +94,7 @@ def run_final_forecast(
             )
             if progress_callback:
                 progress_callback("predicting")
-            output = predict_model_instance(final_model_id, model, horizon)
+            output = predict_model_instance(final_model_id, model, horizon, future_covariates=future_covariates)
     except Exception as exc:
         logger.exception(
             "final model run failed experiment_id=%s model=%s frequency=%s points=%s horizon=%s",
@@ -102,12 +112,11 @@ def run_final_forecast(
         horizon,
     )
 
-    future = _future_times(times[-1], frequency, horizon)
     lower = output.lower or [None] * horizon
     upper = output.upper or [None] * horizon
     forecast = [
         ForecastPoint(
-            time=future[index].isoformat(),
+            time=future_times[index].isoformat(),
             predicted=float(output.predictions[index]),
             lower=float(lower[index]) if index < len(lower) and lower[index] is not None else None,
             upper=float(upper[index]) if index < len(upper) and upper[index] is not None else None,

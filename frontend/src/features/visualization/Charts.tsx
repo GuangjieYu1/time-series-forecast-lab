@@ -3,6 +3,8 @@ import { EChart } from "./EChart";
 import type { FinalForecastResponse, ForecastRunResponse, RankedModel } from "../../shared/types/api";
 import { zhCN } from "../../shared/i18n/zhCN";
 
+export type ChartMetricKey = keyof NonNullable<RankedModel["metrics"]>;
+
 export const modelColorMap: Record<string, string> = {
   actual: "#00E5FF",
   timesfm: "#8B5CF6",
@@ -29,15 +31,26 @@ function modelName(models: RankedModel[], modelId: string) {
   return models.find((model) => model.modelId === modelId)?.modelName ?? modelId;
 }
 
-function baseOption(title: string): EChartsOption {
+function baseOption(
+  title: string,
+  {
+    includeToolbox = true,
+    includeDataZoom = true,
+    animation = true
+  }: {
+    includeToolbox?: boolean;
+    includeDataZoom?: boolean;
+    animation?: boolean;
+  } = {}
+): EChartsOption {
   return {
     title: { text: title, left: 10, top: 8, textStyle: { fontSize: 14, fontWeight: 600, color: "#94A3B8" } },
-    animation: true,
+    animation,
     tooltip: { trigger: "axis", borderWidth: 1, confine: true, backgroundColor: "rgba(15,23,42,0.92)", borderColor: "rgba(148,163,184,0.25)", textStyle: { color: "#F8FAFC" } },
     legend: { top: 36, type: "scroll", textStyle: { color: "#94A3B8" } },
-    toolbox: { right: 8, feature: { saveAsImage: {} } },
+    toolbox: includeToolbox ? { right: 8, feature: { saveAsImage: {} } } : undefined,
     grid: { left: 48, right: 24, top: 82, bottom: 56 },
-    dataZoom: [{ type: "inside" }, { type: "slider", height: 18, bottom: 16 }],
+    dataZoom: includeDataZoom ? [{ type: "inside" }, { type: "slider", height: 18, bottom: 16 }] : undefined,
     color: palette
   };
 }
@@ -92,6 +105,22 @@ function actualLineStyle(width = 5) {
 }
 
 export function ActualVsPredictedChart({ result, visibleModelIds, height }: { result: ForecastRunResponse; visibleModelIds?: string[]; height?: number }) {
+  return <EChart height={height} option={buildActualVsPredictedOption({ result, visibleModelIds })} />;
+}
+
+export function buildActualVsPredictedOption({
+  result,
+  visibleModelIds,
+  includeToolbox = true,
+  includeDataZoom = true,
+  animation = true
+}: {
+  result: ForecastRunResponse;
+  visibleModelIds?: string[];
+  includeToolbox?: boolean;
+  includeDataZoom?: boolean;
+  animation?: boolean;
+}) {
   const shown = visibleModelIds ?? defaultVisibleModelIds(result);
   const times = result.backtest.actual.map((point) => point.time);
   const series = [
@@ -115,10 +144,31 @@ export function ActualVsPredictedChart({ result, visibleModelIds, height }: { re
         lineStyle: lineStyle(id)
       }))
   ];
-  return <EChart height={height} option={{ ...baseOption(zhCN.charts.actualVsPredicted), xAxis: timeCategoryAxis(times), yAxis: valueAxis({ scale: true }), series: series as EChartsOption["series"] }} />;
+  return {
+    ...baseOption(zhCN.charts.actualVsPredicted, { includeToolbox, includeDataZoom, animation }),
+    xAxis: timeCategoryAxis(times),
+    yAxis: valueAxis({ scale: true }),
+    series: series as EChartsOption["series"]
+  } satisfies EChartsOption;
 }
 
 export function ResidualTimelineChart({ result, visibleModelIds }: { result: ForecastRunResponse; visibleModelIds?: string[] }) {
+  return <EChart option={buildResidualTimelineOption({ result, visibleModelIds })} />;
+}
+
+export function buildResidualTimelineOption({
+  result,
+  visibleModelIds,
+  includeToolbox = true,
+  includeDataZoom = true,
+  animation = true
+}: {
+  result: ForecastRunResponse;
+  visibleModelIds?: string[];
+  includeToolbox?: boolean;
+  includeDataZoom?: boolean;
+  animation?: boolean;
+}) {
   const shown = visibleModelIds ?? defaultVisibleModelIds(result);
   const times = result.backtest.actual.map((point) => point.time);
   const series = shown
@@ -131,21 +181,38 @@ export function ResidualTimelineChart({ result, visibleModelIds }: { result: For
       lineStyle: lineStyle(id),
       markLine: { silent: true, data: [{ yAxis: 0 }] }
     }));
-  return <EChart option={{ ...baseOption(zhCN.charts.residualTimeline), xAxis: timeCategoryAxis(times), yAxis: valueAxis({ zeroLine: true }), series: series as EChartsOption["series"] }} />;
+  return {
+    ...baseOption(zhCN.charts.residualTimeline, { includeToolbox, includeDataZoom, animation }),
+    xAxis: timeCategoryAxis(times),
+    yAxis: valueAxis({ zeroLine: true }),
+    series: series as EChartsOption["series"]
+  } satisfies EChartsOption;
 }
 
-export function MetricBarChart({ result, metric }: { result: ForecastRunResponse; metric: keyof NonNullable<RankedModel["metrics"]> }) {
+export function MetricBarChart({ result, metric }: { result: ForecastRunResponse; metric: ChartMetricKey }) {
+  return <EChart option={buildMetricBarOption({ result, metric })} />;
+}
+
+export function buildMetricBarOption({
+  result,
+  metric,
+  includeToolbox = true,
+  includeDataZoom = true,
+  animation = true
+}: {
+  result: ForecastRunResponse;
+  metric: ChartMetricKey;
+  includeToolbox?: boolean;
+  includeDataZoom?: boolean;
+  animation?: boolean;
+}) {
   const successful = result.rankedModels.filter((model) => model.status === "success" && model.metrics);
-  return (
-    <EChart
-      option={{
-        ...baseOption(`${metric.toUpperCase()} ${zhCN.charts.metricBar}`),
-        xAxis: { type: "category", data: successful.map((model) => model.modelName), axisLabel: { color: "#94A3B8" } },
-        yAxis: valueAxis(),
-        series: [{ type: "bar", data: successful.map((model) => ({ value: model.metrics?.[metric] ?? 0, itemStyle: { color: modelColorMap[model.modelId] ?? "#4F46E5" } })), barMaxWidth: 44 }]
-      }}
-    />
-  );
+  return {
+    ...baseOption(`${metric.toUpperCase()} ${zhCN.charts.metricBar}`, { includeToolbox, includeDataZoom, animation }),
+    xAxis: { type: "category", data: successful.map((model) => model.modelName), axisLabel: { color: "#94A3B8" } },
+    yAxis: valueAxis(),
+    series: [{ type: "bar", data: successful.map((model) => ({ value: model.metrics?.[metric] ?? 0, itemStyle: { color: modelColorMap[model.modelId] ?? "#4F46E5" } })), barMaxWidth: 44 }]
+  } satisfies EChartsOption;
 }
 
 export function ResidualDistributionChart({ result, visibleModelIds }: { result: ForecastRunResponse; visibleModelIds?: string[] }) {
@@ -211,6 +278,21 @@ export function FinalForecastChart({ finalForecast }: { finalForecast: FinalFore
       </div>
     );
   }
+  return <EChart option={buildFinalForecastOption(finalForecast)} />;
+}
+
+export function buildFinalForecastOption(
+  finalForecast: FinalForecastResponse,
+  {
+    includeToolbox = true,
+    includeDataZoom = true,
+    animation = true
+  }: {
+    includeToolbox?: boolean;
+    includeDataZoom?: boolean;
+    animation?: boolean;
+  } = {}
+) {
   const historyTimes = finalForecast.history.map((point) => point.time);
   const futureTimes = finalForecast.forecast.map((point) => point.time);
   const times = [...historyTimes, ...futureTimes];
@@ -218,20 +300,16 @@ export function FinalForecastChart({ finalForecast }: { finalForecast: FinalFore
   const forecastValues = [...Array(historyTimes.length).fill(null), ...finalForecast.forecast.map((point) => point.predicted)];
   const lower = [...Array(historyTimes.length).fill(null), ...finalForecast.forecast.map((point) => point.lower)];
   const upper = [...Array(historyTimes.length).fill(null), ...finalForecast.forecast.map((point) => point.upper)];
-  return (
-    <EChart
-      option={{
-        ...baseOption(zhCN.charts.finalForecast),
-        xAxis: timeCategoryAxis(times),
-        yAxis: valueAxis({ scale: true }),
-        series: [
-          { name: zhCN.charts.history, type: "line", smooth: true, data: historyValues, lineStyle: actualLineStyle(4), z: 20, showSymbol: false },
-          { name: finalForecast.modelInfo.name, type: "line", smooth: true, data: forecastValues, lineStyle: { width: 3, color: modelColorMap[finalForecast.finalModelId] ?? "#818CF8" } },
-          { name: zhCN.charts.lower, type: "line", smooth: true, data: lower, lineStyle: { type: "dashed" } },
-          { name: zhCN.charts.upper, type: "line", smooth: true, data: upper, lineStyle: { type: "dashed" } }
-        ],
-        markLine: { data: [{ xAxis: historyTimes[historyTimes.length - 1] }] }
-      }}
-    />
-  );
+  return {
+    ...baseOption(zhCN.charts.finalForecast, { includeToolbox, includeDataZoom, animation }),
+    xAxis: timeCategoryAxis(times),
+    yAxis: valueAxis({ scale: true }),
+    series: [
+      { name: zhCN.charts.history, type: "line", smooth: true, data: historyValues, lineStyle: actualLineStyle(4), z: 20, showSymbol: false },
+      { name: finalForecast.modelInfo.name, type: "line", smooth: true, data: forecastValues, lineStyle: { width: 3, color: modelColorMap[finalForecast.finalModelId] ?? "#818CF8" } },
+      { name: zhCN.charts.lower, type: "line", smooth: true, data: lower, lineStyle: { type: "dashed" } },
+      { name: zhCN.charts.upper, type: "line", smooth: true, data: upper, lineStyle: { type: "dashed" } }
+    ],
+    markLine: { data: [{ xAxis: historyTimes[historyTimes.length - 1] }] }
+  } satisfies EChartsOption;
 }

@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.core.errors import AppError
 from app.schemas import Diagnostics, ForecastRunRequest, HistoryPoint
+from app.services.covariate_flow import covariate_strategy_warnings, describe_covariates
 from app.services.data_cleaner import clean_source_data, detect_and_handle_outliers
 from app.services.time_parser import detect_frequency
 
@@ -222,6 +223,7 @@ def build_time_series(df: pd.DataFrame, request: ForecastRunRequest, target_colu
         raise AppError("Fewer than three valid time series points remain after aggregation.")
 
     warnings = list(frequency_warnings)
+    warnings.extend(covariate_strategy_warnings(covariate_columns))
     if len(grouped) < 30:
         warnings.append("Valid time points are fewer than 30; forecast comparison may be unstable.")
     if duplicate_time_count and request.dataMode == "aggregated":
@@ -269,10 +271,12 @@ def build_time_series(df: pd.DataFrame, request: ForecastRunRequest, target_colu
         "timeColumn": request.timeColumn,
         "targetColumn": target_column,
         "covariateColumns": covariate_columns,
+        "covariates": describe_covariates(covariate_columns),
         "featureConfig": request.featureConfig.model_dump(),
         "aggregation": method,
         "detectedFrequency": frequency,
         "sourceFrequency": detected_frequency,
+        "rawColumnCount": len(df.columns),
         "covariateAggregation": "mean" if covariate_columns else None,
         "cleaning": {
             "missingValueStrategy": request.missingValueStrategy,
@@ -282,6 +286,9 @@ def build_time_series(df: pd.DataFrame, request: ForecastRunRequest, target_colu
             "outlierIqrMultiplier": request.outlierIqrMultiplier,
             "trimStrings": request.trimStrings,
         },
+        "warnings": warnings,
+        "originalRowCount": original_count,
+        "validPointCount": len(points),
         "history": [HistoryPoint(time=point.time.isoformat(), value=point.value).model_dump() for point in points],
         "covariateHistory": [
             {"time": point.time.isoformat(), **covariate_row}

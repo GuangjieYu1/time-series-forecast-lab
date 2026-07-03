@@ -5,6 +5,7 @@ from sqlalchemy.engine import Engine
 
 
 EXPERIMENT_COLUMN_DEFINITIONS = {
+    "runtime_json": "TEXT",
     "manifest_json": "TEXT",
     "config_hash": "VARCHAR(128)",
     "source_file_sha256": "VARCHAR(128)",

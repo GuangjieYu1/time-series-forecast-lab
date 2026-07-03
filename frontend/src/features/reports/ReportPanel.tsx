@@ -1,10 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { generateReport } from "../../shared/api/client";
+import { downloadReportPdf, generateReport } from "../../shared/api/client";
 import { loadDeepSeekSettings } from "../../shared/api/deepseekSettings";
 import { ErrorBanner, LoadingBlock } from "../../shared/components/Status";
 import { Badge, controls, SectionCard, surface } from "../../shared/components/Ui";
-import type { ReportOptions, ReportResponse } from "../../shared/types/api";
+import type { ReportOptions, ReportPdfArtifact, ReportResponse } from "../../shared/types/api";
+import {
+  buildReportVisualArtifacts,
+  buildVisualAppendixMarkdown,
+  renderVisualAppendixHtml,
+  type ReportVisualArtifact,
+  type ReportVisualizationInput
+} from "./reportVisuals";
 
 const defaultOptions: ReportOptions = {
   language: "zh-CN",
@@ -212,8 +219,7 @@ function renderMarkdownToHtml(content: string) {
   return html.join("\n");
 }
 
-function buildHtmlDocument(title: string, content: string) {
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>
+const reportDocumentStyles = `
   body{margin:0;background:#f8fafc;color:#0f172a;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
   main{max-width:980px;margin:0 auto;padding:32px 20px 48px}
   h1,h2,h3{line-height:1.3}
@@ -228,11 +234,28 @@ function buildHtmlDocument(title: string, content: string) {
   hr{border:none;border-top:1px solid #cbd5e1;margin:24px 0}
   figure{margin:16px 0}
   figcaption{font-size:12px;color:#475569;margin-top:8px}
-  </style></head><body><main>${renderMarkdownToHtml(content)}</main></body></html>`;
+  .report-visuals{margin-top:32px}
+  .report-figure{margin-top:28px;padding:20px;border:1px solid #cbd5e1;border-radius:24px;background:#fff}
+  .report-figure-caption{margin:8px 0 0;color:#475569;font-size:14px}
+  .report-figure img{width:100%;max-height:620px;object-fit:contain;border-radius:18px;background:#ffffff;border:1px solid #e2e8f0}
+  .report-figure ul{margin:16px 0 0;padding-left:20px}
+`;
+
+function buildHtmlDocument(title: string, content: string, visualHtml = "") {
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>${reportDocumentStyles}</style></head><body><main>${renderMarkdownToHtml(content)}${visualHtml}</main></body></html>`;
 }
 
 function download(filename: string, content: string, type: string) {
   const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function downloadBlob(filename: string, blob: Blob) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -246,7 +269,41 @@ function MarkdownView({ content }: { content: string }) {
   return <div className="space-y-3" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
-export function ReportPanel({ experimentId, initialReports = [] }: { experimentId: string; initialReports?: ReportResponse[] }) {
+function ReportVisualAppendixView({ artifacts }: { artifacts: ReportVisualArtifact[] }) {
+  if (!artifacts.length) return null;
+  return (
+    <div className="mt-8 space-y-6 border-t border-slate-200 pt-6 dark:border-white/10">
+      <div>
+        <div className="text-xl font-semibold text-slate-950 dark:text-white">图像与结果解读</div>
+        <div className="mt-1 text-sm text-slate-500 dark:text-slate-400">下面的图像会一起进入 HTML / PDF 导出，并补齐图像层面的结论说明。</div>
+      </div>
+      {artifacts.map((artifact) => (
+        <article key={artifact.id} className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-white/10 dark:bg-[#151b2e]">
+          <div className="text-lg font-semibold text-slate-950 dark:text-white">{artifact.title}</div>
+          <p className="mt-1 text-sm leading-6 text-slate-500 dark:text-slate-400">{artifact.caption}</p>
+          <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 dark:border-white/10 dark:bg-[#0f172a]">
+            <img className="max-h-[520px] w-full object-contain" src={artifact.dataUrl} alt={artifact.title} />
+          </div>
+          <ul className="mt-4 list-disc space-y-2 pl-5 text-sm leading-7 text-slate-700 dark:text-slate-200">
+            {artifact.summary.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+export function ReportPanel({
+  experimentId,
+  initialReports = [],
+  visualization
+}: {
+  experimentId: string;
+  initialReports?: ReportResponse[];
+  visualization?: ReportVisualizationInput;
+}) {
   const [reports, setReports] = useState<ReportResponse[]>(initialReports);
   const [activeReportId, setActiveReportId] = useState(initialReports[0]?.reportId ?? "");
   const [options, setOptions] = useState<ReportOptions>(defaultOptions);
@@ -255,14 +312,56 @@ export function ReportPanel({ experimentId, initialReports = [] }: { experimentI
   const [previewMode, setPreviewMode] = useState<PreviewMode>("rendered");
   const [message, setMessage] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [visualArtifacts, setVisualArtifacts] = useState<ReportVisualArtifact[]>([]);
+  const [visualsLoading, setVisualsLoading] = useState(false);
+  const [pdfLoading, setPdfLoading] = useState(false);
 
   const activeReport = useMemo(() => reports.find((report) => report.reportId === activeReportId) ?? reports[0] ?? null, [activeReportId, reports]);
+  const visualAppendixMarkdown = useMemo(() => buildVisualAppendixMarkdown(visualArtifacts), [visualArtifacts]);
+  const reportMarkdown = useMemo(() => {
+    if (!activeReport) return "";
+    return visualAppendixMarkdown ? `${activeReport.contentMarkdown}\n\n---\n\n${visualAppendixMarkdown}` : activeReport.contentMarkdown;
+  }, [activeReport, visualAppendixMarkdown]);
+  const reportVisualHtml = useMemo(() => renderVisualAppendixHtml(visualArtifacts), [visualArtifacts]);
+  const visualizationKey = [
+    activeReport?.reportId ?? "",
+    visualization?.result.experimentId ?? "",
+    visualization?.finalForecast?.finalModelId ?? "",
+    (visualization?.visibleModelIds ?? []).join(","),
+    visualization?.metric ?? "mae"
+  ].join("|");
 
   useEffect(() => {
     if (!loading) return;
     const timer = window.setInterval(() => setLoadingIndex((current) => (current + 1) % loadingMessages.length), 1400);
     return () => window.clearInterval(timer);
   }, [loading]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeReport || !visualization?.result) {
+      setVisualArtifacts([]);
+      setVisualsLoading(false);
+      return;
+    }
+    setVisualsLoading(true);
+    void buildReportVisualArtifacts(visualization)
+      .then((artifacts) => {
+        if (cancelled) return;
+        setVisualArtifacts(artifacts);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error(err);
+        setVisualArtifacts([]);
+      })
+      .finally(() => {
+        if (!cancelled) setVisualsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeReport?.reportId, visualizationKey]);
 
   async function submit() {
     const settings = loadDeepSeekSettings();
@@ -292,19 +391,33 @@ export function ReportPanel({ experimentId, initialReports = [] }: { experimentI
 
   async function copyReport() {
     if (!activeReport) return;
-    await navigator.clipboard.writeText(activeReport.contentMarkdown);
+    await navigator.clipboard.writeText(reportMarkdown);
     setMessage("报告 Markdown 已复制到剪贴板。");
   }
 
   function downloadMarkdown() {
     if (!activeReport) return;
-    download(`${activeReport.reportId}.md`, activeReport.contentMarkdown, "text/markdown;charset=utf-8");
+    download(`${activeReport.reportId}.md`, reportMarkdown, "text/markdown;charset=utf-8");
   }
 
   function downloadHtml() {
     if (!activeReport) return;
-    const html = buildHtmlDocument(activeReport.reportId, activeReport.contentMarkdown);
+    const html = buildHtmlDocument(activeReport.reportId, activeReport.contentMarkdown, reportVisualHtml);
     download(`${activeReport.reportId}.html`, html, "text/html;charset=utf-8");
+  }
+
+  async function downloadPdf() {
+    if (!activeReport) return;
+    setPdfLoading(true);
+    try {
+      const pdf = await downloadReportPdf(activeReport.reportId, activeReport.reportId, visualArtifacts as ReportPdfArtifact[]);
+      downloadBlob(`${activeReport.reportId}.pdf`, pdf);
+      setMessage("PDF 已生成：正文为可复制、可搜索文本，图像与图像解读已一并打包。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "PDF 导出失败，请稍后重试。");
+    } finally {
+      setPdfLoading(false);
+    }
   }
 
   return (
@@ -318,8 +431,8 @@ export function ReportPanel({ experimentId, initialReports = [] }: { experimentI
       {loading ? <LoadingBlock label={loadingMessages[loadingIndex]} /> : null}
       <div className="grid gap-4 lg:grid-cols-[360px_minmax(0,1fr)]">
         <div className="space-y-4">
-          <div className="rounded-3xl border border-indigo-200 bg-gradient-to-br from-indigo-50 to-cyan-50 p-4 dark:border-indigo-300/20 dark:from-indigo-400/10 dark:to-cyan-400/10">
-            <div className="text-xs font-semibold uppercase tracking-[0.16em] text-indigo-600 dark:text-indigo-300">AI Report</div>
+          <div className="rounded-3xl border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-4 dark:border-white/10 dark:from-slate-900/70 dark:to-slate-800/70">
+            <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-600 dark:text-slate-300">AI Report</div>
             <p className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-300">
               未配置 DeepSeek API 时不会发送任何请求。配置后，报告只使用实验摘要和图表数据，不包含上传原文件。
             </p>
@@ -378,7 +491,7 @@ export function ReportPanel({ experimentId, initialReports = [] }: { experimentI
               配置 API Key
             </Link>
           </div>
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <button className={controls.secondaryButton} type="button" disabled={!activeReport} onClick={() => void copyReport()}>
               复制
             </button>
@@ -388,7 +501,15 @@ export function ReportPanel({ experimentId, initialReports = [] }: { experimentI
             <button className={controls.secondaryButton} type="button" disabled={!activeReport} onClick={downloadHtml}>
               下载 HTML
             </button>
+            <button className={controls.secondaryButton} type="button" disabled={!activeReport || pdfLoading} onClick={() => void downloadPdf()}>
+              {pdfLoading ? "正在导出 PDF..." : "下载 PDF"}
+            </button>
           </div>
+          {visualsLoading ? (
+            <p className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 dark:border-white/10 dark:bg-slate-800/60 dark:text-slate-200">
+              正在补充图像解读与导出素材...
+            </p>
+          ) : null}
           {message ? <p className="rounded-2xl bg-slate-100 p-3 text-sm text-slate-600 dark:bg-[#151b2e] dark:text-slate-300">{message}</p> : null}
         </div>
         <div className={`min-h-[420px] ${surface.softPanel} p-0`}>
@@ -396,7 +517,7 @@ export function ReportPanel({ experimentId, initialReports = [] }: { experimentI
             <div>
               <div className={`text-sm font-semibold ${surface.strongText}`}>报告预览</div>
               <div className={`text-xs ${surface.mutedText}`}>
-                {activeReport ? `${activeReport.contentMarkdown.length} 字符 / ${activeReport.contentMarkdown.split("\n").length} 行` : "生成后可在这里查看完整 Markdown 报告"}
+                {activeReport ? `${reportMarkdown.length} 字符 / ${reportMarkdown.split("\n").length} 行` : "生成后可在这里查看完整 Markdown 报告"}
               </div>
             </div>
             <div className="flex gap-2">
@@ -411,10 +532,13 @@ export function ReportPanel({ experimentId, initialReports = [] }: { experimentI
           <div className="max-h-[72vh] overflow-auto px-5 py-5">
             {activeReport ? (
               previewMode === "rendered" ? (
-                <MarkdownView content={activeReport.contentMarkdown} />
+                <>
+                  <MarkdownView content={activeReport.contentMarkdown} />
+                  <ReportVisualAppendixView artifacts={visualArtifacts} />
+                </>
               ) : (
                 <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-2xl bg-[#0f172a] p-4 text-sm leading-7 text-slate-100">
-                  <code>{activeReport.contentMarkdown}</code>
+                  <code>{reportMarkdown}</code>
                 </pre>
               )
             ) : (

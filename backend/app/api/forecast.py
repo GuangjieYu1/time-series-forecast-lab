@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.errors import AppError, as_http_error
+from app.core.gpu import get_device
 from app.core.storage import delete_upload, read_upload_metadata
 from app.core.constants import APP_VERSION
 from app.db.models import ExperimentRecord
@@ -26,6 +27,7 @@ from app.schemas import (
     ForecastRunRequest,
     ForecastRunResponse,
     ModelProgress,
+    RuntimeEstimateRequest,
     TargetResult,
 )
 from app.services.backtest_runner import ModelProgressEvent, run_holdout_backtest
@@ -35,6 +37,10 @@ from app.services.forecast_runner import run_final_forecast
 from app.services.model_registry import MODEL_CAPABILITIES, MODEL_FACTORIES
 from app.services.progress_tracker import progress_tracker
 from app.services.reproducibility import build_manifest
+from app.services.runtime_estimator import estimate_runtime
+from app.services.runtime_history import build_feature_pipeline_target
+from app.services.runtime_state_machine import stage_from_phase
+from app.services.runtime_tracker import runtime_tracker
 from app.services.series_builder import build_time_series
 
 
@@ -121,6 +127,17 @@ def _dump(value) -> str:
     return json.dumps(jsonable_encoder(value), ensure_ascii=True)
 
 
+def _runtime_stage_for_model_event(event: ModelProgressEvent) -> str:
+    return {
+        "tuning": "auto_tuning",
+        "fitting": "training",
+        "predicting": "forecast",
+        "scoring": "residual_analysis",
+        "success": "finished",
+        "failed": "failed",
+    }.get(event.stage, "pending")
+
+
 def _selected_model_parameters_for_final_forecast(
     record: ExperimentRecord,
     final_model_id: str,
@@ -180,6 +197,14 @@ async def forecast_progress_events(run_id: str, request: Request):
 def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
     run_id = request.runId or f"run_{uuid.uuid4().hex}"
     progress_tracker.start(run_id, "backtest", [], "正在校验实验配置。")
+    runtime_tracker.start(
+        run_id,
+        kind="backtest",
+        model_rows=[],
+        message="正在校验实验配置。",
+        device=get_device(),
+        parameter_strategy=request.parameterStrategy,
+    )
     cleanup_upload = False
     metadata = None
     try:
@@ -194,6 +219,14 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
             for model_id in request.selectedModels
         ]
         progress_tracker.start(run_id, "backtest", model_rows, "正在校验实验配置。")
+        runtime_tracker.start(
+            run_id,
+            kind="backtest",
+            model_rows=model_rows,
+            message="正在校验实验配置。",
+            device=get_device(),
+            parameter_strategy=request.parameterStrategy,
+        )
         metadata = read_upload_metadata(request.uploadId)
         logger.info(
             "forecast run started run_id=%s upload_id=%s file=%s sheet=%s targets=%s models=%s horizon=%s test_size=%s",
@@ -208,8 +241,49 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
         )
         cleanup_upload = True
         progress_tracker.update(run_id, phase="parsing", overallPercent=4, message="正在读取上传文件和 Sheet。")
+        runtime_tracker.set_overall(
+            run_id,
+            stage=stage_from_phase("parsing"),
+            message="正在读取上传文件和 Sheet。",
+            overall_percent=4,
+        )
         df = read_sheet_dataframe(request.uploadId, request.sheetName)
+        try:
+            runtime_estimate = estimate_runtime(
+                RuntimeEstimateRequest(
+                    rowCount=max(len(df), 1),
+                    frequency="auto",
+                    totalColumnCount=max(len(df.columns), 1),
+                    targetCount=max(len(request.targetColumns), 1),
+                    covariateCount=len(request.covariateColumns),
+                    featureConfig=request.featureConfig,
+                    runProfile=request.runProfile,
+                    parameterStrategy=request.parameterStrategy,
+                    device=get_device(),
+                    selectedModels=request.selectedModels,
+                ),
+                db,
+            )
+            target_count = max(len(request.targetColumns), 1)
+            runtime_tracker.set_estimates(
+                run_id,
+                estimated_total_seconds=round(sum(item.estimatedSeconds for item in runtime_estimate.models), 4),
+                estimated_model_seconds={
+                    (target_column, item.id): round(item.estimatedSeconds / target_count, 4)
+                    for target_column in request.targetColumns
+                    for item in runtime_estimate.models
+                },
+                compute_targets={item.id: item.computeTarget for item in runtime_estimate.models},
+            )
+        except Exception:
+            logger.warning("runtime estimate unavailable during run bootstrap", exc_info=True)
         progress_tracker.update(run_id, phase="profiling", overallPercent=8, message="文件解析完成，正在清洁并构建时间序列。")
+        runtime_tracker.set_overall(
+            run_id,
+            stage=stage_from_phase("profiling"),
+            message="文件解析完成，正在清洁并构建时间序列。",
+            overall_percent=8,
+        )
 
         target_results: list[TargetResult] = []
         series_profiles: list[dict] = []
@@ -234,7 +308,29 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
                 overallPercent=max(8, 10 + int((target_index * model_count / total_model_runs) * 80)),
                 message=f"正在清洁目标列 {target_column} 并构建时间序列。",
             )
+            runtime_tracker.set_overall(
+                run_id,
+                stage=stage_from_phase("building_series"),
+                message=f"正在清洁目标列 {target_column} 并构建时间序列。",
+                overall_percent=max(8, 10 + int((target_index * model_count / total_model_runs) * 80)),
+                current_target=target_column,
+            )
             build = build_time_series(df, request, target_column)
+            runtime_tracker.set_feature_pipeline(
+                run_id,
+                build_feature_pipeline_target(
+                    target_profile=build.data_profile,
+                    selected_model_ids=request.selectedModels,
+                    warnings=build.series.diagnostics.warnings,
+                ),
+            )
+            runtime_tracker.set_overall(
+                run_id,
+                stage="feature_selection",
+                message=f"目标列 {target_column} 的特征管线已构建，正在按模型能力筛选可用特征。",
+                overall_percent=max(9, 12 + int((target_index * model_count / total_model_runs) * 80)),
+                current_target=target_column,
+            )
 
             def report_model_progress(event: ModelProgressEvent, target_index=target_index, target_column=target_column):
                 model_index = request.selectedModels.index(event.modelId)
@@ -267,6 +363,46 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
                     overallPercent=overall,
                     message=f"{MODEL_CAPABILITIES[event.modelId].name}：{message}",
                 )
+                runtime_tracker.set_overall(
+                    run_id,
+                    stage=_runtime_stage_for_model_event(event),
+                    message=f"{MODEL_CAPABILITIES[event.modelId].name}：{message}",
+                    overall_percent=overall,
+                    current_target=target_column,
+                )
+                runtime_tracker.update_model(
+                    run_id,
+                    target_column=target_column,
+                    model_id=event.modelId,
+                    status=status,
+                    message=message,
+                    progress_percent=percent,
+                    current_stage=_runtime_stage_for_model_event(event),
+                    fit_seconds=round(event.fitSeconds, 4) if event.fitSeconds else None,
+                    predict_seconds=round(event.predictSeconds, 4) if event.predictSeconds else None,
+                    tuning_seconds=round(event.tuningSeconds, 4) if event.tuningSeconds else None,
+                    error=event.error,
+                    metric_label="MAE" if event.currentMetric is not None else None,
+                    metric_value=event.currentMetric,
+                    params=dict(event.params or {}),
+                )
+                if event.stage == "tuning":
+                    runtime_tracker.update_optimization(
+                        run_id,
+                        target_column=target_column,
+                        model_id=event.modelId,
+                        current_trial=event.currentTrial or 0,
+                        total_trials=event.totalTrials or max(event.currentTrial or 0, 1),
+                        message=message,
+                        params=dict(event.params or {}),
+                        current_metric=event.currentMetric,
+                        best_metric=event.bestMetric,
+                        tuning_seconds=round(event.tuningSeconds, 4) if event.tuningSeconds else None,
+                        trial_status=event.tuningStatus or "running",
+                        strategy_label=event.tuningStrategyLabel,
+                        sampler=event.tuningSampler,
+                        pruner=event.tuningPruner,
+                    )
 
             backtest = run_holdout_backtest(
                 build.series,
@@ -327,6 +463,12 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
 
         first = target_results[0]
         progress_tracker.update(run_id, phase="ranking", overallPercent=92, message="模型回测完成，正在生成排行榜。")
+        runtime_tracker.set_overall(
+            run_id,
+            stage=stage_from_phase("ranking"),
+            message="模型回测完成，正在生成排行榜。",
+            overall_percent=92,
+        )
         experiment_id = f"exp_{uuid.uuid4().hex[:12]}"
         name = request.experimentName or f"{metadata['fileName']} - {first.targetColumn} - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}"
         best = next((item for item in first.rankedModels if item.rank == 1 and item.metrics), None)
@@ -357,6 +499,7 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
             series_json=_dump(series_profiles[0]["history"]),
             final_forecast_json=None,
             model_logs_json=_dump(model_logs),
+            runtime_json=None,
             manifest_json=_dump(manifest),
             config_hash=manifest.configHash,
             source_file_sha256=metadata["fileSha256"],
@@ -365,7 +508,12 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
         )
         db.add(record)
         progress_tracker.update(run_id, phase="saving", overallPercent=97, message="正在保存实验摘要和图表数据。")
-        db.commit()
+        runtime_tracker.set_overall(
+            run_id,
+            stage=stage_from_phase("saving"),
+            message="正在保存实验摘要和图表数据。",
+            overall_percent=97,
+        )
 
         response = ForecastRunResponse(
             experimentId=experiment_id,
@@ -381,6 +529,14 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
             targetResults=target_results,
             manifest=manifest,
         )
+        runtime_snapshot = runtime_tracker.finalize(
+            run_id,
+            status="completed",
+            message="实验完成，结果已保存。",
+            experiment_id=experiment_id,
+        )
+        record.runtime_json = _dump(runtime_snapshot) if runtime_snapshot is not None else None
+        db.commit()
         progress_tracker.finish(run_id, "completed", "实验完成，结果已保存。")
         logger.info(
             "forecast run completed run_id=%s experiment_id=%s recommended_model=%s targets=%s models=%s",
@@ -401,6 +557,7 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
             exc.message,
         )
         progress_tracker.finish(run_id, "failed", "实验运行失败。", exc.message)
+        runtime_tracker.finalize(run_id, status="failed", message="实验运行失败。", error=exc.message)
         raise as_http_error(exc) from exc
     except Exception as exc:
         logger.exception(
@@ -413,6 +570,7 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
             request.selectedModels,
         )
         progress_tracker.finish(run_id, "failed", "实验运行失败。", str(exc))
+        runtime_tracker.finalize(run_id, status="failed", message="实验运行失败。", error=str(exc))
         error = AppError(str(exc), 500, "FORECAST_RUN_FAILED")
         raise as_http_error(error) from exc
     finally:
@@ -427,25 +585,41 @@ def final_forecast(request: FinalForecastRequest, db: Session = Depends(get_db))
         record = db.get(ExperimentRecord, request.experimentId)
         if record is None:
             raise AppError("Experiment was not found.", 404)
-        capability = MODEL_CAPABILITIES.get(request.finalModelId)
-        progress_tracker.start(
-            run_id,
-            "final",
-            [
-                ModelProgress(
-                    modelId=request.finalModelId,
-                    modelName=capability.name if capability else request.finalModelId,
-                    targetColumn=record.target_column,
-                )
-            ],
-            "正在读取完整历史数据。",
-        )
         data_profile = json.loads(record.data_profile_json)
         first_profile = data_profile["targets"][0]
         history = json.loads(record.series_json)
         saved_config = json.loads(record.config_json)
+        saved_manifest = json.loads(record.manifest_json) if record.manifest_json else {}
+        capability = MODEL_CAPABILITIES.get(request.finalModelId)
+        final_model_row = ModelProgress(
+            modelId=request.finalModelId,
+            modelName=capability.name if capability else request.finalModelId,
+            targetColumn=record.target_column,
+        )
+        progress_tracker.start(
+            run_id,
+            "final",
+            [final_model_row],
+            "正在读取完整历史数据。",
+        )
+        runtime_tracker.start(
+            run_id,
+            kind="final",
+            model_rows=[final_model_row],
+            message="正在读取完整历史数据。",
+            device=str((saved_manifest.get("environment") or {}).get("device") or get_device()),
+            parameter_strategy=str(saved_config.get("parameterStrategy") or "default"),
+        )
+        runtime_tracker.set_feature_pipeline(
+            run_id,
+            build_feature_pipeline_target(
+                target_profile=first_profile,
+                selected_model_ids=[request.finalModelId],
+                warnings=list(first_profile.get("warnings") or []),
+            ),
+        )
         covariate_history = [
-            {key: float(value) for key, value in row.items() if key != "time"}
+            {key: float(value) for key, value in row.items() if key != "time" and value is not None}
             for row in first_profile.get("covariateHistory", [])
         ]
 
@@ -460,6 +634,22 @@ def final_forecast(request: FinalForecastRequest, db: Session = Depends(get_db))
                     message="正在使用完整历史数据拟合模型。",
                 )
                 progress_tracker.update(run_id, phase="fitting", overallPercent=25, message="正在重新拟合最终模型。")
+                runtime_tracker.set_overall(
+                    run_id,
+                    stage=stage_from_phase("fitting"),
+                    message="正在重新拟合最终模型。",
+                    overall_percent=25,
+                    current_target=record.target_column,
+                )
+                runtime_tracker.update_model(
+                    run_id,
+                    target_column=record.target_column,
+                    model_id=request.finalModelId,
+                    status="fitting",
+                    message="正在使用完整历史数据拟合模型。",
+                    progress_percent=20,
+                    current_stage="training",
+                )
             else:
                 progress_tracker.update_model(
                     run_id,
@@ -470,6 +660,22 @@ def final_forecast(request: FinalForecastRequest, db: Session = Depends(get_db))
                     message="模型拟合完成，正在生成未来预测。",
                 )
                 progress_tracker.update(run_id, phase="predicting", overallPercent=72, message="正在生成未来预测和置信区间。")
+                runtime_tracker.set_overall(
+                    run_id,
+                    stage=stage_from_phase("predicting"),
+                    message="正在生成未来预测和置信区间。",
+                    overall_percent=72,
+                    current_target=record.target_column,
+                )
+                runtime_tracker.update_model(
+                    run_id,
+                    target_column=record.target_column,
+                    model_id=request.finalModelId,
+                    status="predicting",
+                    message="模型拟合完成，正在生成未来预测。",
+                    progress_percent=70,
+                    current_stage="forecast",
+                )
 
         response = run_final_forecast(
             experiment_id=request.experimentId,
@@ -491,10 +697,27 @@ def final_forecast(request: FinalForecastRequest, db: Session = Depends(get_db))
             message="最终预测生成成功。",
         )
         progress_tracker.update(run_id, phase="saving", overallPercent=95, message="正在保存最终预测。")
+        runtime_tracker.update_model(
+            run_id,
+            target_column=record.target_column,
+            model_id=request.finalModelId,
+            status="success",
+            message="最终预测生成成功。",
+            progress_percent=100,
+            current_stage="finished",
+        )
+        runtime_tracker.set_overall(
+            run_id,
+            stage=stage_from_phase("saving"),
+            message="正在保存最终预测。",
+            overall_percent=95,
+            current_target=record.target_column,
+        )
         record.final_forecast_json = _dump(response)
         db.add(record)
         db.commit()
         progress_tracker.finish(run_id, "completed", "最终预测完成。")
+        runtime_tracker.finalize(run_id, status="completed", message="最终预测完成。")
         logger.info(
             "final forecast completed run_id=%s experiment_id=%s model=%s horizon=%s",
             run_id,
@@ -513,6 +736,7 @@ def final_forecast(request: FinalForecastRequest, db: Session = Depends(get_db))
             exc.message,
         )
         progress_tracker.finish(run_id, "failed", "最终预测失败。", exc.message)
+        runtime_tracker.finalize(run_id, status="failed", message="最终预测失败。", error=exc.message)
         raise as_http_error(exc) from exc
     except Exception as exc:
         logger.exception(
@@ -523,5 +747,6 @@ def final_forecast(request: FinalForecastRequest, db: Session = Depends(get_db))
             request.horizon,
         )
         progress_tracker.finish(run_id, "failed", "最终预测失败。", str(exc))
+        runtime_tracker.finalize(run_id, status="failed", message="最终预测失败。", error=str(exc))
         error = AppError(str(exc), 500, "FINAL_FORECAST_FAILED")
         raise as_http_error(error) from exc

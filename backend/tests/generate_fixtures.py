@@ -29,7 +29,10 @@ def _save_workbook(path: Path, sheets: dict[str, tuple[list[str], list[list[obje
 
 
 def _save_xls(path: Path, headers: list[str], rows: list[list[object]]) -> None:
-    import xlwt
+    try:
+        import xlwt
+    except ModuleNotFoundError:
+        return
 
     workbook = xlwt.Workbook()
     sheet = workbook.add_sheet("Sheet1")

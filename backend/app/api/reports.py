@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import json
 import uuid
+from io import BytesIO
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError, as_http_error
 from app.db.models import ExperimentRecord, ReportRecord
 from app.db.session import get_db
-from app.schemas import GenerateReportRequest, ReportResponse
+from app.schemas import GenerateReportPdfRequest, GenerateReportRequest, ReportResponse
 from app.services.data_health import build_data_health_report, extract_detected_frequency
 from app.services.deepseek import build_report_context, generate_deepseek_report
+from app.services.report_pdf import build_report_pdf
+from app.services.runtime_history import load_runtime_from_record
 
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
@@ -35,6 +39,7 @@ def _experiment_payload(record: ExperimentRecord) -> dict:
     data_profile = _loads(record.data_profile_json, {})
     diagnostics = _loads(record.diagnostics_json, {})
     manifest = _loads(record.manifest_json, None)
+    runtime = load_runtime_from_record(record)
     data_health = build_data_health_report(
         diagnostics,
         detected_frequency=extract_detected_frequency(data_profile=data_profile, manifest=manifest),
@@ -58,6 +63,7 @@ def _experiment_payload(record: ExperimentRecord) -> dict:
         "dataHealth": data_health.model_dump() if data_health else None,
         "finalForecast": _loads(record.final_forecast_json, None),
         "modelLogs": _loads(record.model_logs_json, []),
+        "runtime": runtime.model_dump(mode="json") if runtime else None,
         "manifest": manifest,
     }
 
@@ -90,6 +96,26 @@ def generate_report(request: GenerateReportRequest, db: Session = Depends(get_db
             contentMarkdown=report.content_markdown,
             createdAt=report.created_at.isoformat(),
             model=report.model,
+        )
+    except AppError as exc:
+        raise as_http_error(exc) from exc
+
+
+@router.post("/{report_id}/pdf")
+def export_report_pdf(report_id: str, request: GenerateReportPdfRequest, db: Session = Depends(get_db)):
+    try:
+        report = db.get(ReportRecord, report_id)
+        if report is None:
+            raise AppError("Report was not found.", 404)
+        pdf_bytes = build_report_pdf(
+            title=(request.title or report.id).strip() or report.id,
+            content_markdown=report.content_markdown,
+            visual_artifacts=[artifact.model_dump() for artifact in request.visualArtifacts],
+        )
+        return StreamingResponse(
+            BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{report.id}.pdf"'},
         )
     except AppError as exc:
         raise as_http_error(exc) from exc

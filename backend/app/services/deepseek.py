@@ -92,6 +92,19 @@ def _format_model_ref(model: dict[str, Any] | None) -> str:
     return f"{_model_display_name(model)} (`{model.get('modelId') or 'unknown'}`)"
 
 
+def _average(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _compact_time_label(value: Any) -> str:
+    if value is None:
+        return "—"
+    text = str(value).replace("T", " ")
+    return text[:16] if len(text) >= 16 else text
+
+
 def test_deepseek_connection(api_key: str, base_url: str, model: str) -> DeepSeekConnectionResponse:
     payload = {
         "model": model,
@@ -144,8 +157,11 @@ def build_report_context(experiment: dict[str, Any]) -> dict[str, Any]:
     top_residuals.sort(key=lambda item: abs(float(item.get("residual") or 0)), reverse=True)
     targets = _build_target_context(experiment)
     feature_pipeline = _build_feature_pipeline_summary(experiment, targets)
-    workflow_report = _build_workflow_report(experiment, targets)
+    runtime_summary = _build_runtime_summary(experiment)
+    workflow_report = _build_workflow_report(experiment, targets, runtime_summary)
     model_recommendation = _build_model_recommendation_summary(experiment, targets, feature_pipeline)
+    auto_tuning = _build_auto_tuning_summary(experiment, targets)
+    chart_insights = _build_chart_insights(experiment, ranked_models, predictions, final_forecast)
 
     return {
         "experiment": {
@@ -164,12 +180,118 @@ def build_report_context(experiment: dict[str, Any]) -> dict[str, Any]:
         "rankedModels": ranked_models,
         "targets": targets,
         "featurePipeline": feature_pipeline,
+        "runtimeSummary": runtime_summary,
         "workflowReport": workflow_report,
         "modelRecommendation": model_recommendation,
-        "autoTuning": _build_auto_tuning_summary(experiment, targets),
+        "autoTuning": auto_tuning,
+        "chartInsights": chart_insights,
         "topResidualPoints": top_residuals[:12],
         "finalForecastSummary": _forecast_summary(final_forecast),
         "modelLogs": experiment.get("modelLogs", []),
+    }
+
+
+def _build_chart_insights(
+    experiment: dict[str, Any],
+    ranked_models: list[dict[str, Any]],
+    predictions: dict[str, Any],
+    final_forecast: Any,
+) -> dict[str, Any]:
+    successful_models = [model for model in ranked_models if isinstance(model, dict) and model.get("status") == "success"]
+    successful_models.sort(key=_model_sort_key)
+    best_model = successful_models[0] if successful_models else None
+    runner_up = successful_models[1] if len(successful_models) > 1 else None
+    best_rows = (
+        [row for row in _as_list(predictions.get(best_model.get("modelId"))) if isinstance(row, dict)]
+        if best_model and isinstance(predictions, dict)
+        else []
+    )
+    largest_residual = (
+        max(best_rows, key=lambda row: abs(_safe_float(row.get("residual")) or 0.0))
+        if best_rows
+        else None
+    )
+    positive_residual_count = sum(1 for row in best_rows if (_safe_float(row.get("residual")) or 0.0) > 0)
+    negative_residual_count = sum(1 for row in best_rows if (_safe_float(row.get("residual")) or 0.0) < 0)
+    residual_prefix = best_rows[: max(1, len(best_rows) // 3)]
+    residual_suffix = best_rows[-max(1, len(best_rows) // 3) :] if best_rows else []
+    final_points = [point for point in _as_list(_as_dict(final_forecast).get("forecast")) if isinstance(point, dict)]
+    interval_widths = [
+        (_safe_float(point.get("upper")) or 0.0) - (_safe_float(point.get("lower")) or 0.0)
+        for point in final_points
+        if _safe_float(point.get("upper")) is not None and _safe_float(point.get("lower")) is not None
+    ]
+    return {
+        "backtestCurve": {
+            "bestModelId": best_model.get("modelId") if best_model else None,
+            "bestModelName": _model_display_name(best_model) if best_model else None,
+            "runnerUpModelName": _model_display_name(runner_up) if runner_up else None,
+            "bestMae": _safe_float(_as_dict(best_model.get("metrics")).get("mae")) if best_model else None,
+            "runnerUpMae": _safe_float(_as_dict(runner_up.get("metrics")).get("mae")) if runner_up else None,
+            "largestResidualPoint": (
+                {
+                    "time": largest_residual.get("time"),
+                    "actual": largest_residual.get("actual"),
+                    "predicted": largest_residual.get("predicted"),
+                    "residual": largest_residual.get("residual"),
+                }
+                if largest_residual
+                else None
+            ),
+        },
+        "residualPattern": {
+            "positiveResidualCount": positive_residual_count,
+            "negativeResidualCount": negative_residual_count,
+            "prefixResidualMean": _average([
+                _safe_float(row.get("residual")) or 0.0 for row in residual_prefix if _safe_float(row.get("residual")) is not None
+            ]),
+            "suffixResidualMean": _average([
+                _safe_float(row.get("residual")) or 0.0 for row in residual_suffix if _safe_float(row.get("residual")) is not None
+            ]),
+            "meanAbsoluteError": _average([
+                _safe_float(row.get("absoluteError")) or 0.0 for row in best_rows if _safe_float(row.get("absoluteError")) is not None
+            ]),
+        },
+        "metricRanking": [
+            {
+                "modelId": model.get("modelId"),
+                "modelName": _model_display_name(model),
+                "rank": model.get("rank"),
+                "mae": _safe_float(_as_dict(model.get("metrics")).get("mae")),
+                "rmse": _safe_float(_as_dict(model.get("metrics")).get("rmse")),
+                "wape": _safe_float(_as_dict(model.get("metrics")).get("wape")),
+            }
+            for model in successful_models[:6]
+        ],
+        "finalForecastChart": {
+            "modelName": _as_dict(final_forecast).get("modelInfo", {}).get("name") if isinstance(_as_dict(final_forecast).get("modelInfo"), dict) else None,
+            "horizon": len(final_points),
+            "firstPoint": final_points[0] if final_points else None,
+            "lastPoint": final_points[-1] if final_points else None,
+            "averageIntervalWidth": _average(interval_widths),
+        },
+        "narrativeHints": [
+            (
+                f"回测对比图里，{_model_display_name(best_model)} 是当前推荐模型，MAE 为 {_format_metric(_safe_float(_as_dict(best_model.get('metrics')).get('mae')))}。"
+                if best_model
+                else "当前没有成功模型，因此回测对比图只能用于解释失败情况和数据风险。"
+            ),
+            (
+                f"最大残差出现在 {_compact_time_label(largest_residual.get('time'))}，Residual={_format_metric(_safe_float(largest_residual.get('residual')))}。"
+                if largest_residual
+                else "当前没有可用的最大残差定位点。"
+            ),
+            (
+                f"Residual 时间线中，正残差 {positive_residual_count} 个、负残差 {negative_residual_count} 个，可直接判断低估/高估偏向。"
+                if best_rows
+                else "当前没有足够的 residual 点来解释误差偏向。"
+            ),
+            (
+                f"最终预测图显示未来 {len(final_points)} 个时间点，首尾预测值从 {_format_metric(_safe_float(final_points[0].get('predicted')))} 变化到 {_format_metric(_safe_float(final_points[-1].get('predicted')))}。"
+                if len(final_points) >= 1
+                else "当前还没有最终预测图。"
+            ),
+        ],
     }
 
 
@@ -271,7 +393,36 @@ def _build_feature_pipeline_summary(experiment: dict[str, Any], targets: list[di
     }
 
 
-def _build_workflow_report(experiment: dict[str, Any], targets: list[dict[str, Any]]) -> dict[str, Any]:
+def _build_runtime_summary(experiment: dict[str, Any]) -> dict[str, Any]:
+    runtime = _as_dict(experiment.get("runtime"))
+    if not runtime:
+        return {}
+    models = [item for item in _as_list(runtime.get("models")) if isinstance(item, dict)]
+    optimization = [item for item in _as_list(runtime.get("optimization")) if isinstance(item, dict)]
+    state_machine = [item for item in _as_list(runtime.get("stateMachine")) if isinstance(item, dict)]
+    completed_stages = [str(step.get("label") or step.get("id")) for step in state_machine if step.get("status") == "completed"]
+    return {
+        "kind": runtime.get("kind"),
+        "status": runtime.get("status"),
+        "currentStage": runtime.get("currentStage"),
+        "currentStageLabel": runtime.get("currentStageLabel"),
+        "estimatedTotalSeconds": runtime.get("estimatedTotalSeconds"),
+        "estimatedRemainingSeconds": runtime.get("estimatedRemainingSeconds"),
+        "elapsedSeconds": runtime.get("elapsedSeconds"),
+        "logCount": len(_as_list(runtime.get("logs"))),
+        "timelineCount": len(_as_list(runtime.get("timeline"))),
+        "featureTargetCount": len(_as_list(runtime.get("featurePipeline"))),
+        "optimizationModelCount": len(optimization),
+        "completedStages": completed_stages,
+        "modelCount": len(models),
+    }
+
+
+def _build_workflow_report(
+    experiment: dict[str, Any],
+    targets: list[dict[str, Any]],
+    runtime_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     config = _as_dict(experiment.get("config"))
     selected_models = _as_list(config.get("selectedModels"))
     if not selected_models:
@@ -324,6 +475,11 @@ def _build_workflow_report(experiment: dict[str, Any], targets: list[dict[str, A
         "parameterStrategy": config.get("parameterStrategy"),
         "randomSeed": config.get("randomSeed"),
         "finalForecastGenerated": bool(experiment.get("finalForecast")),
+        "runtimeStatus": _as_dict(runtime_summary).get("status"),
+        "runtimeStage": _as_dict(runtime_summary).get("currentStageLabel"),
+        "runtimeElapsedSeconds": _as_dict(runtime_summary).get("elapsedSeconds"),
+        "runtimeEstimatedTotalSeconds": _as_dict(runtime_summary).get("estimatedTotalSeconds"),
+        "runtimeCompletedStages": _as_dict(runtime_summary).get("completedStages", []),
         "targets": target_summaries,
     }
 
@@ -436,6 +592,9 @@ def _compact_tuning(value: Any) -> dict[str, Any] | None:
         "enabled": bool(value.get("enabled")),
         "profile": value.get("profile"),
         "strategy": value.get("strategy"),
+        "strategyLabel": value.get("strategyLabel"),
+        "sampler": value.get("sampler"),
+        "pruner": value.get("pruner"),
         "selectedParams": value.get("selectedParams", {}),
         "candidateCount": value.get("candidateCount", 0),
         "bestMetric": value.get("bestMetric"),
@@ -466,6 +625,23 @@ def _build_auto_tuning_summary(experiment: dict[str, Any], targets: list[dict[st
     parameter_strategy = str(config.get("parameterStrategy") or "default")
     run_profile = str(config.get("runProfile") or "balanced")
     profile = describe_tuning_profile(run_profile)
+    runtime = _as_dict(experiment.get("runtime"))
+    runtime_optimization = [item for item in _as_list(runtime.get("optimization")) if isinstance(item, dict)]
+    runtime_strategies = {
+        f"{item.get('targetColumn')}::{item.get('modelId')}": {
+            "strategyLabel": item.get("strategyLabel"),
+            "sampler": item.get("sampler"),
+            "pruner": item.get("pruner"),
+            "status": item.get("status"),
+            "currentTrial": item.get("currentTrial"),
+            "totalTrials": item.get("totalTrials"),
+            "bestMetric": item.get("bestMetric"),
+            "currentMetric": item.get("currentMetric"),
+            "selectedParams": item.get("selectedParams", {}),
+            "warnings": item.get("warnings", []),
+        }
+        for item in runtime_optimization
+    }
 
     tuning_models = 0
     trial_count = 0
@@ -487,6 +663,8 @@ def _build_auto_tuning_summary(experiment: dict[str, Any], targets: list[dict[st
         "tuningModelCount": tuning_models,
         "trialCount": trial_count,
         "targetCount": len(targets),
+        "runtimeOptimizationModelCount": len(runtime_optimization),
+        "runtimeStrategies": runtime_strategies,
     }
 
 
@@ -519,11 +697,13 @@ def build_report_prompt(context: dict[str, Any], options: ReportOptions) -> list
         required_sections.append("特征管线（Feature Pipeline）：说明 featureConfig、covariates、聚合/对齐/补值策略，以及哪些模型会消费这些特征。")
     if options.includeWorkflowReport:
         required_sections.append("实验工作流（Workflow Report）：说明数据模式、频率、Holdout 切分、run profile、自动优化开关，以及最终预测是否已生成。")
+    required_sections.append("运行时透明度摘要：说明状态机、关键阶段、总耗时/预计耗时以及当前或历史 runtime 轨迹。")
     required_sections.append("数据健康与清洁概览。")
     if options.includeModelComparison:
         required_sections.append("模型对比结论。")
     required_sections.append("自动优化策略说明（如果本次开启了自动优化）。")
     required_sections.append("参数变化与结果变化分析。")
+    required_sections.append("图像与图表解读：解释回测对比图、指标柱状图、残差图以及最终预测图分别说明了什么。")
     if options.includeModelRecommendation:
         required_sections.append("模型推荐结论：单独解释为什么推荐当前模型，并与第二名或主要备选模型比较。")
     if options.includeResidualAnalysis:
@@ -537,7 +717,7 @@ def build_report_prompt(context: dict[str, Any], options: ReportOptions) -> list
         "不要声称看过原始文件或完整业务明细；只使用摘要、指标、残差、调参记录和预测结果。"
         "残差定义必须保持为 residual = actual - predicted。"
         "如果启用了自动优化，必须解释优化策略、候选参数变化与指标变化的关系，以及最终参数为何被选中。"
-        "如果上下文里提供了 featurePipeline、workflowReport、modelRecommendation，请在正文中准确引用。"
+        "如果上下文里提供了 featurePipeline、workflowReport、runtimeSummary、modelRecommendation、chartInsights，请在正文中准确引用。"
     )
     user = f"""
 请生成一份{options.style}风格、{options.length}长度的中文时间序列预测分析报告。
@@ -553,7 +733,8 @@ def build_report_prompt(context: dict[str, Any], options: ReportOptions) -> list
 - 如果某些模型失败，要解释为单模型失败，不影响其他模型比较。
 - 如果有自动调参记录，要分析候选参数如何影响 MAE / RMSE / WAPE，并解释最终选型逻辑。
 - 如果上下文提供了模型推荐摘要，要解释推荐模型、第二名、MAE 差值、是否使用自动优化，以及启用的特征管线如何影响最终推荐。
-- 如果上下文提供了 feature pipeline / workflow，请把它们写成正文独立小节，而不是只在结尾一笔带过。
+- 如果上下文提供了 chartInsights，要把“图中说明了什么”写清楚，尤其是回测对比图、残差图和最终预测图，不要只复述有图这一事实。
+- 如果上下文提供了 feature pipeline / workflow / runtime summary，请把它们写成正文独立小节，而不是只在结尾一笔带过。
 - 可以使用 Markdown 表格总结关键候选，但不要把整段 JSON 原样重复到正文里。
 - 不要输出 API Key、不要编造不存在的原始明细。
 - 如果某个可选章节未开启，就不要输出该章节。
@@ -644,6 +825,7 @@ def _build_feature_workflow_appendix(context: dict[str, Any], options: ReportOpt
     lines: list[str] = []
     feature_pipeline = _as_dict(context.get("featurePipeline"))
     workflow_report = _as_dict(context.get("workflowReport"))
+    runtime_summary = _as_dict(context.get("runtimeSummary"))
 
     if options.includeFeaturePipeline:
         covariates = [str(item) for item in _as_list(feature_pipeline.get("covariateColumns")) if item]
@@ -705,6 +887,9 @@ def _build_feature_workflow_appendix(context: dict[str, Any], options: ReportOpt
                 f"- Test Size：{workflow_report.get('testSize') or '—'}",
                 f"- 随机种子：{workflow_report.get('randomSeed') or '—'}",
                 f"- 已生成最终预测：{'是' if workflow_report.get('finalForecastGenerated') else '否'}",
+                f"- Runtime 状态：`{workflow_report.get('runtimeStatus') or 'unknown'}` / `{workflow_report.get('runtimeStage') or 'unknown'}`",
+                f"- Runtime 已耗时：{_format_metric(workflow_report.get('runtimeElapsedSeconds'))} 秒",
+                f"- Runtime 预计总时长：{_format_metric(workflow_report.get('runtimeEstimatedTotalSeconds'))} 秒",
                 f"- 选择模型：{_join_inline([str(item) for item in _as_list(workflow_report.get('selectedModelNames')) if item], '无')}",
                 "",
             ]
@@ -734,6 +919,24 @@ def _build_feature_workflow_appendix(context: dict[str, Any], options: ReportOpt
                     + " |"
                 )
             lines.append("")
+
+    if runtime_summary:
+        lines.extend(
+            [
+                "## 附录：Runtime Summary",
+                "",
+                f"- 运行类型：`{runtime_summary.get('kind') or 'unknown'}`",
+                f"- 最终状态：`{runtime_summary.get('status') or 'unknown'}`",
+                f"- 当前/最终阶段：`{runtime_summary.get('currentStageLabel') or runtime_summary.get('currentStage') or 'unknown'}`",
+                f"- 已耗时：{_format_metric(runtime_summary.get('elapsedSeconds'))} 秒",
+                f"- 预计总时长：{_format_metric(runtime_summary.get('estimatedTotalSeconds'))} 秒",
+                f"- Feature Pipeline 目标数：{runtime_summary.get('featureTargetCount', 0)}",
+                f"- Optimization 模型数：{runtime_summary.get('optimizationModelCount', 0)}",
+                f"- 日志条数：{runtime_summary.get('logCount', 0)} / Timeline 事件数：{runtime_summary.get('timelineCount', 0)}",
+                f"- 已完成阶段：{_join_inline([str(item) for item in _as_list(runtime_summary.get('completedStages')) if item], '无')}",
+                "",
+            ]
+        )
 
     return "\n".join(lines).strip()
 
@@ -802,9 +1005,110 @@ def _build_recommendation_appendix(context: dict[str, Any], options: ReportOptio
     return "\n".join(lines).strip()
 
 
+def _build_visual_appendix(context: dict[str, Any], options: ReportOptions) -> str:
+    chart_insights = _as_dict(context.get("chartInsights"))
+    if not chart_insights:
+        return ""
+    lines = [
+        "## 附录：图像与图表解读",
+        "",
+        "这些结论用于辅助前端回测对比图、指标柱状图、Residual 图和最终预测图的文字说明。",
+        "",
+    ]
+    backtest_curve = _as_dict(chart_insights.get("backtestCurve"))
+    residual_pattern = _as_dict(chart_insights.get("residualPattern"))
+    final_chart = _as_dict(chart_insights.get("finalForecastChart"))
+    metric_ranking = [item for item in _as_list(chart_insights.get("metricRanking")) if isinstance(item, dict)]
+    hints = [str(item) for item in _as_list(chart_insights.get("narrativeHints")) if item]
+
+    lines.extend(
+        [
+            "### 回测对比图",
+            "",
+            f"- 推荐模型：`{backtest_curve.get('bestModelId') or '未产生'}` / {_md_cell(backtest_curve.get('bestModelName') or '—')}",
+            f"- 第二名：{_md_cell(backtest_curve.get('runnerUpModelName') or '—')}",
+            f"- 推荐模型 MAE：{_format_metric(backtest_curve.get('bestMae'))}",
+            f"- 第二名 MAE：{_format_metric(backtest_curve.get('runnerUpMae'))}",
+            "",
+        ]
+    )
+    largest_residual = _as_dict(backtest_curve.get("largestResidualPoint"))
+    if largest_residual:
+        lines.extend(
+            [
+                "最大残差点：",
+                f"- 时间：`{_compact_time_label(largest_residual.get('time'))}`",
+                f"- 实际值：{_format_metric(largest_residual.get('actual'))}",
+                f"- 预测值：{_format_metric(largest_residual.get('predicted'))}",
+                f"- Residual：{_format_metric(largest_residual.get('residual'))}",
+                "",
+            ]
+        )
+
+    lines.extend(
+        [
+            "### Residual 图",
+            "",
+            f"- 正残差数量：{residual_pattern.get('positiveResidualCount', 0)}",
+            f"- 负残差数量：{residual_pattern.get('negativeResidualCount', 0)}",
+            f"- 前段残差均值：{_format_metric(residual_pattern.get('prefixResidualMean'))}",
+            f"- 后段残差均值：{_format_metric(residual_pattern.get('suffixResidualMean'))}",
+            f"- 平均绝对误差：{_format_metric(residual_pattern.get('meanAbsoluteError'))}",
+            "",
+        ]
+    )
+
+    if metric_ranking:
+        lines.extend(
+            [
+                "### 指标柱状图重点模型",
+                "",
+                "| 排名 | 模型 | MAE | RMSE | WAPE |",
+                "| --- | --- | --- | --- | --- |",
+            ]
+        )
+        for item in metric_ranking:
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        _md_cell(item.get("rank") or "—"),
+                        _md_cell(item.get("modelName") or item.get("modelId") or "—"),
+                        _md_cell(_format_metric(item.get("mae"))),
+                        _md_cell(_format_metric(item.get("rmse"))),
+                        _md_cell(_format_metric(item.get("wape"))),
+                    ]
+                )
+                + " |"
+            )
+        lines.append("")
+
+    if options.includeFinalForecast:
+        lines.extend(
+            [
+                "### 最终预测图",
+                "",
+                f"- 最终模型：{_md_cell(final_chart.get('modelName') or '未生成')}",
+                f"- 预测 Horizon：{final_chart.get('horizon', 0)}",
+                f"- 首个预测点：{_md_cell(json.dumps(final_chart.get('firstPoint'), ensure_ascii=False) if final_chart.get('firstPoint') else '—')}",
+                f"- 最后预测点：{_md_cell(json.dumps(final_chart.get('lastPoint'), ensure_ascii=False) if final_chart.get('lastPoint') else '—')}",
+                f"- 平均区间宽度：{_format_metric(final_chart.get('averageIntervalWidth'))}",
+                "",
+            ]
+        )
+
+    if hints:
+        lines.extend(["### 可直接写入正文的图像解读句子", ""])
+        lines.extend([f"- {hint}" for hint in hints])
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
 def _build_tuning_appendix(context: dict[str, Any], options: ReportOptions) -> str:
     auto_tuning = context.get("autoTuning", {})
     targets = context.get("targets", [])
+    runtime_strategies = _as_dict(auto_tuning.get("runtimeStrategies"))
     lines = [
         "## 附录：自动优化策略与逐轮结果",
         "",
@@ -845,6 +1149,7 @@ def _build_tuning_appendix(context: dict[str, Any], options: ReportOptions) -> s
         )
         for model in target.get("models", []):
             tuning = model.get("tuning")
+            runtime_strategy = _as_dict(runtime_strategies.get(f"{target_column}::{model.get('modelId')}"))
             lines.extend(
                 [
                     f"#### {model.get('modelName') or model.get('modelId') or '模型'} (`{model.get('modelId') or 'unknown'}`)",
@@ -862,7 +1167,8 @@ def _build_tuning_appendix(context: dict[str, Any], options: ReportOptions) -> s
 
             lines.extend(
                 [
-                    f"- 调参策略：`{tuning.get('strategy') or 'default'}` / `profile={tuning.get('profile') or 'balanced'}`",
+                    f"- 调参策略：`{runtime_strategy.get('strategyLabel') or tuning.get('strategy') or 'default'}` / `profile={tuning.get('profile') or 'balanced'}`",
+                    f"- Sampler：`{runtime_strategy.get('sampler') or '—'}` / Pruner：`{runtime_strategy.get('pruner') or '—'}`",
                     f"- 已评估候选：{tuning.get('candidateCount', 0)} / 上限 {tuning.get('candidateLimit', 0)}",
                     f"- 调参耗时：{_format_metric(tuning.get('tuningSeconds'))} 秒",
                     f"- 验证窗口：{tuning.get('validationSize', 0)}",
@@ -923,7 +1229,7 @@ def generate_deepseek_report(api_key: str, base_url: str, model: str, context: d
     last_finish_reason: str | None = None
 
     try:
-        for _attempt in range(3):
+        for _attempt in range(4):
             messages = base_messages
             if chunks:
                 messages = [
@@ -931,7 +1237,7 @@ def generate_deepseek_report(api_key: str, base_url: str, model: str, context: d
                     {"role": "assistant", "content": _combine_chunks(chunks)},
                     {
                         "role": "user",
-                        "content": "你上一条 Markdown 报告被截断了。请从上文最后未完成的位置继续，禁止重复已经写过的内容，补齐剩余章节并自然结束。",
+                        "content": "你上一条 Markdown 报告被截断了。请从上文最后未完成的位置继续，禁止重复已经写过的内容，必须补齐剩余章节、附录和结束段落后自然收尾。",
                     },
                 ]
             content, last_finish_reason = _request_completion(
@@ -954,6 +1260,7 @@ def generate_deepseek_report(api_key: str, base_url: str, model: str, context: d
             for appendix in [
                 _build_feature_workflow_appendix(context, options),
                 _build_recommendation_appendix(context, options),
+                _build_visual_appendix(context, options),
                 _build_tuning_appendix(context, options),
             ]
             if appendix.strip()

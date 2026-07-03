@@ -108,6 +108,19 @@ class ForecastRunRequest(BaseModel):
     experimentName: str | None = None
 
 
+class RuntimeEstimateRequest(BaseModel):
+    rowCount: int = Field(ge=1)
+    frequency: str = "auto"
+    totalColumnCount: int = Field(default=1, ge=1)
+    targetCount: int = Field(default=1, ge=1)
+    covariateCount: int = Field(default=0, ge=0)
+    featureConfig: FeatureConfig = Field(default_factory=FeatureConfig)
+    runProfile: Literal["fast", "balanced", "accurate"] = "balanced"
+    parameterStrategy: Literal["default", "auto"] = "default"
+    device: str = "cpu"
+    selectedModels: list[str]
+
+
 class MetricValues(BaseModel):
     mae: float | None = None
     mse: float | None = None
@@ -118,7 +131,7 @@ class MetricValues(BaseModel):
 class TuningTrial(BaseModel):
     round: int
     params: dict[str, Any] = Field(default_factory=dict)
-    status: Literal["success", "failed"] = "success"
+    status: Literal["running", "success", "failed", "pruned"] = "success"
     metrics: MetricValues | None = None
     elapsedSeconds: float = 0.0
     selected: bool = False
@@ -134,6 +147,9 @@ class ModelTuning(BaseModel):
     enabled: bool
     profile: Literal["fast", "balanced", "accurate"]
     strategy: Literal["default", "auto"]
+    strategyLabel: str = "Default Parameters"
+    sampler: str | None = None
+    pruner: str | None = None
     selectedParams: dict[str, Any] = Field(default_factory=dict)
     candidateCount: int = 0
     bestMetric: float | None = None
@@ -305,6 +321,285 @@ class ForecastProgress(BaseModel):
     version: int = 1
 
 
+RuntimeStageId = Literal[
+    "pending",
+    "loading",
+    "cleaning",
+    "feature_engineering",
+    "feature_selection",
+    "auto_tuning",
+    "training",
+    "forecast",
+    "residual_analysis",
+    "finished",
+    "failed",
+]
+
+RuntimeStepStatus = Literal["pending", "running", "completed", "failed"]
+
+
+class RuntimeStateStep(BaseModel):
+    id: RuntimeStageId
+    label: str
+    status: RuntimeStepStatus = "pending"
+    startedAt: datetime | None = None
+    finishedAt: datetime | None = None
+    elapsedSeconds: float | None = None
+
+
+class RuntimeResourceSnapshot(BaseModel):
+    device: str = "cpu"
+    memoryTotalMb: int | None = None
+    memoryAvailableMb: int | None = None
+    memoryUsedMb: float | None = None
+    cpuPercent: float | None = None
+    threadCount: int | None = None
+    gpuLabel: str | None = None
+
+
+class RuntimeLogEntry(BaseModel):
+    id: str
+    timestamp: datetime
+    stage: RuntimeStageId
+    level: Literal["info", "warn", "error", "success"] = "info"
+    message: str
+    modelId: str | None = None
+    modelName: str | None = None
+    targetColumn: str | None = None
+    metricLabel: str | None = None
+    metricValue: float | None = None
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class RuntimeTimelineEntry(BaseModel):
+    id: str
+    timestamp: datetime
+    stage: RuntimeStageId
+    label: str
+    status: RuntimeStepStatus
+    message: str | None = None
+    modelId: str | None = None
+    modelName: str | None = None
+    targetColumn: str | None = None
+    overallPercent: int | None = None
+
+
+class RuntimeFeatureFamily(BaseModel):
+    id: Literal["target", "lag", "rolling", "calendar", "holiday", "covariates"]
+    label: str
+    enabled: bool = True
+    generatedCount: int = 0
+    selectedCount: int = 0
+    importantCount: int = 0
+
+
+class RuntimeFeatureNode(BaseModel):
+    id: str
+    name: str
+    source: str
+    formula: str
+    family: str
+    lifecycle: Literal["generated", "selected", "dropped", "used", "important"] = "generated"
+    selected: bool = False
+    important: bool = False
+    importance: float | None = None
+    shap: float | None = None
+    modelIds: list[str] = Field(default_factory=list)
+    featureType: Literal["generated", "known_future_covariate", "static_covariate"] = "generated"
+    generator: str = "Feature Factory"
+    machineId: str | None = None
+    machineLabel: str | None = None
+    forecastStrategy: Literal["generated", "calendar", "repeat_last_known", "use_test_timeline"] = "generated"
+    backtestStrategy: Literal["generated", "calendar", "repeat_last_known", "use_test_timeline"] = "generated"
+    usedDuring: list[Literal["training", "backtest", "forecast"]] = Field(default_factory=lambda: ["training"])
+    droppedReason: str | None = None
+    lifecycleTrail: list[str] = Field(default_factory=list)
+
+
+class RuntimeFeatureFactorySummary(BaseModel):
+    rawColumnCount: int = 0
+    generatedFeatureCount: int = 0
+    userCovariateCount: int = 0
+    selectedFeatureCount: int = 0
+    droppedFeatureCount: int = 0
+    importantFeatureCount: int = 0
+    shapSupportedFeatureCount: int = 0
+
+
+class RuntimeFeatureMachine(BaseModel):
+    id: str
+    label: str
+    kind: Literal["generator", "loader"] = "generator"
+    enabled: bool = True
+    status: RuntimeStepStatus = "completed"
+    inputColumns: list[str] = Field(default_factory=list)
+    generatedFeatures: list[str] = Field(default_factory=list)
+    summary: str = ""
+    durationSeconds: float | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class RuntimeCovariateDescriptor(BaseModel):
+    name: str
+    type: Literal["known_future", "static"]
+    generator: str = "Covariate Loader"
+    forecastStrategy: Literal["calendar", "repeat_last_known"]
+    backtestStrategy: Literal["use_test_timeline", "repeat_last_known"]
+    usedDuring: list[Literal["training", "backtest", "forecast"]] = Field(default_factory=lambda: ["training", "backtest", "forecast"])
+    note: str | None = None
+
+
+class RuntimeFeatureSelectionItem(BaseModel):
+    name: str
+    status: Literal["selected", "dropped"]
+    reason: str | None = None
+
+
+class RuntimeFeatureSelectionSummary(BaseModel):
+    generatedCount: int = 0
+    selectedCount: int = 0
+    droppedCount: int = 0
+    items: list[RuntimeFeatureSelectionItem] = Field(default_factory=list)
+
+
+class RuntimeFeaturePipelineStep(BaseModel):
+    id: RuntimeStageId
+    label: str
+    status: RuntimeStepStatus = "pending"
+    inputSummary: str = ""
+    outputSummary: str = ""
+    elapsedSeconds: float | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class RuntimeFeaturePipelineTarget(BaseModel):
+    targetColumn: str
+    detectedFrequency: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    families: list[RuntimeFeatureFamily] = Field(default_factory=list)
+    steps: list[RuntimeFeaturePipelineStep] = Field(default_factory=list)
+    lineage: list[RuntimeFeatureNode] = Field(default_factory=list)
+    summary: RuntimeFeatureFactorySummary | None = None
+    machines: list[RuntimeFeatureMachine] = Field(default_factory=list)
+    covariates: list[RuntimeCovariateDescriptor] = Field(default_factory=list)
+    selection: RuntimeFeatureSelectionSummary | None = None
+
+
+class RuntimeOptimizationTrial(BaseModel):
+    trialNumber: int
+    params: dict[str, Any] = Field(default_factory=dict)
+    status: Literal["running", "success", "failed", "pruned"] = "success"
+    metric: float | None = None
+    metricLabel: str = "MAE"
+    elapsedSeconds: float = 0.0
+    selected: bool = False
+    message: str | None = None
+
+
+class RuntimeOptimizationState(BaseModel):
+    modelId: str
+    modelName: str
+    targetColumn: str
+    enabled: bool = False
+    strategyLabel: str = "Default Parameters"
+    sampler: str | None = None
+    pruner: str | None = None
+    currentTrial: int = 0
+    totalTrials: int = 0
+    bestMetric: float | None = None
+    currentMetric: float | None = None
+    metricLabel: str = "MAE"
+    selectedParams: dict[str, Any] = Field(default_factory=dict)
+    status: Literal["idle", "running", "completed", "failed"] = "idle"
+    lastMessage: str | None = None
+    trials: list[RuntimeOptimizationTrial] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class RuntimeModelConsole(BaseModel):
+    modelId: str
+    modelName: str
+    targetColumn: str
+    status: Literal["queued", "tuning", "fitting", "predicting", "scoring", "success", "failed"] = "queued"
+    currentStage: RuntimeStageId = "pending"
+    progressPercent: int = Field(default=0, ge=0, le=100)
+    message: str = "Waiting to run."
+    elapsedSeconds: float = 0.0
+    estimatedSeconds: float | None = None
+    estimatedRemainingSeconds: float | None = None
+    fitSeconds: float | None = None
+    predictSeconds: float | None = None
+    tuningSeconds: float | None = None
+    computeTarget: Literal["cpu", "gpu"] = "cpu"
+    resource: RuntimeResourceSnapshot | None = None
+    optimization: RuntimeOptimizationState | None = None
+    error: str | None = None
+
+
+class RuntimeRunDetail(BaseModel):
+    runId: str
+    experimentId: str | None = None
+    kind: Literal["backtest", "final"]
+    status: Literal["running", "completed", "failed"] = "running"
+    currentStage: RuntimeStageId = "pending"
+    currentStageLabel: str = "Pending"
+    overallPercent: int = Field(default=0, ge=0, le=100)
+    message: str = ""
+    currentTarget: str | None = None
+    estimatedTotalSeconds: float | None = None
+    estimatedRemainingSeconds: float | None = None
+    elapsedSeconds: float = 0.0
+    startedAt: datetime
+    updatedAt: datetime
+    stateMachine: list[RuntimeStateStep] = Field(default_factory=list)
+    resources: RuntimeResourceSnapshot | None = None
+    models: list[RuntimeModelConsole] = Field(default_factory=list)
+    logs: list[RuntimeLogEntry] = Field(default_factory=list)
+    timeline: list[RuntimeTimelineEntry] = Field(default_factory=list)
+    featurePipeline: list[RuntimeFeaturePipelineTarget] = Field(default_factory=list)
+    optimization: list[RuntimeOptimizationState] = Field(default_factory=list)
+    error: str | None = None
+
+
+class RuntimeLogsResponse(BaseModel):
+    runId: str
+    logs: list[RuntimeLogEntry] = Field(default_factory=list)
+
+
+class RuntimeFeaturePipelineResponse(BaseModel):
+    runId: str
+    targets: list[RuntimeFeaturePipelineTarget] = Field(default_factory=list)
+
+
+class FeatureFactoryResponse(BaseModel):
+    experimentId: str
+    targets: list[RuntimeFeaturePipelineTarget] = Field(default_factory=list)
+
+
+class RuntimeOptimizationResponse(BaseModel):
+    runId: str
+    models: list[RuntimeOptimizationState] = Field(default_factory=list)
+
+
+class RuntimeTimelineResponse(BaseModel):
+    runId: str
+    timeline: list[RuntimeTimelineEntry] = Field(default_factory=list)
+
+
+class RuntimeEstimateItem(BaseModel):
+    id: str
+    name: str
+    estimatedSeconds: float = Field(ge=0)
+    confidence: Literal["low", "medium", "high"] = "low"
+    reason: str
+    sampleCount: int = Field(default=0, ge=0)
+    computeTarget: Literal["cpu", "gpu"] = "cpu"
+
+
+class RuntimeEstimateResponse(BaseModel):
+    models: list[RuntimeEstimateItem]
+
+
 class ExperimentListItem(BaseModel):
     experimentId: str
     experimentName: str
@@ -335,6 +630,7 @@ class ExperimentDetail(BaseModel):
     series: list[dict[str, Any]]
     finalForecast: dict[str, Any] | None
     modelLogs: list[dict[str, Any]]
+    runtime: RuntimeRunDetail | None = None
     manifest: dict[str, Any] | None = None
     configHash: str | None = None
     sourceFileSha256: str | None = None
@@ -478,3 +774,16 @@ class ReportResponse(BaseModel):
     contentMarkdown: str
     createdAt: str
     model: str
+
+
+class ReportPdfArtifact(BaseModel):
+    id: str
+    title: str
+    caption: str
+    dataUrl: str
+    summary: list[str] = Field(default_factory=list)
+
+
+class GenerateReportPdfRequest(BaseModel):
+    title: str | None = None
+    visualArtifacts: list[ReportPdfArtifact] = Field(default_factory=list)

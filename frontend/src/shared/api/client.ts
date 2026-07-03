@@ -3,6 +3,7 @@ import type {
   DeepSeekSettings,
   DeviceInfo,
   ExperimentDetail,
+  FeatureFactoryResponse,
   ExperimentManifest,
   ExperimentRerunResponse,
   ExperimentListItem,
@@ -12,6 +13,10 @@ import type {
   ForecastRunResponse,
   LocalRebuildResponse,
   ModelCapability,
+  RuntimeEstimateRequest,
+  RuntimeEstimateResponse,
+  RuntimeRunDetail,
+  ReportPdfArtifact,
   ReportOptions,
   ReportResponse,
   SheetPreview,
@@ -30,6 +35,20 @@ async function parseResponse<T>(response: Response): Promise<T> {
     throw new Error(message);
   }
   return response.json() as Promise<T>;
+}
+
+async function parseBlobResponse(response: Response): Promise<Blob> {
+  if (!response.ok) {
+    let message = `Request failed with ${response.status}`;
+    try {
+      const body = await response.json();
+      message = body?.message ?? body?.detail?.message ?? message;
+    } catch {
+      // ignore non-json error bodies
+    }
+    throw new Error(message);
+  }
+  return response.blob();
 }
 
 export async function uploadPreview(file: File): Promise<UploadPreviewResponse> {
@@ -80,6 +99,20 @@ export async function runForecast(request: ForecastRunRequest): Promise<Forecast
   );
 }
 
+export async function fetchRuntimeEstimate(request: RuntimeEstimateRequest): Promise<RuntimeEstimateResponse> {
+  return parseResponse<RuntimeEstimateResponse>(
+    await fetch("/api/runtime/estimate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request)
+    })
+  );
+}
+
+export async function fetchRuntimeDetail(runtimeId: string): Promise<RuntimeRunDetail> {
+  return parseResponse<RuntimeRunDetail>(await fetch(`/api/runtime/${encodeURIComponent(runtimeId)}`));
+}
+
 export function createRunId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return `run_${crypto.randomUUID()}`;
@@ -118,6 +151,10 @@ export async function fetchExperiments(): Promise<ExperimentListItem[]> {
 
 export async function fetchExperiment(experimentId: string): Promise<ExperimentDetail> {
   return parseResponse<ExperimentDetail>(await fetch(`/api/experiments/${experimentId}`));
+}
+
+export async function fetchExperimentFeatureFactory(experimentId: string): Promise<FeatureFactoryResponse> {
+  return parseResponse<FeatureFactoryResponse>(await fetch(`/api/experiments/${encodeURIComponent(experimentId)}/feature-factory`));
 }
 
 export async function fetchExperimentManifest(experimentId: string): Promise<ExperimentManifest> {
@@ -162,6 +199,16 @@ export async function generateReport(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ experimentId, ...settings, reportOptions })
+    })
+  );
+}
+
+export async function downloadReportPdf(reportId: string, title: string, visualArtifacts: ReportPdfArtifact[]): Promise<Blob> {
+  return parseBlobResponse(
+    await fetch(`/api/reports/${encodeURIComponent(reportId)}/pdf`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, visualArtifacts })
     })
   );
 }

@@ -1,12 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { Link } from "react-router-dom";
-import { createRunId, fetchDeviceInfo, fetchModels, runFinalForecast, runForecast, subscribeForecastProgress } from "../../shared/api/client";
+import { createRunId, fetchDeviceInfo, fetchModels, fetchRuntimeDetail, fetchRuntimeEstimate, runFinalForecast, runForecast, subscribeForecastProgress } from "../../shared/api/client";
 import { DataTable } from "../../shared/components/Table";
 import { EmptyState, ErrorBanner } from "../../shared/components/Status";
 import { Badge, controls, PageHeader, SectionCard, StatCard, Stepper, surface, Tabs } from "../../shared/components/Ui";
 import { zhCN } from "../../shared/i18n/zhCN";
-import type { DeviceInfo, FeatureConfig, ForecastProgress, ForecastRunRequest, ForecastRunResponse, ModelCapability, RankedModel, SheetPreview, UploadPreviewResponse } from "../../shared/types/api";
+import type { DeviceInfo, FeatureConfig, ForecastProgress, ForecastRunRequest, ForecastRunResponse, ModelCapability, RankedModel, RuntimeEstimateItem, RuntimeRunDetail, SheetPreview, UploadPreviewResponse } from "../../shared/types/api";
 import { useLabStore } from "../../app/store";
 import {
   AbsoluteErrorTimelineChart,
@@ -179,6 +179,96 @@ function formatElapsed(seconds: number) {
   return `${minutes}m ${rest}s`;
 }
 
+function runtimeConfidenceTone(confidence: RuntimeEstimateItem["confidence"]): "good" | "info" | "warn" {
+  if (confidence === "high") return "good";
+  if (confidence === "medium") return "info";
+  return "warn";
+}
+
+function formatCompactDuration(seconds: number) {
+  if (seconds < 1) return "<1s";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const minutes = seconds / 60;
+  if (minutes < 10) return `${minutes.toFixed(1)}m`;
+  return `${Math.round(minutes)}m`;
+}
+
+const runtimeStageSequence: Array<{ id: RuntimeRunDetail["currentStage"]; label: string }> = [
+  { id: "pending", label: "Pending" },
+  { id: "loading", label: "Loading" },
+  { id: "cleaning", label: "Cleaning" },
+  { id: "feature_engineering", label: "Feature Engineering" },
+  { id: "feature_selection", label: "Feature Selection" },
+  { id: "auto_tuning", label: "Auto Tuning" },
+  { id: "training", label: "Training" },
+  { id: "forecast", label: "Forecast" },
+  { id: "residual_analysis", label: "Residual Analysis" },
+  { id: "finished", label: "Finished" }
+];
+
+function runtimeStageIndex(stageId: RuntimeRunDetail["currentStage"]) {
+  return runtimeStageSequence.findIndex((stage) => stage.id === stageId);
+}
+
+function runtimeStepState(
+  currentStage: RuntimeRunDetail["currentStage"],
+  targetStage: RuntimeRunDetail["currentStage"],
+  modelStatus?: "queued" | "tuning" | "fitting" | "predicting" | "scoring" | "success" | "failed"
+) {
+  if (modelStatus === "failed") {
+    if (targetStage === currentStage) return "failed";
+    return runtimeStageIndex(targetStage) < runtimeStageIndex(currentStage) ? "completed" : "pending";
+  }
+  if (modelStatus === "success" && targetStage === "finished") return "completed";
+  if (modelStatus === "success") {
+    if (targetStage === currentStage) return "completed";
+    return runtimeStageIndex(targetStage) < runtimeStageIndex(currentStage) ? "completed" : "pending";
+  }
+  if (targetStage === currentStage) return "running";
+  return runtimeStageIndex(targetStage) < runtimeStageIndex(currentStage) ? "completed" : "pending";
+}
+
+function runtimeStepTone(state: "pending" | "running" | "completed" | "failed") {
+  if (state === "completed") return "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-200";
+  if (state === "running") return "border-cyan-200 bg-cyan-50 text-cyan-700 dark:border-cyan-400/20 dark:bg-cyan-400/10 dark:text-cyan-200";
+  if (state === "failed") return "border-red-200 bg-red-50 text-red-700 dark:border-red-400/20 dark:bg-red-400/10 dark:text-red-200";
+  return "border-slate-200 bg-slate-50 text-slate-500 dark:border-white/10 dark:bg-[#111827] dark:text-slate-400";
+}
+
+function runtimeStepLabel(state: "pending" | "running" | "completed" | "failed") {
+  if (state === "completed") return "已完成";
+  if (state === "running") return "进行中";
+  if (state === "failed") return "失败";
+  return "待开始";
+}
+
+function runtimeStageCompactLabel(stageId: RuntimeRunDetail["currentStage"]) {
+  switch (stageId) {
+    case "pending":
+      return "排队";
+    case "loading":
+      return "加载";
+    case "cleaning":
+      return "清洗";
+    case "feature_engineering":
+      return "特征工程";
+    case "feature_selection":
+      return "特征筛选";
+    case "auto_tuning":
+      return "自动调参";
+    case "training":
+      return "训练";
+    case "forecast":
+      return "预测";
+    case "residual_analysis":
+      return "残差";
+    case "finished":
+      return "完成";
+    default:
+      return stageId;
+  }
+}
+
 type ResourceLevel = "green" | "yellow" | "red" | "gray";
 
 interface ModelResourceAssessment {
@@ -300,7 +390,8 @@ function RunningProgress({
   finalModelId = "",
   elapsedSeconds = 0,
   parameterStrategy = "default",
-  progress
+  progress,
+  runtimeDetail = null
 }: {
   finalForecastMode?: boolean;
   selectedModelIds?: string[];
@@ -309,7 +400,10 @@ function RunningProgress({
   elapsedSeconds?: number;
   parameterStrategy?: ForecastRunRequest["parameterStrategy"];
   progress: ForecastProgress | null;
+  runtimeDetail?: RuntimeRunDetail | null;
 }) {
+  const [expandedModelKey, setExpandedModelKey] = useState("");
+  const autoExpandedRef = useRef(false);
   const items = finalForecastMode
     ? ["读取完整历史数据", "重新训练最终模型", "生成未来预测", "更新预测图表"]
     : parameterStrategy === "auto"
@@ -335,24 +429,31 @@ function RunningProgress({
     success: { label: "已完成", tone: "good" },
     failed: { label: "失败", tone: "bad" }
   } as const;
+  const runtimeModelMap = new Map((runtimeDetail?.models ?? []).map((model) => [`${model.targetColumn}:${model.modelId}`, model] as const));
+  const runtimeModelFallbackMap = new Map((runtimeDetail?.models ?? []).map((model) => [model.modelId, model] as const));
   const progressRows = progress?.models.length
     ? progress.models.map((row) => ({
         ...row,
+        key: `${row.targetColumn}:${row.modelId}`,
         id: row.modelId,
         name: row.modelName,
         family: modelMap.get(row.modelId)?.modelFamily || modelMap.get(row.modelId)?.category || "模型",
         requiresGpu: Boolean(modelMap.get(row.modelId)?.requiresGpu),
-        displayStatus: statusMeta[row.status]
+        displayStatus: statusMeta[row.status],
+        runtimeModel: runtimeModelMap.get(`${row.targetColumn}:${row.modelId}`) ?? runtimeModelFallbackMap.get(row.modelId) ?? null
       }))
     : runningModels.map((model) => ({
         ...model,
+        key: `:${model.id}`,
         targetColumn: "",
         percent: 0,
+        status: "queued" as const,
         message: "等待后端接收任务。",
         fitSeconds: null,
         predictSeconds: null,
         error: null,
-        displayStatus: statusMeta.queued
+        displayStatus: statusMeta.queued,
+        runtimeModel: runtimeModelFallbackMap.get(model.id) ?? null
       }));
   const overallProgress = progress?.overallPercent ?? 1;
   const phaseIndex = (() => {
@@ -369,6 +470,33 @@ function RunningProgress({
     if (phase === "parsing" || phase === "profiling" || phase === "building_series") return 1;
     return 0;
   })();
+
+  useEffect(() => {
+    autoExpandedRef.current = false;
+    setExpandedModelKey("");
+  }, [progress?.startedAt, finalForecastMode, finalModelId, modelIds.join("|")]);
+
+  useEffect(() => {
+    if (!progressRows.length) return;
+    const expandedStillExists = expandedModelKey ? progressRows.some((model) => model.key === expandedModelKey) : false;
+    if (expandedModelKey && !expandedStillExists) {
+      const nextModel = progressRows.find((model) => {
+        const status = model.runtimeModel?.status ?? model.status;
+        return status !== "success" && status !== "failed";
+      }) ?? progressRows[0];
+      setExpandedModelKey(nextModel.key);
+      autoExpandedRef.current = true;
+      return;
+    }
+    if (!autoExpandedRef.current && !expandedModelKey) {
+      const nextModel = progressRows.find((model) => {
+        const status = model.runtimeModel?.status ?? model.status;
+        return status !== "success" && status !== "failed";
+      }) ?? progressRows[0];
+      setExpandedModelKey(nextModel.key);
+      autoExpandedRef.current = true;
+    }
+  }, [expandedModelKey, progressRows]);
 
   return (
     <SectionCard
@@ -409,11 +537,24 @@ function RunningProgress({
       </div>
       {progressRows.length ? (
         <div className="mt-4 grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
-          {progressRows.map((model) => (
-            <div key={`${model.targetColumn}:${model.id}`} className="rounded-2xl border border-slate-200 bg-white p-3 dark:border-white/10 dark:bg-[#151b2e]">
+          {progressRows.map((model) => {
+            const runtimeModel = model.runtimeModel;
+            return (
+            <button
+              key={model.key}
+              type="button"
+              aria-expanded={expandedModelKey === model.key}
+              onClick={() => setExpandedModelKey((current) => (current === model.key ? "" : model.key))}
+              className={`rounded-2xl border border-slate-200 bg-white p-3 text-left transition dark:border-white/10 dark:bg-[#151b2e] ${
+                expandedModelKey === model.key ? "ring-1 ring-cyan-300 dark:ring-cyan-400/40" : "hover:border-slate-300 dark:hover:border-white/20"
+              }`}
+            >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="truncate text-sm font-semibold text-slate-950 dark:text-white">{model.name}</div>
+                  <div className="flex items-center gap-2">
+                    <div className="truncate text-sm font-semibold text-slate-950 dark:text-white">{model.name}</div>
+                    <span className="text-[11px] text-slate-400 dark:text-slate-500">{expandedModelKey === model.key ? "▾" : "▸"}</span>
+                  </div>
                   <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
                     {model.family}{model.targetColumn ? ` / ${model.targetColumn}` : ""}{model.requiresGpu ? " / 建议 GPU" : ""}
                   </div>
@@ -430,9 +571,97 @@ function RunningProgress({
                   {model.predictSeconds !== null ? ` / 预测 ${model.predictSeconds.toFixed(2)}s` : ""}
                 </span>
               </div>
+              {expandedModelKey === model.key && runtimeModel ? (
+                <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50/80 p-3 dark:border-white/10 dark:bg-[#0b1020]">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="min-w-0">
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 dark:text-slate-500">当前阶段</div>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <span
+                          className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold ${runtimeStepTone(
+                            runtimeStepState(runtimeModel.currentStage, runtimeModel.currentStage, runtimeModel.status)
+                          )}`}
+                        >
+                          {runtimeStageCompactLabel(runtimeModel.currentStage)}
+                        </span>
+                        <span className="text-xs leading-6 text-slate-600 dark:text-slate-300">{runtimeModel.message}</span>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:min-w-[420px]">
+                      {[
+                        ["子进度", `${runtimeModel.progressPercent}%`],
+                        ["已运行", formatCompactDuration(runtimeModel.elapsedSeconds)],
+                        ["预计总时长", runtimeModel.estimatedSeconds === null ? "-" : formatCompactDuration(runtimeModel.estimatedSeconds)],
+                        ["预计剩余", runtimeModel.estimatedRemainingSeconds === null ? "-" : formatCompactDuration(runtimeModel.estimatedRemainingSeconds)]
+                      ].map(([label, value]) => (
+                        <div key={label} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs dark:border-white/10 dark:bg-[#151b2e]">
+                          <div className="text-slate-500 dark:text-slate-400">{label}</div>
+                          <div className="mt-1 font-semibold text-slate-900 dark:text-white">{value}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="mt-3">
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 dark:text-slate-500">阶段轨迹</div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {runtimeStageSequence.map((stage) => {
+                        const state = runtimeStepState(runtimeModel.currentStage, stage.id, runtimeModel.status);
+                        return (
+                          <span key={stage.id} className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] ${runtimeStepTone(state)}`}>
+                            <span className="font-semibold">{runtimeStageCompactLabel(stage.id)}</span>
+                            <span className="opacity-80">{runtimeStepLabel(state)}</span>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  {runtimeModel.optimization ? (
+                    <div className="mt-3 rounded-xl border border-cyan-200 bg-cyan-50/80 px-3 py-3 text-xs text-cyan-900 dark:border-cyan-400/20 dark:bg-cyan-400/10 dark:text-cyan-100">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div>
+                          <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-cyan-700/80 dark:text-cyan-100/80">Auto Tuning</div>
+                          <div className="mt-1 text-sm font-semibold">
+                            Trial {runtimeModel.optimization.currentTrial}/{runtimeModel.optimization.totalTrials}
+                          </div>
+                        </div>
+                        <div className="text-right text-[11px] leading-5 text-cyan-700/80 dark:text-cyan-100/80">
+                          <div>{runtimeModel.optimization.strategyLabel}</div>
+                          <div>
+                            {runtimeModel.optimization.sampler ?? "Sampler -"}
+                            {runtimeModel.optimization.pruner ? ` · ${runtimeModel.optimization.pruner}` : ""}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-cyan-200/70 dark:bg-cyan-300/20">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-emerald-400"
+                          style={{
+                            width: `${runtimeModel.optimization.totalTrials ? Math.min(100, (runtimeModel.optimization.currentTrial / runtimeModel.optimization.totalTrials) * 100) : 0}%`
+                          }}
+                        />
+                      </div>
+                      <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                        {[
+                          ["当前 MAE", metricText(runtimeModel.optimization.currentMetric)],
+                          ["最佳 MAE", metricText(runtimeModel.optimization.bestMetric)],
+                          ["剩余 Trial", `${Math.max(runtimeModel.optimization.totalTrials - runtimeModel.optimization.currentTrial, 0)}`]
+                        ].map(([label, value]) => (
+                          <div key={label} className="rounded-xl bg-white/80 px-3 py-2 text-cyan-900 dark:bg-[#151b2e] dark:text-cyan-100">
+                            <div className="text-[11px] text-cyan-700/80 dark:text-cyan-100/80">{label}</div>
+                            <div className="mt-1 font-medium">{value}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-2 rounded-xl bg-white/70 px-3 py-2 text-[11px] leading-6 text-cyan-900 dark:bg-[#151b2e] dark:text-cyan-100">
+                        最新消息：{runtimeModel.optimization.lastMessage ?? "-"}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               {model.error ? <div className="mt-2 text-xs text-red-600 dark:text-red-300">{model.error}</div> : null}
-            </div>
-          ))}
+            </button>
+          );})}
         </div>
       ) : null}
     </SectionCard>
@@ -544,6 +773,7 @@ function ModelCard({
   model,
   selected,
   resource,
+  runtimeEstimate,
   parameters,
   onChange,
   onParameterChange
@@ -551,6 +781,7 @@ function ModelCard({
   model: ModelCapability;
   selected: boolean;
   resource: ModelResourceAssessment;
+  runtimeEstimate?: RuntimeEstimateItem;
   parameters: Record<string, ModelParameterValue>;
   onChange: (checked: boolean) => void;
   onParameterChange: (key: string, value: ModelParameterValue) => void;
@@ -592,6 +823,20 @@ function ModelCard({
           <div className="mt-1 font-semibold">{formatMemory(resource.minRamMb)}</div>
         </div>
       </div>
+      {runtimeEstimate ? (
+        <div className="mt-2 rounded-xl border border-cyan-200 bg-cyan-50/80 px-3 py-2 text-xs text-cyan-900 dark:border-cyan-400/20 dark:bg-cyan-400/10 dark:text-cyan-100">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <div className="text-cyan-700 dark:text-cyan-200">预计运行时间</div>
+              <div className="mt-1 font-semibold">{formatCompactDuration(runtimeEstimate.estimatedSeconds)}</div>
+            </div>
+            <div className="flex flex-col items-end gap-1">
+              <Badge tone={runtimeConfidenceTone(runtimeEstimate.confidence)}>{runtimeEstimate.confidence === "high" ? "高置信" : runtimeEstimate.confidence === "medium" ? "中置信" : "低置信"}</Badge>
+              <span className="text-[11px] text-cyan-700/80 dark:text-cyan-100/80">{runtimeEstimate.computeTarget.toUpperCase()}</span>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <p className={`mt-2 text-xs ${resource.level === "red" || resource.level === "gray" ? "text-amber-600 dark:text-amber-300" : "text-slate-500 dark:text-slate-400"}`}>
         {resource.reason}
       </p>
@@ -781,7 +1026,19 @@ function ResultsDashboard({
 
       {tab === "reproducibility" ? <ReproducibilityPanel experimentId={result.experimentId} manifest={result.manifest} /> : null}
 
-      {tab === "report" ? <div id="ai-report"><ReportPanel experimentId={result.experimentId} /></div> : null}
+      {tab === "report" ? (
+        <div id="ai-report">
+          <ReportPanel
+            experimentId={result.experimentId}
+            visualization={{
+              result,
+              finalForecast,
+              visibleModelIds: chartModelIds,
+              metric
+            }}
+          />
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -805,6 +1062,7 @@ export function ForecastPage() {
   const [horizon, setHorizon] = useState(7);
   const [testSize, setTestSize] = useState(7);
   const [selectedModels, setSelectedModels] = useState<string[]>(persistedSelection.values);
+  const [runtimeEstimates, setRuntimeEstimates] = useState<RuntimeEstimateItem[]>([]);
   const [modelParameters, setModelParameters] = useState<Record<string, Record<string, ModelParameterValue>>>(modelParameterDefaults);
   const [featureConfig, setFeatureConfig] = useState<FeatureConfig>(defaultFeatureConfig);
   const [runProfile, setRunProfile] = useState<ForecastRunRequest["runProfile"]>("balanced");
@@ -817,6 +1075,8 @@ export function ForecastPage() {
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
   const [progressNow, setProgressNow] = useState(Date.now());
   const [runProgress, setRunProgress] = useState<ForecastProgress | null>(null);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [runtimeDetail, setRuntimeDetail] = useState<RuntimeRunDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -890,11 +1150,68 @@ export function ForecastPage() {
   }, [forecastResult, rerunDraft, selectedSheet, upload]);
 
   useEffect(() => {
+    const runnableModelIds = models.filter((model) => isRunnableModel(model)).map((model) => model.id);
+    if (!selectedSheet || !runnableModelIds.length || forecastResult) {
+      setRuntimeEstimates([]);
+      return;
+    }
+    let cancelled = false;
+    void fetchRuntimeEstimate({
+      rowCount: Math.max(selectedSheet.rowCountApprox ?? selectedSheet.previewRows.length ?? 1, 1),
+      frequency: "auto",
+      totalColumnCount: Math.max(selectedSheet.columns.length, 1),
+      targetCount: Math.max(targetColumns.length, 1),
+      covariateCount: covariateColumns.length,
+      featureConfig,
+      runProfile,
+      parameterStrategy,
+      device,
+      selectedModels: runnableModelIds
+    })
+      .then((response) => {
+        if (!cancelled) setRuntimeEstimates(response.models);
+      })
+      .catch(() => {
+        if (!cancelled) setRuntimeEstimates([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [covariateColumns.length, device, featureConfig, forecastResult, models, parameterStrategy, runProfile, selectedSheet, targetColumns.length]);
+
+  useEffect(() => {
     if (!loading || runStartedAt === null) return;
     setProgressNow(Date.now());
     const timer = window.setInterval(() => setProgressNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [loading, runStartedAt]);
+
+  useEffect(() => {
+    if (!activeRunId || !loading) return;
+    let cancelled = false;
+    let timer = 0;
+
+    const load = async () => {
+      try {
+        const detail = await fetchRuntimeDetail(activeRunId);
+        if (cancelled) return;
+        setRuntimeDetail(detail);
+        if (detail.status === "running") {
+          timer = window.setTimeout(() => void load(), 1200);
+        }
+      } catch {
+        if (!cancelled) {
+          timer = window.setTimeout(() => void load(), 1500);
+        }
+      }
+    };
+
+    void load();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [activeRunId, loading]);
 
   const orderedColumns = useMemo(() => {
     if (!selectedSheet) return [];
@@ -948,6 +1265,7 @@ export function ForecastPage() {
       return left.priority - right.priority;
     });
   }, [models, resourceAssessments]);
+  const runtimeEstimateMap = useMemo(() => new Map(runtimeEstimates.map((item) => [item.id, item])), [runtimeEstimates]);
 
   useEffect(() => {
     if (!models.length) return;
@@ -973,6 +1291,10 @@ export function ForecastPage() {
   const featureConfigHasAnyEnabled = useMemo(() => Object.values(featureConfig).some(Boolean), [featureConfig]);
   const modelRunCount = targetColumns.length * selectedModels.length;
   const heavyModelRunCount = targetColumns.length * selectedModels.filter((modelId) => heavyModelIds.has(modelId)).length;
+  const selectedRuntimeEstimateSeconds = useMemo(
+    () => selectedModels.reduce((sum, modelId) => sum + (runtimeEstimateMap.get(modelId)?.estimatedSeconds ?? 0), 0),
+    [runtimeEstimateMap, selectedModels]
+  );
   const runLimitMessage = useMemo(() => {
     if (targetColumns.length > maxTargetColumns) return `一次最多选择 ${maxTargetColumns} 个目标列，请分批运行宽表数据。`;
     if (modelRunCount > maxModelRuns) return `一次最多运行 ${maxModelRuns} 个目标-模型组合，当前是 ${modelRunCount} 个。`;
@@ -1025,6 +1347,8 @@ export function ForecastPage() {
     setRunStartedAt(startedAt);
     setProgressNow(startedAt);
     setRunProgress(null);
+    setActiveRunId(runId);
+    setRuntimeDetail(null);
     setLoading(true);
     setError(null);
     const stopProgress = subscribeForecastProgress(runId, setRunProgress);
@@ -1073,6 +1397,8 @@ export function ForecastPage() {
     setRunStartedAt(startedAt);
     setProgressNow(startedAt);
     setRunProgress(null);
+    setActiveRunId(runId);
+    setRuntimeDetail(null);
     setLoading(true);
     setError(null);
     const stopProgress = subscribeForecastProgress(runId, setRunProgress);
@@ -1141,15 +1467,18 @@ export function ForecastPage() {
         </SectionCard>
       ) : null}
       {loading ? (
-        <RunningProgress
-          finalForecastMode={Boolean(forecastResult)}
-          selectedModelIds={selectedModels}
-          models={models}
-          finalModelId={finalModelId}
-          elapsedSeconds={elapsedSeconds}
-          parameterStrategy={parameterStrategy}
-          progress={runProgress}
-        />
+        <div className="space-y-5">
+          <RunningProgress
+            finalForecastMode={Boolean(forecastResult)}
+            selectedModelIds={selectedModels}
+            models={models}
+            finalModelId={finalModelId}
+            elapsedSeconds={elapsedSeconds}
+            parameterStrategy={parameterStrategy}
+            progress={runProgress}
+            runtimeDetail={runtimeDetail}
+          />
+        </div>
       ) : null}
 
       {!forecastResult ? (
@@ -1384,6 +1713,20 @@ export function ForecastPage() {
                   共同步长：{horizonRange.min} ~ {horizonRange.max}
                   {!horizonRange.compatible ? <span className="ml-2 text-red-600 dark:text-red-300">所选模型步长范围不兼容。</span> : null}
                 </div>
+                <div className="rounded-2xl border border-cyan-200 bg-cyan-50 px-4 py-3 text-sm text-cyan-900 dark:border-cyan-400/20 dark:bg-cyan-400/10 dark:text-cyan-50">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="text-xs uppercase tracking-[0.18em] text-cyan-700/80 dark:text-cyan-100/70">Runtime Estimator</div>
+                      <div className="mt-1 font-semibold">
+                        当前已选模型预计总时长：{selectedModels.length ? formatCompactDuration(selectedRuntimeEstimateSeconds) : "请选择模型"}
+                      </div>
+                    </div>
+                    <Badge tone="info">{runtimeEstimates.length ? `已估算 ${runtimeEstimates.length} 个模型` : "等待估算"}</Badge>
+                  </div>
+                  <div className="mt-2 text-xs leading-5 text-cyan-800/90 dark:text-cyan-100/80">
+                    估算基于历史实验运行时长学习，并结合当前行数、协变量、featureConfig、运行模式与自动优化策略动态调整。
+                  </div>
+                </div>
                 <div className="flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white p-3 text-xs text-slate-600 dark:border-white/10 dark:bg-[#151b2e] dark:text-slate-300">
                   {[
                     ["green", "无压力"],
@@ -1409,6 +1752,7 @@ export function ForecastPage() {
                       key={model.id}
                       model={model}
                       resource={resourceAssessments.get(model.id) ?? assessModelResource({ model, deviceInfo, upload, sheet: selectedSheet, dataMode, targetColumns, horizon, testSize })}
+                      runtimeEstimate={runtimeEstimateMap.get(model.id)}
                       selected={selectedModels.includes(model.id)}
                       parameters={modelParameters[model.id] ?? modelParameterDefaults[model.id] ?? {}}
                       onChange={(checked) => setSelectedModels((current) => (checked ? (current.includes(model.id) ? current : [...current, model.id]) : current.filter((item) => item !== model.id)))}

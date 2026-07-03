@@ -16,7 +16,8 @@ from app.schemas import (
     ModelRuntime,
     RankedModel,
 )
-from app.services.auto_tuning import resolve_model_parameters
+from app.services.auto_tuning import TuningProgressUpdate, resolve_model_parameters
+from app.services.covariate_flow import build_future_covariate_rows
 from app.services.metrics import calculate_metrics
 from app.services.model_registry import MODEL_CAPABILITIES, create_model, validate_horizon
 from app.services.model_executor import fit_model_instance, predict_model_instance, run_isolated_fit_predict, should_isolate_model
@@ -37,6 +38,16 @@ class ModelProgressEvent(BaseModel):
     fitSeconds: float = 0.0
     predictSeconds: float = 0.0
     error: str | None = None
+    currentTrial: int | None = None
+    totalTrials: int | None = None
+    currentMetric: float | None = None
+    bestMetric: float | None = None
+    params: dict[str, object] | None = None
+    tuningSeconds: float = 0.0
+    tuningStatus: str | None = None
+    tuningStrategyLabel: str | None = None
+    tuningSampler: str | None = None
+    tuningPruner: str | None = None
 
 
 ProgressCallback = Callable[[ModelProgressEvent], None]
@@ -77,7 +88,13 @@ def run_holdout_backtest(
     train = points[:-test_size]
     test = points[-test_size:]
     train_covariates = series.covariateRows[:-test_size] if series.covariateRows else None
-    test_covariates = series.covariateRows[-test_size:] if series.covariateRows else None
+    observed_test_covariates = series.covariateRows[-test_size:] if series.covariateRows else None
+    test_covariates = build_future_covariate_rows(
+        covariate_columns=series.covariateColumns,
+        history_rows=train_covariates,
+        observed_future_rows=observed_test_covariates,
+        future_times=[point.time for point in test],
+    )
     min_train_size = 30
     if len(train) < min_train_size:
         series.diagnostics.warnings.append("Training points are fewer than 30; model comparison may be unstable.")
@@ -94,18 +111,28 @@ def run_holdout_backtest(
         predict_seconds = 0.0
         warnings: list[str] = []
 
-        def report_tuning_progress(completed: int, total: int, message: str):
+        def report_tuning_progress(update: TuningProgressUpdate):
             if not progress_callback:
                 return
-            total_count = max(total, 1)
-            percent = min(100, max(0, int((completed / total_count) * 100)))
+            total_count = max(update.total, 1)
+            percent = min(100, max(0, int((update.completed / total_count) * 100)))
             progress_callback(
                 ModelProgressEvent(
                     modelId=model_id,
                     stage="tuning",
                     progressPercent=percent,
-                    message=message,
-                )
+                    message=update.message,
+                    currentTrial=update.trialNumber,
+                    totalTrials=update.total,
+                currentMetric=update.currentMetric,
+                bestMetric=update.bestMetric,
+                params=update.params,
+                tuningSeconds=update.tuningSeconds,
+                tuningStatus=update.status,
+                tuningStrategyLabel=update.strategyLabel,
+                tuningSampler=update.sampler,
+                tuningPruner=update.pruner,
+            )
             )
 
         tuning = resolve_model_parameters(

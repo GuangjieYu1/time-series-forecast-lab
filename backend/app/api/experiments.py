@@ -12,8 +12,17 @@ from app.core.errors import AppError, as_http_error
 from app.core.storage import read_upload_metadata
 from app.db.models import ExperimentRecord, ReportRecord
 from app.db.session import get_db
-from app.schemas import ExperimentDetail, ExperimentListItem, ExperimentManifest, ExperimentRerunFileMatch, ExperimentRerunRequest, ExperimentRerunResponse
+from app.schemas import (
+    ExperimentDetail,
+    ExperimentListItem,
+    ExperimentManifest,
+    ExperimentRerunFileMatch,
+    ExperimentRerunRequest,
+    ExperimentRerunResponse,
+    FeatureFactoryResponse,
+)
 from app.services.data_health import build_data_health_report, extract_detected_frequency
+from app.services.runtime_history import load_runtime_from_record
 
 
 router = APIRouter(prefix="/api/experiments", tags=["experiments"])
@@ -132,6 +141,7 @@ def get_experiment(experiment_id: str, db: Session = Depends(get_db)):
             series=_loads(record.series_json, []),
             finalForecast=_loads(record.final_forecast_json, None),
             modelLogs=_loads(record.model_logs_json, []),
+            runtime=load_runtime_from_record(record),
             manifest=manifest,
             configHash=record.config_hash,
             sourceFileSha256=record.source_file_sha256,
@@ -161,6 +171,21 @@ def get_experiment_manifest(experiment_id: str, db: Session = Depends(get_db)):
         if not record.manifest_json:
             raise AppError("This experiment does not have a reproducibility manifest yet.", 404, "MANIFEST_NOT_FOUND")
         return ExperimentManifest.model_validate(_loads(record.manifest_json, {}))
+    except AppError as exc:
+        raise as_http_error(exc) from exc
+
+
+@router.get("/{experiment_id}/feature-factory", response_model=FeatureFactoryResponse)
+def get_experiment_feature_factory(experiment_id: str, db: Session = Depends(get_db)):
+    try:
+        record = db.get(ExperimentRecord, experiment_id)
+        if record is None:
+            raise AppError("Experiment was not found.", 404)
+        runtime = load_runtime_from_record(record)
+        return FeatureFactoryResponse(
+            experimentId=record.id,
+            targets=runtime.featurePipeline if runtime else [],
+        )
     except AppError as exc:
         raise as_http_error(exc) from exc
 
