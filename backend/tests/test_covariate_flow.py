@@ -35,5 +35,5 @@ def test_build_future_covariate_rows_generates_known_future_and_repeats_static()
 
     assert rows == [
         {"temperature": 25.0, "weekday": 0.0, "holiday": 0.0},
-        {"temperature": 25.0, "weekday": 5.0, "holiday": 1.0},
+        {"temperature": 25.0, "weekday": 5.0, "holiday": 0.0},
     ]

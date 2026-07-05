@@ -8,6 +8,7 @@ import pandas as pd
 
 from app.core.constants import DEFAULT_RANDOM_SEED
 from app.models.base import ForecastOutput
+from app.services.feature_factory import PreparedFeatureMatrix
 
 
 PANDAS_FREQ = {
@@ -146,13 +147,14 @@ class LagFeatureRegressor:
             targets.append(self.values[index])
         return np.asarray(rows, dtype=float), np.asarray(targets, dtype=float)
 
-    def fit(
+    def _set_training_context(
         self,
+        *,
         times: list[datetime],
         values: list[float],
         frequency: str,
-        covariates: list[dict[str, float]] | None = None,
-        feature_config: dict[str, bool] | None = None,
+        covariates: list[dict[str, float]] | None,
+        feature_config: dict[str, bool] | None,
     ) -> None:
         self.times = list(times)
         self.values = [float(value) for value in values]
@@ -165,13 +167,46 @@ class LagFeatureRegressor:
             self.covariate_columns = []
         self._ensure_feature_columns()
         self.warnings = [f"机器学习模型使用 {self._feature_summary()} 进行递归多步预测。"]
+
+    def _fit_matrix(self, features: np.ndarray, targets: np.ndarray) -> None:
+        if len(features) == 0 or len(targets) == 0:
+            raise RuntimeError("Prepared feature matrix is empty.")
         self.model = self.build_model()
-        features, targets = self._training_matrix()
         feature_frame = pd.DataFrame(features, columns=self.feature_columns)
         self.model.fit(feature_frame, targets)
         fitted = np.asarray(self.model.predict(feature_frame), dtype=float)
         residuals = targets - fitted
         self.residual_scale = float(np.std(residuals, ddof=1)) if len(residuals) > 1 else 0.0
+
+    def fit_prepared(self, prepared: PreparedFeatureMatrix) -> None:
+        self._set_training_context(
+            times=prepared.times,
+            values=prepared.values,
+            frequency=prepared.frequency,
+            covariates=prepared.covariates,
+            feature_config=prepared.featureConfig,
+        )
+        if self.feature_columns != prepared.featureNames:
+            raise RuntimeError("Prepared feature columns do not match the model feature contract.")
+        self._fit_matrix(prepared.featureValues, prepared.targets)
+
+    def fit(
+        self,
+        times: list[datetime],
+        values: list[float],
+        frequency: str,
+        covariates: list[dict[str, float]] | None = None,
+        feature_config: dict[str, bool] | None = None,
+    ) -> None:
+        self._set_training_context(
+            times=times,
+            values=values,
+            frequency=frequency,
+            covariates=covariates,
+            feature_config=feature_config,
+        )
+        features, targets = self._training_matrix()
+        self._fit_matrix(features, targets)
 
     def _future_times(self, horizon: int) -> list[datetime]:
         freq = PANDAS_FREQ.get(self.frequency, "D")

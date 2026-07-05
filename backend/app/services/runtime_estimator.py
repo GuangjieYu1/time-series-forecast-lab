@@ -136,13 +136,18 @@ def _estimate_model_runtime(
         )
         confidence = "low"
 
-    estimated_seconds = round(max(0.2, per_target_seconds) * max(request.targetCount, 1), 1)
+    auxiliary_factor = 1.0 + request.unknownFutureForecastCount * 0.35 + request.perPrimaryModelCovariateCount * 0.8
+    estimated_seconds = round(max(0.2, per_target_seconds) * auxiliary_factor * max(request.targetCount, 1), 1)
     descriptor = [
         f"{row_count} timestamps",
         f"{covariate_count} covariates" if covariate_count else "univariate",
         f"{feature_count} derived features" if feature_count > 1 else "minimal features",
         f"{request.targetCount} target{'s' if request.targetCount > 1 else ''}",
     ]
+    if request.unknownFutureForecastCount:
+        descriptor.append(f"{request.unknownFutureForecastCount} unknown-future forecasts")
+    if request.perPrimaryModelCovariateCount:
+        descriptor.append(f"{request.perPrimaryModelCovariateCount} per-model covariates")
     if request.parameterStrategy == "auto":
         descriptor.append("auto tuning")
     if relevant:

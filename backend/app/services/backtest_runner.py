@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 import math
 import logging
-from typing import Callable, Literal
+from typing import Callable, Literal, TYPE_CHECKING
 
 from pydantic import BaseModel
 
@@ -32,7 +32,7 @@ class BacktestResult(BaseModel):
 
 class ModelProgressEvent(BaseModel):
     modelId: str
-    stage: Literal["tuning", "fitting", "predicting", "scoring", "success", "failed"]
+    stage: Literal["covariates", "tuning", "fitting", "predicting", "scoring", "success", "failed"]
     progressPercent: int | None = None
     message: str | None = None
     fitSeconds: float = 0.0
@@ -53,6 +53,9 @@ class ModelProgressEvent(BaseModel):
 ProgressCallback = Callable[[ModelProgressEvent], None]
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from app.services.feature_factory import PreparedFeatureMatrix
+
 
 def _iso(value: datetime) -> str:
     return value.isoformat()
@@ -68,6 +71,8 @@ def run_holdout_backtest(
     run_profile: str = "balanced",
     random_seed: int = 42,
     feature_config: dict[str, bool] | None = None,
+    prepared_features: "PreparedFeatureMatrix | None" = None,
+    feature_factory_error: str | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> BacktestResult:
     if not selected_models:
@@ -89,12 +94,6 @@ def run_holdout_backtest(
     test = points[-test_size:]
     train_covariates = series.covariateRows[:-test_size] if series.covariateRows else None
     observed_test_covariates = series.covariateRows[-test_size:] if series.covariateRows else None
-    test_covariates = build_future_covariate_rows(
-        covariate_columns=series.covariateColumns,
-        history_rows=train_covariates,
-        observed_future_rows=observed_test_covariates,
-        future_times=[point.time for point in test],
-    )
     min_train_size = 30
     if len(train) < min_train_size:
         series.diagnostics.warnings.append("Training points are fewer than 30; model comparison may be unstable.")
@@ -110,6 +109,49 @@ def run_holdout_backtest(
         fit_seconds = 0.0
         predict_seconds = 0.0
         warnings: list[str] = []
+
+        if model_id in {"xgboost", "lightgbm", "random_forest"} and feature_factory_error:
+            ranked.append(
+                RankedModel(
+                    modelId=model_id,
+                    modelName=capability.name,
+                    metrics=None,
+                    runtime=ModelRuntime(),
+                    status="failed",
+                    error=f"Feature Factory failed: {feature_factory_error}",
+                )
+            )
+            if progress_callback:
+                progress_callback(
+                    ModelProgressEvent(
+                        modelId=model_id,
+                        stage="failed",
+                        error=f"Feature Factory failed: {feature_factory_error}",
+                    )
+                )
+            continue
+
+        if progress_callback and (series.covariateColumns or series.generatedCovariateColumns):
+            progress_callback(ModelProgressEvent(modelId=model_id, stage="covariates", progressPercent=5, message="正在准备未来协变量，必要时先运行辅助预测。"))
+        try:
+            test_covariates = build_future_covariate_rows(
+                covariate_columns=[*series.covariateColumns, *series.generatedCovariateColumns],
+                history_rows=train_covariates,
+                observed_future_rows=observed_test_covariates,
+                future_times=[point.time for point in test],
+                history_times=[point.time for point in train],
+                covariate_configs=series.covariateConfigs,
+                frequency=series.frequency,
+                primary_model_id=model_id,
+                primary_model_parameters=parameters_by_model.get(model_id),
+                holiday_config=series.holidayConfig,
+            )
+        except Exception as exc:
+            error = f"协变量准备失败：{exc}"
+            ranked.append(RankedModel(modelId=model_id, modelName=capability.name, metrics=None, runtime=ModelRuntime(), status="failed", error=error))
+            if progress_callback:
+                progress_callback(ModelProgressEvent(modelId=model_id, stage="failed", error=error))
+            continue
 
         def report_tuning_progress(update: TuningProgressUpdate):
             if not progress_callback:
@@ -178,6 +220,7 @@ def run_holdout_backtest(
                     covariates=train_covariates,
                     future_covariates=test_covariates,
                     feature_config=feature_config,
+                    prepared_features=prepared_features if model_id in {"xgboost", "lightgbm", "random_forest"} else None,
                 )
                 fit_seconds = output.fit_seconds
                 predict_seconds = output.predict_seconds
@@ -192,6 +235,7 @@ def run_holdout_backtest(
                     series.frequency,
                     covariates=train_covariates,
                     feature_config=feature_config,
+                    prepared_features=prepared_features if model_id in {"xgboost", "lightgbm", "random_forest"} else None,
                 )
                 fit_seconds = time.perf_counter() - fit_start
 

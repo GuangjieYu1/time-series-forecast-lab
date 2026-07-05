@@ -5,13 +5,37 @@ import json
 import platform
 import subprocess
 import sys
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
-from app.core.constants import APP_VERSION
+from app.core.constants import (
+    APP_VERSION,
+    EXPERIMENT_MANIFEST_SCHEMA_VERSION,
+    FEATURE_PIPELINE_VERSION,
+    RUNTIME_EVENT_SCHEMA_VERSION,
+)
 from app.core.gpu import get_device, get_memory_info
-from app.schemas import ExperimentManifest, ForecastRunRequest, TargetResult
+from app.schemas import ExperimentManifest, ForecastRunRequest, RuntimeFeaturePipelineTarget, TargetResult
 from app.services.model_registry import normalize_model_parameters
+
+
+MODEL_PACKAGES = {
+    "arima": ("statsmodels",),
+    "ets": ("statsmodels",),
+    "prophet": ("prophet",),
+    "timesfm": ("timesfm", "torch"),
+    "random_forest": ("scikit-learn",),
+    "xgboost": ("xgboost",),
+    "lightgbm": ("lightgbm",),
+}
+
+
+def _installed_version(package: str) -> str | None:
+    try:
+        return version(package)
+    except PackageNotFoundError:
+        return None
 
 
 def canonical_json(value: Any) -> str:
@@ -35,6 +59,9 @@ def build_config_hash_payload(request: ForecastRunRequest) -> dict[str, Any]:
             for model_id in request.selectedModels
         },
         "featureConfig": request.featureConfig.model_dump(),
+        "cleaningConfig": request.cleaningConfig.model_dump() if request.cleaningConfig else None,
+        "covariateConfigs": [item.model_dump() for item in request.covariateConfigs],
+        "holidayConfig": request.holidayConfig.model_dump(),
         "missingValueStrategy": request.missingValueStrategy,
         "fillMissingTimeSteps": request.fillMissingTimeSteps,
         "duplicateTimeStrategy": request.duplicateTimeStrategy,
@@ -68,8 +95,24 @@ def get_git_commit(repo_root: Path) -> str | None:
     return commit or None
 
 
-def build_environment_snapshot(repo_root: Path) -> dict[str, Any]:
+def build_environment_snapshot(repo_root: Path, selected_models: list[str]) -> dict[str, Any]:
     memory = get_memory_info()
+    package_names = sorted({package for model_id in selected_models for package in MODEL_PACKAGES.get(model_id, ())})
+    package_versions = {
+        package: installed
+        for package in package_names
+        if (installed := _installed_version(package)) is not None
+    }
+    model_versions = {
+        model_id: {
+            "implementationVersion": APP_VERSION,
+            "packages": {
+                package: package_versions.get(package, "not-installed")
+                for package in MODEL_PACKAGES.get(model_id, ())
+            },
+        }
+        for model_id in selected_models
+    }
     return {
         "appVersion": APP_VERSION,
         "gitCommit": get_git_commit(repo_root),
@@ -78,7 +121,8 @@ def build_environment_snapshot(repo_root: Path) -> dict[str, Any]:
         "device": get_device(),
         "memoryTotalMb": memory.get("memoryTotalMb"),
         "memoryAvailableMb": memory.get("memoryAvailableMb"),
-        "modelCapabilityVersions": None,
+        "modelCapabilityVersions": model_versions,
+        "packageVersions": package_versions,
     }
 
 
@@ -92,9 +136,10 @@ def build_manifest(
     target_results: list[TargetResult],
     target_contexts: list[dict[str, Any]],
     repo_root: Path,
+    feature_pipelines: list[RuntimeFeaturePipelineTarget] | None = None,
 ) -> ExperimentManifest:
     config_hash = compute_config_hash(request)
-    environment = build_environment_snapshot(repo_root)
+    environment = build_environment_snapshot(repo_root, request.selectedModels)
     targets = []
     for result, context in zip(target_results, target_contexts):
         targets.append(
@@ -126,12 +171,16 @@ def build_manifest(
         )
     return ExperimentManifest.model_validate(
         {
-            "schemaVersion": "0.3",
+            "schemaVersion": EXPERIMENT_MANIFEST_SCHEMA_VERSION,
             "experimentId": experiment_id,
             "experimentName": experiment_name,
             "createdAt": upload_metadata.get("createdAt"),
             "configHash": config_hash,
             "sourceFileSha256": upload_metadata.get("fileSha256"),
+            "datasetHash": upload_metadata.get("fileSha256"),
+            "featurePipelineVersion": FEATURE_PIPELINE_VERSION,
+            "runtimeEventSchemaVersion": RUNTIME_EVENT_SCHEMA_VERSION,
+            "randomSeed": request.randomSeed,
             "environment": environment,
             "data": {
                 "fileName": upload_metadata.get("fileName"),
@@ -145,5 +194,6 @@ def build_manifest(
             },
             "configuration": build_config_hash_payload(request),
             "targets": targets,
+            "featurePipelines": feature_pipelines or [],
         }
     )

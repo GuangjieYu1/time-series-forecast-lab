@@ -7,12 +7,15 @@ import time
 import traceback
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 
 ISOLATED_MODEL_IDS = {"timesfm", "xgboost"}
 ISOLATED_MODEL_TIMEOUT_SECONDS = 120
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from app.services.feature_factory import PreparedFeatureMatrix
 
 
 @dataclass
@@ -38,10 +41,14 @@ def fit_model_instance(
     *,
     covariates: list[dict[str, float]] | None = None,
     feature_config: dict[str, bool] | None = None,
+    prepared_features: "PreparedFeatureMatrix | None" = None,
 ) -> None:
     from app.services.model_registry import MODEL_CAPABILITIES
 
     capability = MODEL_CAPABILITIES.get(model_id)
+    if prepared_features is not None and hasattr(model, "fit_prepared"):
+        model.fit_prepared(prepared_features)
+        return
     if capability and capability.supportsCovariates:
         model.fit(times, values, frequency, covariates=covariates, feature_config=feature_config)
         return
@@ -74,6 +81,7 @@ def _isolated_fit_predict_worker(
     covariates: list[dict[str, float]] | None,
     future_covariates: list[dict[str, float]] | None,
     feature_config: dict[str, bool] | None,
+    prepared_features: "PreparedFeatureMatrix | None",
 ) -> None:
     try:
         from app.services.model_registry import create_model
@@ -88,6 +96,7 @@ def _isolated_fit_predict_worker(
             frequency,
             covariates=covariates,
             feature_config=feature_config,
+            prepared_features=prepared_features,
         )
         fit_seconds = time.perf_counter() - fit_start
 
@@ -119,13 +128,14 @@ def run_isolated_fit_predict(
     covariates: list[dict[str, float]] | None = None,
     future_covariates: list[dict[str, float]] | None = None,
     feature_config: dict[str, bool] | None = None,
+    prepared_features: "PreparedFeatureMatrix | None" = None,
     timeout_seconds: int = ISOLATED_MODEL_TIMEOUT_SECONDS,
 ) -> IsolatedModelResult:
     context = mp.get_context("spawn")
     result_queue = context.Queue(maxsize=1)
     process = context.Process(
         target=_isolated_fit_predict_worker,
-        args=(result_queue, model_id, parameters, times, values, frequency, horizon, covariates, future_covariates, feature_config),
+        args=(result_queue, model_id, parameters, times, values, frequency, horizon, covariates, future_covariates, feature_config, prepared_features),
         daemon=True,
     )
     process.start()

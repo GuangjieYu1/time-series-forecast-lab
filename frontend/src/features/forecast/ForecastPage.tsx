@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { Link } from "react-router-dom";
-import { createRunId, fetchDeviceInfo, fetchModels, fetchRuntimeDetail, fetchRuntimeEstimate, runFinalForecast, runForecast, subscribeForecastProgress } from "../../shared/api/client";
+import { createRunId, fetchDeviceInfo, fetchHolidayCalendars, fetchModels, fetchRuntimeDetail, fetchRuntimeEstimate, runFinalForecast, runForecast, subscribeForecastProgress, subscribeRuntimeEvents } from "../../shared/api/client";
 import { DataTable } from "../../shared/components/Table";
 import { EmptyState, ErrorBanner } from "../../shared/components/Status";
 import { Badge, controls, PageHeader, SectionCard, StatCard, Stepper, surface, Tabs } from "../../shared/components/Ui";
 import { zhCN } from "../../shared/i18n/zhCN";
-import type { DeviceInfo, FeatureConfig, ForecastProgress, ForecastRunRequest, ForecastRunResponse, ModelCapability, RankedModel, RuntimeEstimateItem, RuntimeRunDetail, SheetPreview, UploadPreviewResponse } from "../../shared/types/api";
+import type { CleaningConfig, CovariateConfig, DeviceInfo, FeatureConfig, ForecastProgress, ForecastRunRequest, ForecastRunResponse, HolidayCalendarCatalog, HolidayConfig, ModelCapability, RuntimeEstimateItem, RuntimeRunDetail, SheetPreview, UploadPreviewResponse } from "../../shared/types/api";
 import { useLabStore } from "../../app/store";
 import {
   AbsoluteErrorTimelineChart,
@@ -23,6 +23,8 @@ import { ReportPanel } from "../reports/ReportPanel";
 import { DataHealthPanel } from "./DataHealthPanel";
 import { getParameterHelp } from "./parameterHelp";
 import { ReproducibilityPanel } from "./ReproducibilityPanel";
+import { ModelLeaderboard } from "./ModelLeaderboard";
+import { FeatureEngineeringFlow } from "../runtime/FeatureEngineeringFlow";
 
 const modelDefaults = ["naive", "seasonal_naive", "moving_average", "arima", "ets", "prophet", "xgboost", "lightgbm", "random_forest"];
 const steps = ["选择数据模式", "选择字段", "选择模型", "设置回测", "运行实验"];
@@ -31,10 +33,19 @@ const maxModelRuns = 32;
 const maxHeavyModelRuns = 4;
 const heavyModelIds = new Set(["prophet", "timesfm"]);
 const selectedModelsStorageKey = "tsfl_forecast_selected_models_v1";
+const cleaningPresets: Record<Exclude<CleaningConfig["preset"], "custom">, Partial<CleaningConfig>> = {
+  conservative: { missingValueStrategy: "drop", interpolationLimit: null, fillMissingTimeSteps: false, outlierStrategy: "none" },
+  standard: { missingValueStrategy: "time", interpolationLimit: 3, fillMissingTimeSteps: true, outlierStrategy: "none" },
+  strict: { missingValueStrategy: "time", interpolationLimit: 7, fillMissingTimeSteps: true, outlierStrategy: "hampel" }
+};
+
+const defaultHolidayConfig: HolidayConfig = { enabled: true, countryCode: "CN", subdivision: null, observed: true, windowDays: 1 };
+
 const defaultFeatureConfig: FeatureConfig = {
   lagFeatures: true,
   rollingFeatures: true,
   calendarFeatures: true,
+  holidayFeatures: true,
   covariates: true
 };
 
@@ -369,7 +380,7 @@ function assessModelResource({
     return { level: "gray", label: "无法运行", reason: `最小 RAM 超过主机总内存 ${formatMemory(totalMb)}`, minRamMb, dataRamMb, loadRank: 98 };
   }
   if (model.requiresGpu && deviceInfo?.device === "cpu") {
-    return { level: "red", label: "高压力", reason: "当前主机未检测到 GPU", minRamMb, dataRamMb, loadRank: profile.loadRank };
+    return { level: "red", label: "高压力", reason: deviceInfo.accelerator.reason ?? "当前运行环境无法使用 GPU", minRamMb, dataRamMb, loadRank: profile.loadRank };
   }
   if (!availableMb) {
     return { level: "yellow", label: "压力未知", reason: "未读取到可用内存，使用保守估算", minRamMb, dataRamMb, loadRank: profile.loadRank };
@@ -535,6 +546,11 @@ function RunningProgress({
           </div>
         ))}
       </div>
+      {!finalForecastMode && runtimeDetail?.featurePipeline.length ? (
+        <div className="mt-5">
+          <FeatureEngineeringFlow targets={runtimeDetail.featurePipeline} mode="live" compact />
+        </div>
+      ) : null}
       {progressRows.length ? (
         <div className="mt-4 grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
           {progressRows.map((model) => {
@@ -545,7 +561,7 @@ function RunningProgress({
               type="button"
               aria-expanded={expandedModelKey === model.key}
               onClick={() => setExpandedModelKey((current) => (current === model.key ? "" : model.key))}
-              className={`rounded-2xl border border-slate-200 bg-white p-3 text-left transition dark:border-white/10 dark:bg-[#151b2e] ${
+              className={`min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-3 text-left transition dark:border-white/10 dark:bg-[#151b2e] ${expandedModelKey === model.key ? "lg:col-span-2 xl:col-span-3" : ""} ${
                 expandedModelKey === model.key ? "ring-1 ring-cyan-300 dark:ring-cyan-400/40" : "hover:border-slate-300 dark:hover:border-white/20"
               }`}
             >
@@ -587,7 +603,7 @@ function RunningProgress({
                         <span className="text-xs leading-6 text-slate-600 dark:text-slate-300">{runtimeModel.message}</span>
                       </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:min-w-[420px]">
+                    <div className="grid min-w-0 grid-cols-2 gap-2 sm:grid-cols-4 lg:min-w-[420px]">
                       {[
                         ["子进度", `${runtimeModel.progressPercent}%`],
                         ["已运行", formatCompactDuration(runtimeModel.elapsedSeconds)],
@@ -665,33 +681,6 @@ function RunningProgress({
         </div>
       ) : null}
     </SectionCard>
-  );
-}
-
-function Leaderboard({ rows, recommendedModelId }: { rows: RankedModel[]; recommendedModelId: string | null }) {
-  return (
-    <DataTable<RankedModel>
-      data={rows}
-      columns={[
-        { header: "排名", cell: ({ row }) => row.original.rank ?? "-" },
-        { header: "模型", cell: ({ row }) => row.original.modelName },
-        { header: "MAE", cell: ({ row }) => metricText(row.original.metrics?.mae) },
-        { header: "MSE", cell: ({ row }) => metricText(row.original.metrics?.mse) },
-        { header: "RMSE", cell: ({ row }) => metricText(row.original.metrics?.rmse) },
-        { header: "WAPE", cell: ({ row }) => metricText(row.original.metrics?.wape) },
-        { header: "训练耗时", cell: ({ row }) => `${row.original.runtime.fitSeconds}s` },
-        { header: "预测耗时", cell: ({ row }) => `${row.original.runtime.predictSeconds}s` },
-        {
-          header: "参数",
-          cell: ({ row }) =>
-            row.original.tuning?.enabled
-              ? `${row.original.tuning.candidateCount} 候选 / ${row.original.tuning.bestMetric === null ? "未评分" : `最佳 MAE ${metricText(row.original.tuning.bestMetric)}`}`
-              : "默认"
-        },
-        { header: "推荐", cell: ({ row }) => (row.original.modelId === recommendedModelId ? <Badge tone="good">推荐模型</Badge> : null) },
-        { header: "状态", cell: ({ row }) => (row.original.status === "failed" ? <Badge tone="bad">{row.original.error ?? "运行失败"}</Badge> : <Badge tone="good">成功</Badge>) }
-      ]}
-    />
   );
 }
 
@@ -877,6 +866,16 @@ function ResultsDashboard({
   const [tab, setTab] = useState<ResultTab>("dataHealth");
   const best = result.rankedModels.find((model) => model.rank === 1 && model.metrics);
   const successfulModels = result.rankedModels.filter((model) => model.status === "success");
+  const chartableModelIds = successfulModels.filter((model) => result.backtest.predictions[model.modelId]).map((model) => model.modelId);
+  const selectedChartModelCount = chartableModelIds.filter((modelId) => chartModelIds.includes(modelId)).length;
+  const allModelsVisible = chartableModelIds.length > 0 && selectedChartModelCount === chartableModelIds.length;
+  const showAllRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (showAllRef.current) {
+      showAllRef.current.indeterminate = selectedChartModelCount > 0 && !allModelsVisible;
+    }
+  }, [allModelsVisible, selectedChartModelCount]);
 
   return (
     <section className="space-y-5">
@@ -942,6 +941,15 @@ function ResultsDashboard({
             </a>
             <div>
               <div className="mb-2 text-sm font-semibold text-slate-700 dark:text-slate-200">图表显示模型</div>
+              <label className="mb-2 flex items-center justify-between rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-700 dark:border-indigo-400/20 dark:bg-indigo-400/10 dark:text-indigo-200">
+                <span>显示全部模型</span>
+                <input
+                  ref={showAllRef}
+                  type="checkbox"
+                  checked={allModelsVisible}
+                  onChange={(event) => setChartModelIds(event.target.checked ? chartableModelIds : defaultVisibleModelIds(result))}
+                />
+              </label>
               <div className="space-y-2">
                 {successfulModels
                   .filter((model) => result.backtest.predictions[model.modelId])
@@ -951,7 +959,7 @@ function ResultsDashboard({
                       <input
                         type="checkbox"
                         checked={chartModelIds.includes(model.modelId)}
-                        onChange={(event) => setChartModelIds((current) => (event.target.checked ? [...current, model.modelId] : current.filter((modelId) => modelId !== model.modelId)))}
+                        onChange={(event) => setChartModelIds((current) => (event.target.checked ? Array.from(new Set([...current, model.modelId])) : current.filter((modelId) => modelId !== model.modelId)))}
                       />
                     </label>
                   ))}
@@ -1007,7 +1015,7 @@ function ResultsDashboard({
           }
         >
           <div className="grid gap-5 xl:grid-cols-[1fr_0.9fr]">
-            <Leaderboard rows={result.rankedModels} recommendedModelId={result.recommendedModelId} />
+            <ModelLeaderboard rows={result.rankedModels} recommendedModelId={result.recommendedModelId} />
             <div className={surface.chartPanel}><NormalizedMetricChart result={result} /></div>
           </div>
         </SectionCard>
@@ -1054,11 +1062,20 @@ export function ForecastPage() {
   const [targetColumns, setTargetColumns] = useState<string[]>([]);
   const [covariateColumns, setCovariateColumns] = useState<string[]>([]);
   const [aggregationMethod, setAggregationMethod] = useState<ForecastRunRequest["aggregation"]["method"]>("sum");
-  const [missingValueStrategy, setMissingValueStrategy] = useState<ForecastRunRequest["missingValueStrategy"]>("drop");
+  const [cleaningPreset, setCleaningPreset] = useState<CleaningConfig["preset"]>("standard");
+  const [missingValueStrategy, setMissingValueStrategy] = useState<ForecastRunRequest["missingValueStrategy"]>("time");
   const [fillMissingTimeSteps, setFillMissingTimeSteps] = useState(true);
   const [duplicateTimeStrategy, setDuplicateTimeStrategy] = useState<ForecastRunRequest["duplicateTimeStrategy"]>("mean");
   const [outlierStrategy, setOutlierStrategy] = useState<ForecastRunRequest["outlierStrategy"]>("none");
   const [outlierIqrMultiplier, setOutlierIqrMultiplier] = useState(1.5);
+  const [invalidTimeStrategy, setInvalidTimeStrategy] = useState<CleaningConfig["invalidTimeStrategy"]>("drop");
+  const [interpolationLimit, setInterpolationLimit] = useState<number | null>(3);
+  const [hampelWindow, setHampelWindow] = useState(7);
+  const [hampelSigma, setHampelSigma] = useState(3);
+  const [advancedCleaning, setAdvancedCleaning] = useState(false);
+  const [covariateConfigs, setCovariateConfigs] = useState<Record<string, CovariateConfig>>({});
+  const [holidayConfig, setHolidayConfig] = useState<HolidayConfig>(defaultHolidayConfig);
+  const [holidayCatalog, setHolidayCatalog] = useState<HolidayCalendarCatalog | null>(null);
   const [horizon, setHorizon] = useState(7);
   const [testSize, setTestSize] = useState(7);
   const [selectedModels, setSelectedModels] = useState<string[]>(persistedSelection.values);
@@ -1087,13 +1104,30 @@ export function ForecastPage() {
         setSelectedModels((current) => (current.length || persistedSelection.hasValue ? current : runnableDefaults));
       })
       .catch(() => undefined);
+    void fetchHolidayCalendars().then(setHolidayCatalog).catch(() => undefined);
     void fetchDeviceInfo()
       .then((info) => {
         setDeviceInfo(info);
         setDevice(info.device);
       })
       .catch(() => {
-        setDeviceInfo({ device: "cpu", memoryTotalMb: null, memoryAvailableMb: null });
+        setDeviceInfo({
+          device: "cpu",
+          memoryTotalMb: null,
+          memoryAvailableMb: null,
+          accelerator: {
+            hardwareDetected: false,
+            runtimeAvailable: false,
+            type: null,
+            name: null,
+            memoryTotalMb: null,
+            driverVersion: null,
+            frameworkVersion: null,
+            frameworkBuild: null,
+            cudaRuntime: null,
+            reason: "设备状态接口不可用。"
+          }
+        });
         setDevice("cpu");
       });
   }, []);
@@ -1105,12 +1139,20 @@ export function ForecastPage() {
     const nextTargetColumns = firstNumber ? [firstNumber] : [];
     setTimeColumn(firstTime);
     setTargetColumns(nextTargetColumns);
-    setCovariateColumns(
-      selectedSheet.columns
-        .filter((column) => (column.inferredType === "number" || column.inferredType === "boolean") && column.name !== firstTime && !nextTargetColumns.includes(column.name))
-        .map((column) => column.name)
-    );
+    const nextCovariates = selectedSheet.columns
+      .filter((column) => (column.inferredType === "number" || column.inferredType === "boolean") && column.name !== firstTime && !nextTargetColumns.includes(column.name))
+      .map((column) => column.name);
+    setCovariateColumns(nextCovariates);
+    setCovariateConfigs(Object.fromEntries(nextCovariates.map((column) => [column, {
+      column,
+      type: /weekday|dayofweek|month|quarter|weekend|workday|holiday/i.test(column) ? "known_future" : "static",
+      unknownFutureAction: "analysis_only",
+      forecastMode: "auto",
+      manualModelId: null,
+      missingValueStrategy: "ffill"
+    } satisfies CovariateConfig])));
     setFeatureConfig(defaultFeatureConfig);
+    setHolidayConfig(defaultHolidayConfig);
   }, [selectedSheet]);
 
   useEffect(() => {
@@ -1129,11 +1171,19 @@ export function ForecastPage() {
     setTargetColumns(template.targetColumns ?? []);
     setCovariateColumns(template.covariateColumns ?? []);
     setAggregationMethod(template.aggregation?.method ?? "sum");
-    setMissingValueStrategy(template.missingValueStrategy ?? "drop");
-    setFillMissingTimeSteps(template.fillMissingTimeSteps ?? true);
-    setDuplicateTimeStrategy(template.duplicateTimeStrategy ?? "mean");
-    setOutlierStrategy(template.outlierStrategy ?? "none");
-    setOutlierIqrMultiplier(template.outlierIqrMultiplier ?? 1.5);
+    const savedCleaning = template.cleaningConfig;
+    setCleaningPreset(savedCleaning?.preset ?? "custom");
+    setMissingValueStrategy(savedCleaning?.missingValueStrategy ?? template.missingValueStrategy ?? "drop");
+    setFillMissingTimeSteps(savedCleaning?.fillMissingTimeSteps ?? template.fillMissingTimeSteps ?? true);
+    setDuplicateTimeStrategy(savedCleaning?.duplicateTimeStrategy ?? template.duplicateTimeStrategy ?? "mean");
+    setOutlierStrategy(savedCleaning?.outlierStrategy ?? template.outlierStrategy ?? "none");
+    setOutlierIqrMultiplier(savedCleaning?.outlierIqrMultiplier ?? template.outlierIqrMultiplier ?? 1.5);
+    setInvalidTimeStrategy(savedCleaning?.invalidTimeStrategy ?? "drop");
+    setInterpolationLimit(savedCleaning?.interpolationLimit ?? 3);
+    setHampelWindow(savedCleaning?.hampelWindow ?? 7);
+    setHampelSigma(savedCleaning?.hampelSigma ?? 3);
+    setCovariateConfigs(Object.fromEntries((template.covariateConfigs ?? []).map((item) => [item.column, item])));
+    setHolidayConfig(template.holidayConfig ?? defaultHolidayConfig);
     setHorizon(template.horizon ?? 7);
     setTestSize(template.testSize ?? 7);
     setSelectedModels(template.selectedModels ?? []);
@@ -1162,6 +1212,8 @@ export function ForecastPage() {
       totalColumnCount: Math.max(selectedSheet.columns.length, 1),
       targetCount: Math.max(targetColumns.length, 1),
       covariateCount: covariateColumns.length,
+      unknownFutureForecastCount: covariateColumns.filter((column) => covariateConfigs[column]?.type === "unknown_future" && covariateConfigs[column]?.unknownFutureAction === "forecast").length,
+      perPrimaryModelCovariateCount: covariateColumns.filter((column) => covariateConfigs[column]?.forecastMode === "per_primary_model").length,
       featureConfig,
       runProfile,
       parameterStrategy,
@@ -1177,7 +1229,7 @@ export function ForecastPage() {
     return () => {
       cancelled = true;
     };
-  }, [covariateColumns.length, device, featureConfig, forecastResult, models, parameterStrategy, runProfile, selectedSheet, targetColumns.length]);
+  }, [covariateColumns, covariateConfigs, device, featureConfig, forecastResult, models, parameterStrategy, runProfile, selectedSheet, targetColumns.length]);
 
   useEffect(() => {
     if (!loading || runStartedAt === null) return;
@@ -1210,6 +1262,23 @@ export function ForecastPage() {
     return () => {
       cancelled = true;
       if (timer) window.clearTimeout(timer);
+    };
+  }, [activeRunId, loading]);
+
+  useEffect(() => {
+    if (!activeRunId || !loading) return;
+    let cancelled = false;
+    const stop = subscribeRuntimeEvents(activeRunId, (event) => {
+      if (event.eventType !== "feature" || cancelled) return;
+      void fetchRuntimeDetail(activeRunId)
+        .then((detail) => {
+          if (!cancelled) setRuntimeDetail(detail);
+        })
+        .catch(() => undefined);
+    });
+    return () => {
+      cancelled = true;
+      stop();
     };
   }, [activeRunId, loading]);
 
@@ -1368,6 +1437,23 @@ export function ForecastPage() {
         selectedModels,
         modelParameters: Object.fromEntries(selectedModels.map((modelId) => [modelId, modelParameters[modelId] ?? {}])),
         featureConfig,
+        cleaningConfig: {
+          preset: cleaningPreset,
+          sortByTime: true,
+          invalidTimeStrategy,
+          trimStrings: true,
+          normalizeThousandsSeparators: true,
+          missingValueStrategy,
+          interpolationLimit,
+          fillMissingTimeSteps,
+          duplicateTimeStrategy,
+          outlierStrategy,
+          outlierIqrMultiplier,
+          hampelWindow,
+          hampelSigma
+        },
+        covariateConfigs: covariateColumns.map((column) => covariateConfigs[column] ?? { column, type: "static", unknownFutureAction: "analysis_only", forecastMode: "auto", manualModelId: null, missingValueStrategy: "ffill" }),
+        holidayConfig,
         missingValueStrategy,
         fillMissingTimeSteps,
         duplicateTimeStrategy,
@@ -1555,12 +1641,18 @@ export function ForecastPage() {
                           <input
                             type="checkbox"
                             checked={selected}
-                            onChange={(event) =>
+                            onChange={(event) => {
                               setCovariateColumns((current) => {
                                 if (!event.target.checked) return current.filter((item) => item !== column.name);
                                 return current.includes(column.name) ? current : [...current, column.name];
-                              })
-                            }
+                              });
+                              if (event.target.checked) {
+                                setCovariateConfigs((current) => current[column.name] ? current : {
+                                  ...current,
+                                  [column.name]: { column: column.name, type: "static", unknownFutureAction: "analysis_only", forecastMode: "auto", manualModelId: null, missingValueStrategy: "ffill" }
+                                });
+                              }
+                            }}
                           />
                           <span className="min-w-0 flex-1 truncate">{column.name}</span>
                           <Badge tone={column.inferredType === "boolean" ? "info" : "good"}>{column.inferredType}</Badge>
@@ -1573,52 +1665,106 @@ export function ForecastPage() {
                   <p className="text-xs text-slate-500 dark:text-slate-400">已选择 {covariateColumns.length} 个协变量。当前同一时间桶内多行协变量会按均值对齐。</p>
                 </div>
               </div>
-              <div className="mt-5 border-t border-slate-200 pt-5 dark:border-white/10">
-                <div className="mb-3">
+              <div className="mt-5 space-y-5 border-t border-slate-200 pt-5 dark:border-white/10">
+                <div>
                   <div className="text-sm font-semibold text-slate-900 dark:text-white">基础数据清洁</div>
-                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">先清理时间和目标值，再聚合、补齐时间缺口并检测异常值。</p>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">先选择预设，再按需要调整时间、缺失值、重复值、异常值和协变量策略。</p>
+                </div>
+                <div className="grid gap-3 md:grid-cols-3">
+                  {([
+                    ["conservative", "保守", "删除缺失值，不补时间缺口，仅检测异常"],
+                    ["standard", "标准", "时间插值最多 3 点，仅检测异常"],
+                    ["strict", "严格", "时间插值最多 7 点，Hampel 替换异常"]
+                  ] as const).map(([id, label, detail]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => {
+                        const preset = cleaningPresets[id];
+                        setCleaningPreset(id);
+                        setMissingValueStrategy(preset.missingValueStrategy ?? "drop");
+                        setInterpolationLimit(preset.interpolationLimit ?? null);
+                        setFillMissingTimeSteps(Boolean(preset.fillMissingTimeSteps));
+                        setOutlierStrategy(preset.outlierStrategy ?? "none");
+                      }}
+                      className={`rounded-xl border p-3 text-left transition ${cleaningPreset === id ? "border-indigo-400 bg-indigo-50 ring-1 ring-indigo-300 dark:bg-indigo-400/10" : "border-slate-200 dark:border-white/10"}`}
+                    >
+                      <div className="font-semibold text-slate-900 dark:text-white">{label}</div>
+                      <div className="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">{detail}</div>
+                    </button>
+                  ))}
                 </div>
                 <div className="grid gap-4 md:grid-cols-2">
                   <label className="space-y-2">
                     <span className="text-sm font-medium text-slate-700 dark:text-slate-200">缺失值处理</span>
-                    <select className={controls.input} value={missingValueStrategy} onChange={(event) => setMissingValueStrategy(event.target.value as ForecastRunRequest["missingValueStrategy"])}>
-                      <option value="drop">删除缺失值（保守）</option>
-                      <option value="interpolate">线性插值</option>
-                      <option value="ffill">前向填充</option>
-                      <option value="zero">填充为 0</option>
+                    <select className={controls.input} value={missingValueStrategy} onChange={(event) => { setCleaningPreset("custom"); setMissingValueStrategy(event.target.value as ForecastRunRequest["missingValueStrategy"]); }}>
+                      <option value="drop">删除缺失值</option><option value="zero">填充为 0</option><option value="ffill">前向填充</option><option value="bfill">后向填充</option><option value="interpolate">线性插值</option><option value="time">按时间插值</option><option value="median">中位数填充</option>
                     </select>
                   </label>
                   {dataMode === "aggregated" ? (
                     <label className="space-y-2">
                       <span className="text-sm font-medium text-slate-700 dark:text-slate-200">重复时间处理</span>
-                      <select className={controls.input} value={duplicateTimeStrategy} onChange={(event) => setDuplicateTimeStrategy(event.target.value as ForecastRunRequest["duplicateTimeStrategy"])}>
-                        <option value="mean">取平均值</option>
-                        <option value="sum">求和</option>
-                        <option value="first">保留第一条</option>
-                        <option value="last">保留最后一条</option>
+                      <select className={controls.input} value={duplicateTimeStrategy} onChange={(event) => { setCleaningPreset("custom"); setDuplicateTimeStrategy(event.target.value as ForecastRunRequest["duplicateTimeStrategy"]); }}>
+                        <option value="mean">取平均值</option><option value="sum">求和</option><option value="first">保留第一条</option><option value="last">保留最后一条</option>
                       </select>
                     </label>
                   ) : null}
                   <label className="space-y-2">
                     <span className="text-sm font-medium text-slate-700 dark:text-slate-200">异常值处理</span>
-                    <select className={controls.input} value={outlierStrategy} onChange={(event) => setOutlierStrategy(event.target.value as ForecastRunRequest["outlierStrategy"])}>
-                      <option value="none">仅检测，不修改（推荐）</option>
-                      <option value="clip_iqr">按 IQR 边界截尾</option>
+                    <select className={controls.input} value={outlierStrategy} onChange={(event) => { setCleaningPreset("custom"); setOutlierStrategy(event.target.value as ForecastRunRequest["outlierStrategy"]); }}>
+                      <option value="none">仅检测，不修改</option><option value="clip_iqr">按 IQR 边界截尾</option><option value="hampel">Hampel 中位数替换</option>
                     </select>
                   </label>
-                  {outlierStrategy === "clip_iqr" ? (
-                    <label className="space-y-2">
-                      <span className="text-sm font-medium text-slate-700 dark:text-slate-200">IQR 倍数</span>
-                      <input className={controls.input} type="number" min={1} max={5} step={0.1} value={outlierIqrMultiplier} onChange={(event) => setOutlierIqrMultiplier(Number(event.target.value))} />
-                    </label>
-                  ) : null}
                   <label className="flex items-center gap-3 text-sm text-slate-700 dark:text-slate-200">
-                    <input type="checkbox" checked={fillMissingTimeSteps} onChange={(event) => setFillMissingTimeSteps(event.target.checked)} />
-                    补齐缺失时间点
+                    <input type="checkbox" checked={fillMissingTimeSteps} onChange={(event) => { setCleaningPreset("custom"); setFillMissingTimeSteps(event.target.checked); }} />补齐缺失时间点
                   </label>
                 </div>
-              </div>
-            </SectionCard>
+                <button type="button" className={controls.secondaryButton} onClick={() => setAdvancedCleaning((value) => !value)} aria-expanded={advancedCleaning}>
+                  {advancedCleaning ? "收起高级清洗" : "展开高级清洗"}
+                </button>
+                {advancedCleaning ? (
+                  <div className="grid gap-4 rounded-xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2 xl:grid-cols-4 dark:border-white/10 dark:bg-[#0b1020]">
+                    <label className="space-y-2"><span className="text-sm">无效时间</span><select className={controls.input} value={invalidTimeStrategy} onChange={(event) => { setCleaningPreset("custom"); setInvalidTimeStrategy(event.target.value as CleaningConfig["invalidTimeStrategy"]); }}><option value="drop">删除并告警</option><option value="error">立即报错</option></select></label>
+                    <label className="space-y-2"><span className="text-sm">最大连续插值点</span><input className={controls.input} type="number" min={1} max={365} value={interpolationLimit ?? ""} onChange={(event) => { setCleaningPreset("custom"); setInterpolationLimit(event.target.value ? Number(event.target.value) : null); }} /></label>
+                    {outlierStrategy === "clip_iqr" ? <label className="space-y-2"><span className="text-sm">IQR 倍数</span><input className={controls.input} type="number" min={1} max={5} step={0.1} value={outlierIqrMultiplier} onChange={(event) => setOutlierIqrMultiplier(Number(event.target.value))} /></label> : null}
+                    {outlierStrategy === "hampel" ? <><label className="space-y-2"><span className="text-sm">Hampel 窗口</span><input className={controls.input} type="number" min={3} max={101} step={2} value={hampelWindow} onChange={(event) => setHampelWindow(Number(event.target.value))} /></label><label className="space-y-2"><span className="text-sm">Hampel 阈值</span><input className={controls.input} type="number" min={1} max={10} step={0.5} value={hampelSigma} onChange={(event) => setHampelSigma(Number(event.target.value))} /></label></> : null}
+                    <div className="rounded-lg bg-white p-3 text-xs leading-6 text-slate-500 dark:bg-[#151b2e] dark:text-slate-300">固定启用：按时间排序、修剪首尾空白、规范化千分位。</div>
+                  </div>
+                ) : null}
+
+                <div className="rounded-xl border border-slate-200 p-4 dark:border-white/10">
+                  <div className="font-semibold text-slate-900 dark:text-white">协变量处理方式</div>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">未来未知协变量不会读取测试集真实未来值；选择“每个主模型自行预测”会增加运行时间，并可能因模型参数不适配而单独失败。</p>
+                  <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                    {covariateColumns.map((column) => {
+                      const config = covariateConfigs[column] ?? { column, type: "static", unknownFutureAction: "analysis_only", forecastMode: "auto", manualModelId: null, missingValueStrategy: "ffill" };
+                      const update = (patch: Partial<CovariateConfig>) => setCovariateConfigs((current) => ({ ...current, [column]: { ...config, ...patch } }));
+                      return (
+                        <div key={column} className="rounded-xl bg-slate-50 p-3 dark:bg-[#0b1020]">
+                          <div className="font-medium text-slate-900 dark:text-white">{column}</div>
+                          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                            <label className="space-y-1"><span className="text-xs text-slate-500">类型</span><select className={controls.input} value={config.type} onChange={(event) => update({ type: event.target.value as CovariateConfig["type"] })}><option value="static">静态</option><option value="known_future">未来已知</option><option value="unknown_future">未来未知</option></select></label>
+                            <label className="space-y-1"><span className="text-xs text-slate-500">缺失值</span><select className={controls.input} value={config.missingValueStrategy} onChange={(event) => update({ missingValueStrategy: event.target.value as CovariateConfig["missingValueStrategy"] })}><option value="ffill">前向填充</option><option value="bfill">后向填充</option><option value="interpolate">线性插值</option><option value="time">按时间插值</option><option value="median">中位数</option><option value="zero">零值</option></select></label>
+                            {config.type === "unknown_future" ? <label className="space-y-1"><span className="text-xs text-slate-500">用途</span><select className={controls.input} value={config.unknownFutureAction} onChange={(event) => update({ unknownFutureAction: event.target.value as CovariateConfig["unknownFutureAction"] })}><option value="analysis_only">仅分析，模型前丢弃</option><option value="forecast">先预测再使用</option></select></label> : null}
+                            {config.type === "unknown_future" && config.unknownFutureAction === "forecast" ? <label className="space-y-1"><span className="text-xs text-slate-500">预测方式</span><select className={controls.input} value={config.forecastMode} onChange={(event) => update({ forecastMode: event.target.value as CovariateConfig["forecastMode"] })}><option value="auto">自动轻量模型</option><option value="manual">手动指定</option><option value="per_primary_model">每个主模型自行预测</option></select></label> : null}
+                            {config.forecastMode === "manual" && config.unknownFutureAction === "forecast" ? <label className="space-y-1"><span className="text-xs text-slate-500">辅助模型</span><select className={controls.input} value={config.manualModelId ?? "naive"} onChange={(event) => update({ manualModelId: event.target.value as CovariateConfig["manualModelId"] })}><option value="naive">Naive</option><option value="seasonal_naive">Seasonal Naive</option><option value="arima">ARIMA</option><option value="ets">ETS</option></select></label> : null}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-slate-200 p-4 dark:border-white/10">
+                  <div className="flex flex-wrap items-center justify-between gap-3"><div><div className="font-semibold text-slate-900 dark:text-white">节假日生成器</div><div className="mt-1 text-xs text-slate-500">默认中国法定节假日，可切换国家和地区。</div></div><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={holidayConfig.enabled} onChange={(event) => setHolidayConfig((current) => ({ ...current, enabled: event.target.checked }))} />启用</label></div>
+                  {holidayConfig.enabled ? <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                    <label className="space-y-1"><span className="text-xs text-slate-500">国家/地区</span><select className={controls.input} value={holidayConfig.countryCode} onChange={(event) => setHolidayConfig((current) => ({ ...current, countryCode: event.target.value, subdivision: null }))}>{(holidayCatalog?.countries ?? [{ code: "CN", name: "中国", subdivisions: [] }]).map((country) => <option key={country.code} value={country.code}>{country.name} ({country.code})</option>)}</select></label>
+                    <label className="space-y-1"><span className="text-xs text-slate-500">行政区</span><select className={controls.input} value={holidayConfig.subdivision ?? ""} onChange={(event) => setHolidayConfig((current) => ({ ...current, subdivision: event.target.value || null }))}><option value="">全国</option>{(holidayCatalog?.countries.find((country) => country.code === holidayConfig.countryCode)?.subdivisions ?? []).map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+                    <label className="space-y-1"><span className="text-xs text-slate-500">节日前后窗口</span><input className={controls.input} type="number" min={0} max={30} value={holidayConfig.windowDays} onChange={(event) => setHolidayConfig((current) => ({ ...current, windowDays: Number(event.target.value) }))} /></label>
+                    <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={holidayConfig.observed} onChange={(event) => setHolidayConfig((current) => ({ ...current, observed: event.target.checked }))} />包含调休/补休日历</label>
+                  </div> : null}
+                </div>
+              </div>            </SectionCard>
 
             <SectionCard
               title="Step 3-5：模型与回测"
@@ -1657,11 +1803,12 @@ export function ForecastPage() {
                       生效模型：{selectedFeatureAwareModels.length ? selectedFeatureAwareModels.map((model) => model.name).join(" / ") : "当前未选中"}
                     </div>
                   </div>
-                  <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                  <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
                     {[
                       ["lagFeatures", "Lag 特征", "lag_1 / lag_7 等历史滞后值"],
                       ["rollingFeatures", "滚动统计", "rolling mean / std"],
                       ["calendarFeatures", "日历/趋势", "time index、weekday、month"],
+                      ["holidayFeatures", "节假日特征", "国家日历、节日窗口与相邻天数"],
                       ["covariates", "用户协变量", "使用左侧勾选的协变量列"]
                     ].map(([key, label, description]) => (
                       <label key={key} className="rounded-2xl border border-slate-200 p-3 text-sm dark:border-white/10">

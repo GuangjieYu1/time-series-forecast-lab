@@ -6,7 +6,9 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from app.core.constants import BENCHMARK_RESULT_SCHEMA_VERSION
 from app.main import app
+from benchmarks.schemas import BenchmarkSummary
 from benchmarks.benchmark_cases import build_cases
 from benchmarks.benchmark_metrics import elapsed_seconds, max_rss_mb, now
 from benchmarks.benchmark_report import write_summary
@@ -140,15 +142,22 @@ def main() -> None:
             }
         )
 
+    total_cases = len(results)
+    successful_runs = sum(1 for result in results if result["runStatus"] == "200")
+    failed_runs = total_cases - successful_runs
     summary = {
+        "schemaVersion": BENCHMARK_RESULT_SCHEMA_VERSION,
         "profile": args.profile,
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "seconds": elapsed_seconds(started),
-        "totalCases": len(results),
-        "successfulRuns": sum(1 for result in results if result["runStatus"] == "200"),
-        "failedRuns": sum(1 for result in results if result["runStatus"] != "200"),
+        "totalCases": total_cases,
+        "successfulRuns": successful_runs,
+        "failedRuns": failed_runs,
+        "successRate": successful_runs / total_cases if total_cases else 0.0,
+        "failureRate": failed_runs / total_cases if total_cases else 0.0,
         "cases": results,
     }
+    summary = BenchmarkSummary.model_validate(summary).model_dump(mode="json")
     json_path, md_path = write_summary(backend_root, summary)
     print(f"benchmark summary written to {json_path}")
     print(f"benchmark report written to {md_path}")

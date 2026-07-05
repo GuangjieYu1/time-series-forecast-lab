@@ -5,7 +5,7 @@ from threading import active_count
 from uuid import uuid4
 
 from app.core.gpu import get_memory_info
-from app.schemas import RuntimeLogEntry, RuntimeResourceSnapshot, RuntimeStageId, RuntimeTimelineEntry
+from app.schemas import RuntimeEvent, RuntimeLogEntry, RuntimeResourceSnapshot, RuntimeStageId, RuntimeTimelineEntry
 from app.services.runtime_state_machine import stage_label
 
 
@@ -69,6 +69,7 @@ def make_timeline_entry(
     *,
     stage: RuntimeStageId,
     status: str,
+    level: str = "info",
     message: str | None = None,
     timestamp: datetime | None = None,
     model_id: str | None = None,
@@ -82,6 +83,7 @@ def make_timeline_entry(
         stage=stage,
         label=stage_label(stage),
         status=status,
+        level=level,
         message=message,
         modelId=model_id,
         modelName=model_name,
@@ -89,6 +91,39 @@ def make_timeline_entry(
         overallPercent=overall_percent,
     )
 
+
+def make_runtime_event(
+    *,
+    run_id: str,
+    sequence: int,
+    event_type: str,
+    stage: RuntimeStageId,
+    status: str,
+    message: str,
+    timestamp: datetime | None = None,
+    model_id: str | None = None,
+    target_column: str | None = None,
+    progress_percent: int | None = None,
+    metric_label: str | None = None,
+    metric_value: float | None = None,
+    payload: dict | None = None,
+) -> RuntimeEvent:
+    return RuntimeEvent(
+        id=f"event_{uuid4().hex[:12]}",
+        sequence=sequence,
+        runId=run_id,
+        timestamp=timestamp or utc_now(),
+        eventType=event_type,
+        stage=stage,
+        status=status,
+        message=message,
+        modelId=model_id,
+        targetColumn=target_column,
+        progressPercent=progress_percent,
+        metricLabel=metric_label,
+        metricValue=metric_value,
+        payload=payload or {},
+    )
 
 def elapsed_seconds(started_at: datetime, now: datetime | None = None) -> float:
     current = now or utc_now()

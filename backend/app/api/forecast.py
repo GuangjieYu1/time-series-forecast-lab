@@ -20,12 +20,14 @@ from app.core.constants import APP_VERSION
 from app.db.models import ExperimentRecord
 from app.db.session import get_db
 from app.schemas import (
+    CovariateConfig,
     ExperimentManifest,
     FinalForecastRequest,
     FinalForecastResponse,
     ForecastProgress,
     ForecastRunRequest,
     ForecastRunResponse,
+    HolidayConfig,
     ModelProgress,
     RuntimeEstimateRequest,
     TargetResult,
@@ -33,6 +35,7 @@ from app.schemas import (
 from app.services.backtest_runner import ModelProgressEvent, run_holdout_backtest
 from app.services.data_health import build_data_health_report
 from app.services.file_parser import read_sheet_dataframe
+from app.services.feature_factory import build_feature_factory
 from app.services.forecast_runner import run_final_forecast
 from app.services.model_registry import MODEL_CAPABILITIES, MODEL_FACTORIES
 from app.services.progress_tracker import progress_tracker
@@ -129,6 +132,7 @@ def _dump(value) -> str:
 
 def _runtime_stage_for_model_event(event: ModelProgressEvent) -> str:
     return {
+        "covariates": "feature_engineering",
         "tuning": "auto_tuning",
         "fitting": "training",
         "predicting": "forecast",
@@ -291,8 +295,9 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
         target_contexts: list[dict] = []
         model_count = len(request.selectedModels)
         total_model_runs = max(len(request.targetColumns) * model_count, 1)
-        stage_fraction = {"fitting": 0.4, "predicting": 0.7, "scoring": 0.9, "success": 1.0, "failed": 1.0}
+        stage_fraction = {"covariates": 0.03, "fitting": 0.4, "predicting": 0.7, "scoring": 0.9, "success": 1.0, "failed": 1.0}
         stage_status = {
+            "covariates": ("queued", 5, "正在准备未来协变量。"),
             "tuning": ("tuning", None, "正在自动优化参数。"),
             "fitting": ("fitting", 10, "正在拟合训练集。"),
             "predicting": ("predicting", 55, "拟合完成，正在预测测试集。"),
@@ -316,14 +321,32 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
                 current_target=target_column,
             )
             build = build_time_series(df, request, target_column)
-            runtime_tracker.set_feature_pipeline(
-                run_id,
-                build_feature_pipeline_target(
-                    target_profile=build.data_profile,
-                    selected_model_ids=request.selectedModels,
-                    warnings=build.series.diagnostics.warnings,
-                ),
+            pipeline_target = build_feature_pipeline_target(
+                target_profile=build.data_profile,
+                selected_model_ids=request.selectedModels,
+                warnings=build.series.diagnostics.warnings,
             )
+            train_points = build.series.points[:-request.testSize]
+            train_covariates = build.series.covariateRows[:-request.testSize] if build.series.covariateRows else []
+            runtime_tracker.set_overall(
+                run_id,
+                stage="feature_engineering",
+                message=f"正在为目标列 {target_column} 构建共享 Feature Factory。",
+                overall_percent=max(9, 11 + int((target_index * model_count / total_model_runs) * 80)),
+                current_target=target_column,
+            )
+            feature_result = build_feature_factory(
+                pipeline=pipeline_target,
+                times=[point.time for point in train_points],
+                values=[point.value for point in train_points],
+                frequency=build.series.frequency,
+                covariates=train_covariates,
+                feature_config=request.featureConfig.model_dump(),
+                selected_model_ids=request.selectedModels,
+                holiday_config=request.holidayConfig,
+                progress_callback=lambda snapshot: runtime_tracker.set_feature_pipeline(run_id, snapshot),
+            )
+            runtime_tracker.set_feature_pipeline(run_id, feature_result.pipeline)
             runtime_tracker.set_overall(
                 run_id,
                 stage="feature_selection",
@@ -414,6 +437,8 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
                 run_profile=request.runProfile,
                 random_seed=request.randomSeed,
                 feature_config=request.featureConfig.model_dump(),
+                prepared_features=feature_result.prepared,
+                feature_factory_error=feature_result.error,
                 progress_callback=report_model_progress,
             )
             data_health = build_data_health_report(
@@ -472,6 +497,7 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
         experiment_id = f"exp_{uuid.uuid4().hex[:12]}"
         name = request.experimentName or f"{metadata['fileName']} - {first.targetColumn} - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}"
         best = next((item for item in first.rankedModels if item.rank == 1 and item.metrics), None)
+        runtime_snapshot = runtime_tracker.get(run_id)
         manifest = build_manifest(
             experiment_id=experiment_id,
             experiment_name=name,
@@ -481,6 +507,7 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
             target_results=target_results,
             target_contexts=target_contexts,
             repo_root=get_settings().backend_dir.parent,
+            feature_pipelines=runtime_snapshot.featurePipeline if runtime_snapshot else [],
         )
         record = ExperimentRecord(
             id=experiment_id,
@@ -610,18 +637,35 @@ def final_forecast(request: FinalForecastRequest, db: Session = Depends(get_db))
             device=str((saved_manifest.get("environment") or {}).get("device") or get_device()),
             parameter_strategy=str(saved_config.get("parameterStrategy") or "default"),
         )
-        runtime_tracker.set_feature_pipeline(
-            run_id,
-            build_feature_pipeline_target(
-                target_profile=first_profile,
-                selected_model_ids=[request.finalModelId],
-                warnings=list(first_profile.get("warnings") or []),
-            ),
-        )
         covariate_history = [
             {key: float(value) for key, value in row.items() if key != "time" and value is not None}
             for row in first_profile.get("covariateHistory", [])
         ]
+        known_future_rows = [
+            {key: float(value) for key, value in row.items() if key != "time" and value is not None}
+            for row in first_profile.get("futureCovariates", [])
+        ]
+        covariate_configs = [CovariateConfig.model_validate(item) for item in first_profile.get("covariateConfigs", [])]
+        holiday_config = HolidayConfig.model_validate(first_profile.get("holidayConfig") or {})
+        final_pipeline = build_feature_pipeline_target(
+            target_profile=first_profile,
+            selected_model_ids=[request.finalModelId],
+            warnings=list(first_profile.get("warnings") or []),
+        )
+        final_feature_result = build_feature_factory(
+            pipeline=final_pipeline,
+            times=[datetime.fromisoformat(point["time"]) for point in history],
+            values=[float(point["value"]) for point in history],
+            frequency=first_profile["detectedFrequency"],
+            covariates=covariate_history or None,
+            feature_config=saved_config.get("featureConfig"),
+            selected_model_ids=[request.finalModelId],
+            holiday_config=holiday_config,
+            progress_callback=lambda snapshot: runtime_tracker.set_feature_pipeline(run_id, snapshot),
+        )
+        runtime_tracker.set_feature_pipeline(run_id, final_feature_result.pipeline)
+        if final_feature_result.error and request.finalModelId in {"xgboost", "lightgbm", "random_forest"}:
+            raise AppError(f"Feature Factory failed: {final_feature_result.error}", code="FEATURE_FACTORY_FAILED")
 
         def report_final_progress(stage: str):
             if stage == "fitting":
@@ -685,7 +729,11 @@ def final_forecast(request: FinalForecastRequest, db: Session = Depends(get_db))
             history=history,
             model_parameters=_selected_model_parameters_for_final_forecast(record, request.finalModelId, saved_config),
             covariate_history=covariate_history or None,
+            known_future_rows=known_future_rows or None,
+            covariate_configs=covariate_configs,
+            holiday_config=holiday_config,
             feature_config=saved_config.get("featureConfig"),
+            prepared_features=final_feature_result.prepared,
             progress_callback=report_final_progress,
         )
         progress_tracker.update_model(

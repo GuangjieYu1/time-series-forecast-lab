@@ -54,6 +54,18 @@ export interface DeviceInfo {
   device: string;
   memoryTotalMb: number | null;
   memoryAvailableMb: number | null;
+  accelerator: {
+    hardwareDetected: boolean;
+    runtimeAvailable: boolean;
+    type: "nvidia" | "mps" | null;
+    name: string | null;
+    memoryTotalMb: number | null;
+    driverVersion: string | null;
+    frameworkVersion: string | null;
+    frameworkBuild: string | null;
+    cudaRuntime: string | null;
+    reason: string | null;
+  };
 }
 
 export interface MetricValues {
@@ -194,7 +206,49 @@ export interface FeatureConfig {
   lagFeatures: boolean;
   rollingFeatures: boolean;
   calendarFeatures: boolean;
+  holidayFeatures: boolean;
   covariates: boolean;
+}
+
+export type MissingValueStrategy = "drop" | "zero" | "ffill" | "bfill" | "interpolate" | "time" | "median";
+export type OutlierStrategy = "none" | "clip_iqr" | "hampel";
+
+export interface CleaningConfig {
+  preset: "conservative" | "standard" | "strict" | "custom";
+  sortByTime: boolean;
+  invalidTimeStrategy: "drop" | "error";
+  trimStrings: boolean;
+  normalizeThousandsSeparators: boolean;
+  missingValueStrategy: MissingValueStrategy;
+  interpolationLimit: number | null;
+  fillMissingTimeSteps: boolean;
+  duplicateTimeStrategy: "mean" | "sum" | "first" | "last";
+  outlierStrategy: OutlierStrategy;
+  outlierIqrMultiplier: number;
+  hampelWindow: number;
+  hampelSigma: number;
+}
+
+export interface HolidayConfig {
+  enabled: boolean;
+  countryCode: string;
+  subdivision: string | null;
+  observed: boolean;
+  windowDays: number;
+}
+
+export interface CovariateConfig {
+  column: string;
+  type: "known_future" | "static" | "unknown_future";
+  unknownFutureAction: "analysis_only" | "forecast";
+  forecastMode: "auto" | "manual" | "per_primary_model";
+  manualModelId: "naive" | "seasonal_naive" | "arima" | "ets" | null;
+  missingValueStrategy: MissingValueStrategy;
+}
+
+export interface HolidayCalendarCatalog {
+  defaultCountryCode: string;
+  countries: Array<{ code: string; name: string; subdivisions: string[] }>;
 }
 
 export interface ForecastRunRequest {
@@ -215,10 +269,13 @@ export interface ForecastRunRequest {
   selectedModels: string[];
   modelParameters: Record<string, Record<string, number | string | boolean>>;
   featureConfig: FeatureConfig;
-  missingValueStrategy: "drop" | "zero" | "ffill" | "interpolate";
+  cleaningConfig: CleaningConfig;
+  covariateConfigs: CovariateConfig[];
+  holidayConfig: HolidayConfig;
+  missingValueStrategy: MissingValueStrategy;
   fillMissingTimeSteps: boolean;
   duplicateTimeStrategy: "mean" | "sum" | "first" | "last";
-  outlierStrategy: "none" | "clip_iqr";
+  outlierStrategy: OutlierStrategy;
   outlierIqrMultiplier: number;
   trimStrings: boolean;
   runProfile: "fast" | "balanced" | "accurate";
@@ -233,6 +290,8 @@ export interface RuntimeEstimateRequest {
   totalColumnCount: number;
   targetCount: number;
   covariateCount: number;
+  unknownFutureForecastCount: number;
+  perPrimaryModelCovariateCount: number;
   featureConfig: FeatureConfig;
   runProfile: "fast" | "balanced" | "accurate";
   parameterStrategy: "default" | "auto";
@@ -311,6 +370,7 @@ export type RuntimeStageId =
   | "failed";
 
 export type RuntimeStepStatus = "pending" | "running" | "completed" | "failed";
+export type FeatureStepStatus = RuntimeStepStatus | "skipped";
 
 export interface RuntimeStateStep {
   id: RuntimeStageId;
@@ -351,11 +411,30 @@ export interface RuntimeTimelineEntry {
   stage: RuntimeStageId;
   label: string;
   status: RuntimeStepStatus;
+  level: "info" | "warn" | "error" | "success";
   message: string | null;
   modelId: string | null;
   modelName: string | null;
   targetColumn: string | null;
   overallPercent: number | null;
+}
+
+export interface RuntimeEvent {
+  schemaVersion: "0.4";
+  id: string;
+  sequence: number;
+  runId: string;
+  timestamp: string;
+  eventType: "stage" | "model" | "resource" | "feature" | "optimization" | "log" | "terminal";
+  stage: RuntimeStageId;
+  status: RuntimeStepStatus;
+  message: string;
+  modelId: string | null;
+  targetColumn: string | null;
+  progressPercent: number | null;
+  metricLabel: string | null;
+  metricValue: number | null;
+  payload: Record<string, unknown>;
 }
 
 export interface RuntimeFeatureFamily {
@@ -379,12 +458,12 @@ export interface RuntimeFeatureNode {
   importance: number | null;
   shap: number | null;
   modelIds: string[];
-  featureType: "generated" | "known_future_covariate" | "static_covariate";
+  featureType: "generated" | "known_future_covariate" | "static_covariate" | "unknown_future_covariate";
   generator: string;
   machineId: string | null;
   machineLabel: string | null;
-  forecastStrategy: "generated" | "calendar" | "repeat_last_known" | "use_test_timeline";
-  backtestStrategy: "generated" | "calendar" | "repeat_last_known" | "use_test_timeline";
+  forecastStrategy: "generated" | "calendar" | "use_future_rows" | "repeat_last_known" | "use_test_timeline" | "forecast_auxiliary" | "drop_for_leakage";
+  backtestStrategy: "generated" | "calendar" | "use_future_rows" | "repeat_last_known" | "use_test_timeline" | "forecast_auxiliary" | "drop_for_leakage";
   usedDuring: Array<"training" | "backtest" | "forecast">;
   droppedReason: string | null;
   lifecycleTrail: string[];
@@ -405,7 +484,7 @@ export interface RuntimeFeatureMachine {
   label: string;
   kind: "generator" | "loader";
   enabled: boolean;
-  status: RuntimeStepStatus;
+  status: FeatureStepStatus;
   inputColumns: string[];
   generatedFeatures: string[];
   summary: string;
@@ -415,11 +494,13 @@ export interface RuntimeFeatureMachine {
 
 export interface RuntimeCovariateDescriptor {
   name: string;
-  type: "known_future" | "static";
+  type: "known_future" | "static" | "unknown_future";
   generator: string;
-  forecastStrategy: "calendar" | "repeat_last_known";
-  backtestStrategy: "use_test_timeline" | "repeat_last_known";
+  forecastStrategy: "calendar" | "use_future_rows" | "repeat_last_known" | "forecast_auxiliary" | "drop_for_leakage";
+  backtestStrategy: "use_test_timeline" | "repeat_last_known" | "forecast_auxiliary" | "drop_for_leakage";
   usedDuring: Array<"training" | "backtest" | "forecast">;
+  forecastMode: "auto" | "manual" | "per_primary_model" | null;
+  forecastModelId: string | null;
   note: string | null;
 }
 
@@ -436,19 +517,69 @@ export interface RuntimeFeatureSelectionSummary {
   items: RuntimeFeatureSelectionItem[];
 }
 
+export interface RuntimeFeatureColumnProfile {
+  name: string;
+  dtype: string;
+  nonNullCount: number;
+  nullCount: number;
+  minimum: number | null;
+  maximum: number | null;
+  mean: number | null;
+  std: number | null;
+}
+
+export interface RuntimeFeatureDataProfile {
+  rowCount: number;
+  columnCount: number;
+  columns: string[];
+  missingValueCount: number;
+  invalidValueCount: number;
+  memoryBytes: number;
+  columnProfiles: RuntimeFeatureColumnProfile[];
+}
+
+export interface RuntimeFeatureVisualization {
+  kind: string;
+  timeStart: string | null;
+  timeEnd: string | null;
+  markers: Array<{ time: string; label: string; kind: string }>;
+  sampleValues: number[];
+  sampleLabels: string[];
+  windowSize: number | null;
+}
+
 export interface RuntimeFeaturePipelineStep {
-  id: RuntimeStageId;
+  id: string;
+  sequence: number;
   label: string;
-  status: RuntimeStepStatus;
+  description: string;
+  machineId: string | null;
+  status: FeatureStepStatus;
+  progressPercent: number;
+  startedAt: string | null;
+  finishedAt: string | null;
   inputSummary: string;
   outputSummary: string;
+  inputProfile: RuntimeFeatureDataProfile | null;
+  outputProfile: RuntimeFeatureDataProfile | null;
+  generatedFeatures: string[];
+  selectedFeatures: string[];
+  droppedFeatures: string[];
+  skipReason: string | null;
+  error: string | null;
   elapsedSeconds: number | null;
   warnings: string[];
+  visualization: RuntimeFeatureVisualization | null;
 }
 
 export interface RuntimeFeaturePipelineTarget {
+  schemaVersion: "0.4";
   targetColumn: string;
   detectedFrequency: string | null;
+  status: FeatureStepStatus;
+  progressPercent: number;
+  currentStepId: string | null;
+  traceMode: "live" | "reconstructed" | "legacy_inferred";
   warnings: string[];
   families: RuntimeFeatureFamily[];
   steps: RuntimeFeaturePipelineStep[];
@@ -530,9 +661,15 @@ export interface RuntimeRunDetail {
   models: RuntimeModelConsole[];
   logs: RuntimeLogEntry[];
   timeline: RuntimeTimelineEntry[];
+  events: RuntimeEvent[];
   featurePipeline: RuntimeFeaturePipelineTarget[];
   optimization: RuntimeOptimizationState[];
   error: string | null;
+}
+
+export interface RuntimeEventsResponse {
+  runId: string;
+  events: RuntimeEvent[];
 }
 
 export interface FeatureFactoryResponse {
@@ -572,12 +709,16 @@ export interface ExperimentDetail extends ExperimentListItem {
 }
 
 export interface ExperimentManifest {
-  schemaVersion: "0.3";
+  schemaVersion: "0.3" | "0.4";
   experimentId: string;
   experimentName: string;
   createdAt: string | null;
   configHash: string;
   sourceFileSha256: string;
+  datasetHash: string | null;
+  featurePipelineVersion: string | null;
+  runtimeEventSchemaVersion: string | null;
+  randomSeed: number | null;
   environment: {
     appVersion: string;
     gitCommit: string | null;
@@ -587,6 +728,7 @@ export interface ExperimentManifest {
     memoryTotalMb: number | null;
     memoryAvailableMb: number | null;
     modelCapabilityVersions: Record<string, unknown> | null;
+    packageVersions: Record<string, string>;
   };
   data: {
     fileName: string;
@@ -599,6 +741,7 @@ export interface ExperimentManifest {
     covariateColumns: string[];
   };
   configuration: Record<string, unknown>;
+  featurePipelines: RuntimeFeaturePipelineTarget[];
   targets: Array<{
     targetColumn: string;
     detectedFrequency: string;

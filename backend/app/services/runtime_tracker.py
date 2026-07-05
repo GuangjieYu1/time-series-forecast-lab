@@ -14,7 +14,14 @@ from app.schemas import (
     RuntimeRunDetail,
 )
 from app.services.model_registry import MODEL_CAPABILITIES
-from app.services.runtime_events import build_resource_snapshot, elapsed_seconds, make_log_entry, make_timeline_entry, utc_now
+from app.services.runtime_events import (
+    build_resource_snapshot,
+    elapsed_seconds,
+    make_log_entry,
+    make_runtime_event,
+    make_timeline_entry,
+    utc_now,
+)
 from app.services.runtime_state_machine import build_state_machine, stage_label, transition_state_machine
 
 
@@ -91,6 +98,18 @@ class RuntimeTracker:
             models=models,
             logs=[make_log_entry(stage="pending", message=message, timestamp=now)],
             timeline=[make_timeline_entry(stage="pending", status="running", message=message, timestamp=now, overall_percent=1)],
+            events=[
+                make_runtime_event(
+                    run_id=run_id,
+                    sequence=1,
+                    event_type="stage",
+                    stage="pending",
+                    status="running",
+                    message=message,
+                    timestamp=now,
+                    progress_percent=1,
+                )
+            ],
             featurePipeline=[],
             optimization=[model.optimization for model in models if model.optimization is not None],
         )
@@ -159,6 +178,38 @@ class RuntimeTracker:
                 targets.append(pipeline_target)
             detail.featurePipeline = targets
             detail.updatedAt = utc_now()
+            summary = pipeline_target.summary
+            active_step = next(
+                (step for step in pipeline_target.steps if step.id == pipeline_target.currentStepId),
+                pipeline_target.steps[-1] if pipeline_target.steps else None,
+            )
+            action = active_step.status if active_step else pipeline_target.status
+            event_status = "failed" if action == "failed" else "running" if action in {"pending", "running"} else "completed"
+            message = (
+                f"{active_step.label}: {action}"
+                if active_step
+                else f"Feature pipeline {pipeline_target.status} for {pipeline_target.targetColumn}."
+            )
+            self._append_event_locked(
+                detail,
+                event_type="feature",
+                stage="feature_engineering",
+                status=event_status,
+                message=message,
+                target_column=pipeline_target.targetColumn,
+                progress_percent=pipeline_target.progressPercent,
+                payload={
+                    "action": action,
+                    "step": active_step.model_dump(mode="json") if active_step else None,
+                    "pipelineStatus": pipeline_target.status,
+                    "pipelineProgressPercent": pipeline_target.progressPercent,
+                    "generatedFeatureCount": summary.generatedFeatureCount if summary else len(pipeline_target.lineage),
+                    "selectedFeatureCount": summary.selectedFeatureCount if summary else 0,
+                    "warningCount": len(pipeline_target.warnings),
+                    "traceMode": pipeline_target.traceMode,
+                    "featurePipelineVersion": pipeline_target.schemaVersion,
+                },
+            )
             return detail.model_copy(deep=True)
 
     def set_estimates(
@@ -329,10 +380,11 @@ class RuntimeTracker:
                 model.tuningSeconds = tuning_seconds if tuning_seconds is not None else model.tuningSeconds
                 model.currentStage = "auto_tuning"
                 models[index] = model
+                optimization_level = "warn" if trial_status in {"failed", "pruned"} else "success" if trial_status == "success" else "info"
                 self._append_log_locked(
                     detail,
                     stage="auto_tuning",
-                    level="info" if trial_status != "failed" else "warn",
+                    level=optimization_level,
                     message=message,
                     model_id=model_id,
                     model_name=model.modelName,
@@ -340,6 +392,17 @@ class RuntimeTracker:
                     metric_label="MAE",
                     metric_value=current_metric,
                     params=params,
+                )
+                self._append_timeline_locked(
+                    detail,
+                    stage="auto_tuning",
+                    status="running",
+                    level=optimization_level,
+                    message=message,
+                    model_id=model_id,
+                    model_name=model.modelName,
+                    target_column=target_column,
+                    overall_percent=detail.overallPercent,
                 )
                 break
             detail.models = models
@@ -425,6 +488,37 @@ class RuntimeTracker:
         detail = self.get(runtime_id)
         return detail.timeline if detail else []
 
+    def _append_event_locked(
+        self,
+        detail: RuntimeRunDetail,
+        *,
+        event_type: str,
+        stage: str,
+        status: str,
+        message: str,
+        model_id: str | None = None,
+        target_column: str | None = None,
+        progress_percent: int | None = None,
+        metric_label: str | None = None,
+        metric_value: float | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        detail.events.append(
+            make_runtime_event(
+                run_id=detail.runId,
+                sequence=len(detail.events) + 1,
+                event_type=event_type,
+                stage=stage,
+                status=status,
+                message=message,
+                model_id=model_id,
+                target_column=target_column,
+                progress_percent=progress_percent,
+                metric_label=metric_label,
+                metric_value=metric_value,
+                payload=payload,
+            )
+        )
     def _append_log_locked(
         self,
         detail: RuntimeRunDetail,
@@ -461,6 +555,21 @@ class RuntimeTracker:
                 params=params,
             )
         )
+        event_type = "optimization" if stage == "auto_tuning" else "model" if model_id else "terminal" if stage in {"finished", "failed"} else "log"
+        event_status = "failed" if level == "error" else "completed" if stage == "finished" else "running"
+        self._append_event_locked(
+            detail,
+            event_type=event_type,
+            stage=stage,
+            status=event_status,
+            message=message,
+            model_id=model_id,
+            target_column=target_column,
+            progress_percent=detail.overallPercent,
+            metric_label=metric_label,
+            metric_value=metric_value,
+            payload=params,
+        )
 
     def _append_timeline_locked(
         self,
@@ -468,6 +577,7 @@ class RuntimeTracker:
         *,
         stage: str,
         status: str,
+        level: str = "info",
         message: str | None = None,
         model_id: str | None = None,
         model_name: str | None = None,
@@ -488,6 +598,7 @@ class RuntimeTracker:
             make_timeline_entry(
                 stage=stage,
                 status=status,
+                level=level,
                 message=message,
                 model_id=model_id,
                 model_name=model_name,

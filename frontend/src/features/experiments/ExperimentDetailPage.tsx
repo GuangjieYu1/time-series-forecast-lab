@@ -5,7 +5,7 @@ import { useLabStore } from "../../app/store";
 import { DataTable } from "../../shared/components/Table";
 import { EmptyState, ErrorBanner, LoadingBlock } from "../../shared/components/Status";
 import { Badge, controls, PageHeader, SectionCard, StatCard, surface, Tabs } from "../../shared/components/Ui";
-import type { ExperimentDetail, ForecastRunResponse, RankedModel } from "../../shared/types/api";
+import type { ExperimentDetail, ForecastRunResponse } from "../../shared/types/api";
 import {
   AbsoluteErrorTimelineChart,
   ActualVsPredictedChart,
@@ -18,6 +18,7 @@ import {
 } from "../visualization/Charts";
 import { ReportPanel } from "../reports/ReportPanel";
 import { DataHealthPanel } from "../forecast/DataHealthPanel";
+import { ModelLeaderboard } from "../forecast/ModelLeaderboard";
 import { FeatureFactoryPanel } from "../runtime/FeatureFactoryPanel";
 import { RuntimeInspectorPanel } from "../runtime/RuntimeInspectorPanel";
 
@@ -63,32 +64,6 @@ function asForecastResult(experiment: ExperimentDetail): ForecastRunResponse {
     targetResults: [],
     manifest: experiment.manifest,
   };
-}
-
-function metricText(value: number | null | undefined) {
-  if (value === null || value === undefined) return "-";
-  return value < 1 ? value.toFixed(4) : value.toFixed(2);
-}
-
-function Leaderboard({ rows, recommendedModelId }: { rows: RankedModel[]; recommendedModelId: string | null }) {
-  return (
-    <DataTable<RankedModel>
-      data={rows}
-      columns={[
-        { header: "排名", cell: ({ row }) => row.original.rank ?? "-" },
-        { header: "模型", cell: ({ row }) => row.original.modelName },
-        { header: "MAE", cell: ({ row }) => metricText(row.original.metrics?.mae) },
-        { header: "RMSE", cell: ({ row }) => metricText(row.original.metrics?.rmse) },
-        { header: "WAPE", cell: ({ row }) => metricText(row.original.metrics?.wape) },
-        { header: "推荐", cell: ({ row }) => (row.original.modelId === recommendedModelId ? <Badge tone="good">推荐模型</Badge> : null) },
-        {
-          header: "状态",
-          cell: ({ row }) =>
-            row.original.status === "success" ? <Badge tone="good">成功</Badge> : <Badge tone="bad">{row.original.error ?? "失败"}</Badge>
-        }
-      ]}
-    />
-  );
 }
 
 export function ExperimentDetailPage() {
@@ -173,8 +148,8 @@ export function ExperimentDetailPage() {
         <StatCard label="创建时间" value={new Date(experiment.createdAt).toLocaleString()} hint="详情不依赖原始文件" />
       </div>
 
-      <div className="grid gap-5 xl:grid-cols-[1fr_340px]">
-        <SectionCard title="历史回放驾驶舱" description="这里使用数据库保存的排行榜、预测点和图表摘要，不重新读取上传文件。">
+      <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
+        <SectionCard className="min-w-0 overflow-hidden" title="历史回放驾驶舱" description="这里使用数据库保存的排行榜、预测点和图表摘要，不重新读取上传文件。">
           <Tabs<DetailTab>
             value={tab}
             onChange={setTab}
@@ -236,7 +211,7 @@ export function ExperimentDetailPage() {
 
             {tab === "metrics" ? (
               <div className="grid gap-5">
-                <Leaderboard rows={experiment.rankedModels} recommendedModelId={experiment.recommendedModelId} />
+                <ModelLeaderboard rows={experiment.rankedModels} recommendedModelId={experiment.recommendedModelId} />
                 <div className={`${surface.chartPanel} p-3`}>
                   <NormalizedMetricChart result={result} />
                 </div>
@@ -269,7 +244,7 @@ export function ExperimentDetailPage() {
           </div>
         </SectionCard>
 
-        <div className="space-y-5">
+        <div className="min-w-0 space-y-5">
           <SectionCard title="推荐结论" description="系统推荐仍以 holdout 测试集 MAE 排名为准。">
             <div className={`${surface.softPanel} p-4`}>
               <div className={`text-sm ${surface.mutedText}`}>最佳模型</div>
@@ -286,44 +261,46 @@ export function ExperimentDetailPage() {
             </pre>
           </SectionCard>
 
-          <SectionCard
-            title="实验可复现"
-            description="配置 hash、源文件 hash 和运行环境都会跟随实验一起保存。"
-            action={
-              <div className="flex flex-wrap gap-2">
-                <button className={controls.secondaryButton} onClick={() => window.open(`/api/experiments/${experiment.experimentId}/manifest/download`, "_blank")}>
-                  下载 Manifest
-                </button>
-                <button className={controls.secondaryButton} onClick={() => void handleCopyHash()}>
-                  {copyState === "done" ? "已复制 Hash" : copyState === "failed" ? "复制失败" : "复制 Hash"}
-                </button>
-                <button className={controls.primaryButton} onClick={() => void handleRerun()}>
-                  重新运行实验
-                </button>
-              </div>
-            }
-          >
-            <div className="grid gap-3 text-sm md:grid-cols-2">
-              {[
-                ["配置 Hash", experiment.configHash ?? "-"],
-                ["源文件 Hash", experiment.sourceFileSha256 ?? "-"],
-                ["随机种子", String((experiment.manifest?.configuration.randomSeed as number | undefined) ?? 42)],
-                ["运行模式", String((experiment.manifest?.configuration.runProfile as string | undefined) ?? "balanced")],
-                ["参数策略", String((experiment.manifest?.configuration.parameterStrategy as string | undefined) ?? "default")],
-                ["应用版本", experiment.appVersion ?? experiment.manifest?.environment.appVersion ?? "-"],
-                ["Git Commit", experiment.gitCommit ?? experiment.manifest?.environment.gitCommit ?? "-"],
-                ["运行设备", experiment.manifest?.environment.device ?? "-"],
-                ["Python 版本", experiment.manifest?.environment.pythonVersion ?? "-"],
-              ].map(([label, value]) => (
-                <div key={label} className="rounded-2xl bg-slate-50 p-3 dark:bg-[#151b2e]">
-                  <div className="text-xs text-slate-500 dark:text-slate-400">{label}</div>
-                  <div className="mt-2 break-all font-medium text-slate-900 dark:text-white">{value}</div>
-                </div>
-              ))}
-            </div>
-          </SectionCard>
+
         </div>
       </div>
+
+      <SectionCard
+        title="实验可复现"
+        description="配置 hash、源文件 hash 和运行环境都会跟随实验一起保存。"
+        action={
+          <div className="flex flex-wrap gap-2">
+            <button className={controls.secondaryButton} onClick={() => window.open(`/api/experiments/${experiment.experimentId}/manifest/download`, "_blank")}>
+              下载 Manifest
+            </button>
+            <button className={controls.secondaryButton} onClick={() => void handleCopyHash()}>
+              {copyState === "done" ? "已复制 Hash" : copyState === "failed" ? "复制失败" : "复制 Hash"}
+            </button>
+            <button className={controls.primaryButton} onClick={() => void handleRerun()}>
+              重新运行实验
+            </button>
+          </div>
+        }
+      >
+        <div className="grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-3">
+          {[
+            ["配置 Hash", experiment.configHash ?? "-"],
+            ["源文件 Hash", experiment.sourceFileSha256 ?? "-"],
+            ["随机种子", String((experiment.manifest?.configuration.randomSeed as number | undefined) ?? 42)],
+            ["运行模式", String((experiment.manifest?.configuration.runProfile as string | undefined) ?? "balanced")],
+            ["参数策略", String((experiment.manifest?.configuration.parameterStrategy as string | undefined) ?? "default")],
+            ["应用版本", experiment.appVersion ?? experiment.manifest?.environment.appVersion ?? "-"],
+            ["Git Commit", experiment.gitCommit ?? experiment.manifest?.environment.gitCommit ?? "-"],
+            ["运行设备", experiment.manifest?.environment.device ?? "-"],
+            ["Python 版本", experiment.manifest?.environment.pythonVersion ?? "-"],
+          ].map(([label, value]) => (
+            <div key={label} className="rounded-2xl bg-slate-50 p-3 dark:bg-[#151b2e]">
+              <div className="text-xs text-slate-500 dark:text-slate-400">{label}</div>
+              <div className="mt-2 break-all font-medium text-slate-900 dark:text-white">{value}</div>
+            </div>
+          ))}
+        </div>
+      </SectionCard>
     </div>
   );
 }

@@ -23,7 +23,8 @@ from app.schemas import (
 )
 from app.services.covariate_flow import describe_covariates
 from app.services.model_registry import MODEL_CAPABILITIES
-from app.services.runtime_events import make_log_entry
+from app.services.holiday_features import HOLIDAY_FEATURE_NAMES
+from app.services.runtime_events import make_log_entry, make_runtime_event
 from app.services.runtime_state_machine import build_state_machine, stage_label, transition_state_machine
 
 
@@ -39,10 +40,51 @@ def _loads(value: str | None, default):
     return json.loads(value)
 
 
+def _with_runtime_events(detail: RuntimeRunDetail) -> RuntimeRunDetail:
+    if detail.events:
+        return detail
+    for log in detail.logs:
+        status = "failed" if log.level == "error" else "completed" if log.stage == "finished" else "running"
+        event_type = "optimization" if log.stage == "auto_tuning" else "model" if log.modelId else "terminal" if log.stage in {"finished", "failed"} else "log"
+        detail.events.append(
+            make_runtime_event(
+                run_id=detail.runId,
+                sequence=len(detail.events) + 1,
+                event_type=event_type,
+                stage=log.stage,
+                status=status,
+                message=log.message,
+                timestamp=log.timestamp,
+                model_id=log.modelId,
+                target_column=log.targetColumn,
+                progress_percent=100 if status == "completed" else None,
+                metric_label=log.metricLabel,
+                metric_value=log.metricValue,
+                payload=log.params,
+            )
+        )
+    if not detail.events:
+        for item in detail.timeline:
+            detail.events.append(
+                make_runtime_event(
+                    run_id=detail.runId,
+                    sequence=len(detail.events) + 1,
+                    event_type="model" if item.modelId else "stage",
+                    stage=item.stage,
+                    status=item.status,
+                    message=item.message or item.label,
+                    timestamp=item.timestamp,
+                    model_id=item.modelId,
+                    target_column=item.targetColumn,
+                    progress_percent=item.overallPercent,
+                )
+            )
+    return detail
+
 def load_runtime_from_record(record: ExperimentRecord) -> RuntimeRunDetail | None:
     if record.runtime_json:
         try:
-            return RuntimeRunDetail.model_validate(_loads(record.runtime_json, {}))
+            return _with_runtime_events(RuntimeRunDetail.model_validate(_loads(record.runtime_json, {})))
         except Exception:
             pass
 
@@ -149,7 +191,7 @@ def load_runtime_from_record(record: ExperimentRecord) -> RuntimeRunDetail | Non
         terminal_status="completed",
     )
 
-    return RuntimeRunDetail(
+    return _with_runtime_events(RuntimeRunDetail(
         runId=record.id,
         experimentId=record.id,
         kind="backtest",
@@ -172,7 +214,7 @@ def load_runtime_from_record(record: ExperimentRecord) -> RuntimeRunDetail | Non
         featurePipeline=feature_pipeline,
         optimization=optimization,
         error=None,
-    )
+    ))
 
 
 def build_feature_pipeline_target(
@@ -290,8 +332,14 @@ def build_feature_pipeline_target(
             warnings=[],
         ),
     ]
+    for step in steps:
+        step.progressPercent = 100
+
     return RuntimeFeaturePipelineTarget(
         targetColumn=target_column,
+        status="completed",
+        progressPercent=100,
+        traceMode="legacy_inferred",
         detectedFrequency=target_profile.get("detectedFrequency"),
         warnings=list(warnings or []),
         families=families,
@@ -438,6 +486,7 @@ def _build_feature_lineage(
                     "lag": "lagFeatures",
                     "rolling": "rollingFeatures",
                     "calendar": "calendarFeatures",
+                    "holiday": "holidayFeatures",
                 }.get(family, ""),
                 False,
             )
@@ -550,6 +599,18 @@ def _build_feature_lineage(
             machine_id="calendar_generator",
             machine_label="Calendar Generator",
         )
+    if feature_config.get("holidayFeatures", True):
+        for name in HOLIDAY_FEATURE_NAMES:
+            append_node(
+                f"{target_column}:holiday:{name}",
+                name,
+                f"holiday_calendar({name})",
+                "holiday",
+                source="Holiday Calendar",
+                generator="Holiday Generator",
+                machine_id="holiday_generator",
+                machine_label="Holiday Generator",
+            )
     if feature_config.get("covariates", True):
         for descriptor in covariates:
             append_node(
@@ -558,7 +619,7 @@ def _build_feature_lineage(
                 f"{descriptor.name}(t)",
                 "covariates",
                 source=descriptor.name,
-                feature_type="known_future_covariate" if descriptor.type == "known_future" else "static_covariate",
+                feature_type=("known_future_covariate" if descriptor.type == "known_future" else "unknown_future_covariate" if descriptor.type == "unknown_future" else "static_covariate"),
                 generator=descriptor.generator,
                 machine_id="covariate_loader",
                 machine_label="Covariate Loader",
@@ -567,6 +628,12 @@ def _build_feature_lineage(
                 used_during=descriptor.usedDuring,
                 dropped_reason=descriptor.note if not selected else None,
             )
+            if descriptor.forecastStrategy == "drop_for_leakage":
+                nodes[-1].lifecycle = "dropped"
+                nodes[-1].selected = False
+                nodes[-1].modelIds = []
+                nodes[-1].droppedReason = descriptor.note or "未来值不可用，已在模型训练前丢弃以避免数据泄漏。"
+                nodes[-1].lifecycleTrail = ["Generated", "Dropped", "Leakage Guard"]
     if uses_feature_models and history_point_count < 30:
         for node in nodes:
             if node.family in {"lag", "rolling", "calendar", "covariates"} and node.lifecycle == "used":
@@ -580,8 +647,9 @@ def _summarize_feature_families(lineage: list[RuntimeFeatureNode], feature_confi
         ("target", "Target"),
         ("lag", "Lag"),
         ("rolling", "Rolling"),
-        ("calendar", "Calendar"),
-        ("covariates", "Covariates"),
+        ("calendar", "日历特征"),
+        ("holiday", "节假日特征"),
+        ("covariates", "协变量"),
     ]:
         family_nodes = [node for node in lineage if node.family == family_id]
         enabled = True if family_id == "target" else bool(
@@ -590,6 +658,7 @@ def _summarize_feature_families(lineage: list[RuntimeFeatureNode], feature_confi
                     "lag": "lagFeatures",
                     "rolling": "rollingFeatures",
                     "calendar": "calendarFeatures",
+                    "holiday": "holidayFeatures",
                     "covariates": "covariates",
                 }.get(family_id, ""),
                 False,
@@ -641,11 +710,11 @@ def _build_feature_machines(
     covariates: list[RuntimeCovariateDescriptor],
 ) -> list[RuntimeFeatureMachine]:
     machine_specs = [
-        ("calendar_generator", "Calendar Generator", "generator"),
-        ("lag_generator", "Lag Generator", "generator"),
-        ("rolling_generator", "Rolling Generator", "generator"),
-        ("holiday_generator", "Holiday Generator", "generator"),
-        ("covariate_loader", "Covariate Loader", "loader"),
+        ("calendar_generator", "日历特征生成器", "generator"),
+        ("lag_generator", "滞后特征生成器", "generator"),
+        ("rolling_generator", "滚动统计生成器", "generator"),
+        ("holiday_generator", "节假日生成器", "generator"),
+        ("covariate_loader", "协变量加载器", "loader"),
     ]
     machines: list[RuntimeFeatureMachine] = []
     for machine_id, label, kind in machine_specs:
@@ -656,12 +725,11 @@ def _build_feature_machines(
                     "calendar_generator": "calendarFeatures",
                     "lag_generator": "lagFeatures",
                     "rolling_generator": "rollingFeatures",
+                    "holiday_generator": "holidayFeatures",
                 }.get(machine_id, ""),
-                machine_id == "holiday_generator" and False,
+                False,
             )
         )
-        if machine_id == "holiday_generator":
-            enabled = False
         input_columns = (
             ["Date"]
             if machine_id == "calendar_generator"
@@ -672,11 +740,7 @@ def _build_feature_machines(
             else ["Holiday Calendar"]
         )
         generated_features = [node.name for node in machine_nodes]
-        summary = (
-            "当前版本未独立生成 holiday features；Holiday 若存在，会通过 Covariate Loader 进入模型。"
-            if machine_id == "holiday_generator"
-            else f"输入 {len(input_columns)} 个来源，输出 {len(generated_features)} 个特征。"
-        )
+        summary = f"输入 {len(input_columns)} 个来源，输出 {len(generated_features)} 个特征。"
         warnings = [item.note for item in covariates if item.note and machine_id == "covariate_loader"]
         machines.append(
             RuntimeFeatureMachine(

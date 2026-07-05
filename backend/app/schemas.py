@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.core.constants import DEFAULT_RANDOM_SEED
 
@@ -78,7 +78,60 @@ class FeatureConfig(BaseModel):
     lagFeatures: bool = True
     rollingFeatures: bool = True
     calendarFeatures: bool = True
+    holidayFeatures: bool = True
     covariates: bool = True
+
+
+CleaningPreset = Literal["conservative", "standard", "strict", "custom"]
+MissingValueStrategy = Literal["drop", "zero", "ffill", "bfill", "interpolate", "time", "median"]
+OutlierStrategy = Literal["none", "clip_iqr", "hampel"]
+
+
+class CleaningConfig(BaseModel):
+    preset: CleaningPreset = "standard"
+    sortByTime: bool = True
+    invalidTimeStrategy: Literal["drop", "error"] = "drop"
+    trimStrings: bool = True
+    normalizeThousandsSeparators: bool = True
+    missingValueStrategy: MissingValueStrategy = "time"
+    interpolationLimit: int | None = Field(default=3, ge=1, le=365)
+    fillMissingTimeSteps: bool = True
+    duplicateTimeStrategy: Literal["mean", "sum", "first", "last"] = "mean"
+    outlierStrategy: OutlierStrategy = "none"
+    outlierIqrMultiplier: float = Field(default=1.5, ge=1.0, le=5.0)
+    hampelWindow: int = Field(default=7, ge=3, le=101)
+    hampelSigma: float = Field(default=3.0, ge=1.0, le=10.0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def apply_preset(cls, value):
+        if not isinstance(value, dict):
+            return value
+        preset = value.get("preset", "standard")
+        presets = {
+            "conservative": {"missingValueStrategy": "drop", "interpolationLimit": None, "fillMissingTimeSteps": False, "outlierStrategy": "none"},
+            "standard": {"missingValueStrategy": "time", "interpolationLimit": 3, "fillMissingTimeSteps": True, "outlierStrategy": "none"},
+            "strict": {"missingValueStrategy": "time", "interpolationLimit": 7, "fillMissingTimeSteps": True, "outlierStrategy": "hampel"},
+            "custom": {},
+        }
+        return {**presets.get(preset, {}), **value}
+
+
+class HolidayConfig(BaseModel):
+    enabled: bool = True
+    countryCode: str = "CN"
+    subdivision: str | None = None
+    observed: bool = True
+    windowDays: int = Field(default=1, ge=0, le=30)
+
+
+class CovariateConfig(BaseModel):
+    column: str
+    type: Literal["known_future", "static", "unknown_future"] = "static"
+    unknownFutureAction: Literal["analysis_only", "forecast"] = "analysis_only"
+    forecastMode: Literal["auto", "manual", "per_primary_model"] = "auto"
+    manualModelId: Literal["naive", "seasonal_naive", "arima", "ets"] | None = None
+    missingValueStrategy: MissingValueStrategy = "ffill"
 
 
 class ForecastRunRequest(BaseModel):
@@ -96,16 +149,40 @@ class ForecastRunRequest(BaseModel):
     selectedModels: list[str]
     modelParameters: dict[str, dict[str, Any]] = Field(default_factory=dict)
     featureConfig: FeatureConfig = Field(default_factory=FeatureConfig)
-    missingValueStrategy: Literal["drop", "zero", "ffill", "interpolate"] = "drop"
+    cleaningConfig: CleaningConfig | None = None
+    covariateConfigs: list[CovariateConfig] = Field(default_factory=list)
+    holidayConfig: HolidayConfig = Field(default_factory=HolidayConfig)
+    missingValueStrategy: MissingValueStrategy = "drop"
     fillMissingTimeSteps: bool = True
     duplicateTimeStrategy: Literal["mean", "sum", "first", "last"] = "mean"
-    outlierStrategy: Literal["none", "clip_iqr"] = "none"
+    outlierStrategy: OutlierStrategy = "none"
     outlierIqrMultiplier: float = Field(default=1.5, ge=1.0, le=5.0)
     trimStrings: bool = True
     runProfile: Literal["fast", "balanced", "accurate"] = "balanced"
     parameterStrategy: Literal["default", "auto"] = "default"
     randomSeed: int = DEFAULT_RANDOM_SEED
     experimentName: str | None = None
+
+    @model_validator(mode="after")
+    def normalize_cleaning_config(self):
+        if self.cleaningConfig is None:
+            self.cleaningConfig = CleaningConfig(
+                preset="custom",
+                trimStrings=self.trimStrings,
+                missingValueStrategy=self.missingValueStrategy,
+                fillMissingTimeSteps=self.fillMissingTimeSteps,
+                duplicateTimeStrategy=self.duplicateTimeStrategy,
+                outlierStrategy=self.outlierStrategy,
+                outlierIqrMultiplier=self.outlierIqrMultiplier,
+            )
+        else:
+            self.missingValueStrategy = self.cleaningConfig.missingValueStrategy
+            self.fillMissingTimeSteps = self.cleaningConfig.fillMissingTimeSteps
+            self.duplicateTimeStrategy = self.cleaningConfig.duplicateTimeStrategy
+            self.outlierStrategy = self.cleaningConfig.outlierStrategy
+            self.outlierIqrMultiplier = self.cleaningConfig.outlierIqrMultiplier
+            self.trimStrings = self.cleaningConfig.trimStrings
+        return self
 
 
 class RuntimeEstimateRequest(BaseModel):
@@ -114,6 +191,8 @@ class RuntimeEstimateRequest(BaseModel):
     totalColumnCount: int = Field(default=1, ge=1)
     targetCount: int = Field(default=1, ge=1)
     covariateCount: int = Field(default=0, ge=0)
+    unknownFutureForecastCount: int = Field(default=0, ge=0)
+    perPrimaryModelCovariateCount: int = Field(default=0, ge=0)
     featureConfig: FeatureConfig = Field(default_factory=FeatureConfig)
     runProfile: Literal["fast", "balanced", "accurate"] = "balanced"
     parameterStrategy: Literal["default", "auto"] = "default"
@@ -336,6 +415,7 @@ RuntimeStageId = Literal[
 ]
 
 RuntimeStepStatus = Literal["pending", "running", "completed", "failed"]
+FeatureStepStatus = Literal["pending", "running", "completed", "skipped", "failed"]
 
 
 class RuntimeStateStep(BaseModel):
@@ -355,6 +435,26 @@ class RuntimeResourceSnapshot(BaseModel):
     cpuPercent: float | None = None
     threadCount: int | None = None
     gpuLabel: str | None = None
+
+
+class AcceleratorInfo(BaseModel):
+    hardwareDetected: bool = False
+    runtimeAvailable: bool = False
+    type: Literal["nvidia", "mps"] | None = None
+    name: str | None = None
+    memoryTotalMb: int | None = None
+    driverVersion: str | None = None
+    frameworkVersion: str | None = None
+    frameworkBuild: str | None = None
+    cudaRuntime: str | None = None
+    reason: str | None = None
+
+
+class DeviceInfoResponse(BaseModel):
+    device: Literal["cuda", "mps", "cpu"] = "cpu"
+    memoryTotalMb: int | None = None
+    memoryAvailableMb: int | None = None
+    accelerator: AcceleratorInfo = Field(default_factory=AcceleratorInfo)
 
 
 class RuntimeLogEntry(BaseModel):
@@ -377,11 +477,31 @@ class RuntimeTimelineEntry(BaseModel):
     stage: RuntimeStageId
     label: str
     status: RuntimeStepStatus
+    level: Literal["info", "warn", "error", "success"] = "info"
     message: str | None = None
     modelId: str | None = None
     modelName: str | None = None
     targetColumn: str | None = None
     overallPercent: int | None = None
+
+
+class RuntimeEvent(BaseModel):
+    schemaVersion: Literal["0.4"] = "0.4"
+    id: str
+    sequence: int = Field(ge=1)
+    runId: str
+    timestamp: datetime
+    eventType: Literal["stage", "model", "resource", "feature", "optimization", "log", "terminal"]
+    stage: RuntimeStageId
+    status: RuntimeStepStatus
+    message: str
+    modelId: str | None = None
+    targetColumn: str | None = None
+    progressPercent: int | None = Field(default=None, ge=0, le=100)
+    metricLabel: str | None = None
+    metricValue: float | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
 
 
 class RuntimeFeatureFamily(BaseModel):
@@ -405,12 +525,12 @@ class RuntimeFeatureNode(BaseModel):
     importance: float | None = None
     shap: float | None = None
     modelIds: list[str] = Field(default_factory=list)
-    featureType: Literal["generated", "known_future_covariate", "static_covariate"] = "generated"
+    featureType: Literal["generated", "known_future_covariate", "static_covariate", "unknown_future_covariate"] = "generated"
     generator: str = "Feature Factory"
     machineId: str | None = None
     machineLabel: str | None = None
-    forecastStrategy: Literal["generated", "calendar", "repeat_last_known", "use_test_timeline"] = "generated"
-    backtestStrategy: Literal["generated", "calendar", "repeat_last_known", "use_test_timeline"] = "generated"
+    forecastStrategy: Literal["generated", "calendar", "use_future_rows", "repeat_last_known", "use_test_timeline", "forecast_auxiliary", "drop_for_leakage"] = "generated"
+    backtestStrategy: Literal["generated", "calendar", "use_future_rows", "repeat_last_known", "use_test_timeline", "forecast_auxiliary", "drop_for_leakage"] = "generated"
     usedDuring: list[Literal["training", "backtest", "forecast"]] = Field(default_factory=lambda: ["training"])
     droppedReason: str | None = None
     lifecycleTrail: list[str] = Field(default_factory=list)
@@ -431,7 +551,7 @@ class RuntimeFeatureMachine(BaseModel):
     label: str
     kind: Literal["generator", "loader"] = "generator"
     enabled: bool = True
-    status: RuntimeStepStatus = "completed"
+    status: FeatureStepStatus = "completed"
     inputColumns: list[str] = Field(default_factory=list)
     generatedFeatures: list[str] = Field(default_factory=list)
     summary: str = ""
@@ -441,11 +561,13 @@ class RuntimeFeatureMachine(BaseModel):
 
 class RuntimeCovariateDescriptor(BaseModel):
     name: str
-    type: Literal["known_future", "static"]
+    type: Literal["known_future", "static", "unknown_future"]
     generator: str = "Covariate Loader"
-    forecastStrategy: Literal["calendar", "repeat_last_known"]
-    backtestStrategy: Literal["use_test_timeline", "repeat_last_known"]
+    forecastStrategy: Literal["calendar", "use_future_rows", "repeat_last_known", "forecast_auxiliary", "drop_for_leakage"]
+    backtestStrategy: Literal["use_test_timeline", "repeat_last_known", "forecast_auxiliary", "drop_for_leakage"]
     usedDuring: list[Literal["training", "backtest", "forecast"]] = Field(default_factory=lambda: ["training", "backtest", "forecast"])
+    forecastMode: Literal["auto", "manual", "per_primary_model"] | None = None
+    forecastModelId: str | None = None
     note: str | None = None
 
 
@@ -462,19 +584,75 @@ class RuntimeFeatureSelectionSummary(BaseModel):
     items: list[RuntimeFeatureSelectionItem] = Field(default_factory=list)
 
 
-class RuntimeFeaturePipelineStep(BaseModel):
-    id: RuntimeStageId
+class RuntimeFeatureColumnProfile(BaseModel):
+    name: str
+    dtype: str = "float64"
+    nonNullCount: int = 0
+    nullCount: int = 0
+    minimum: float | None = None
+    maximum: float | None = None
+    mean: float | None = None
+    std: float | None = None
+
+
+class RuntimeFeatureDataProfile(BaseModel):
+    rowCount: int = 0
+    columnCount: int = 0
+    columns: list[str] = Field(default_factory=list)
+    missingValueCount: int = 0
+    invalidValueCount: int = 0
+    memoryBytes: int = 0
+    columnProfiles: list[RuntimeFeatureColumnProfile] = Field(default_factory=list)
+
+
+class RuntimeFeatureVisualizationMarker(BaseModel):
+    time: str
     label: str
-    status: RuntimeStepStatus = "pending"
+    kind: str = "event"
+
+
+class RuntimeFeatureVisualization(BaseModel):
+    kind: str
+    timeStart: str | None = None
+    timeEnd: str | None = None
+    markers: list[RuntimeFeatureVisualizationMarker] = Field(default_factory=list)
+    sampleValues: list[float] = Field(default_factory=list)
+    sampleLabels: list[str] = Field(default_factory=list)
+    windowSize: int | None = None
+
+
+class RuntimeFeaturePipelineStep(BaseModel):
+    id: str
+    sequence: int = 0
+    label: str
+    description: str = ""
+    machineId: str | None = None
+    status: FeatureStepStatus = "pending"
+    progressPercent: int = Field(default=0, ge=0, le=100)
+    startedAt: datetime | None = None
+    finishedAt: datetime | None = None
     inputSummary: str = ""
     outputSummary: str = ""
+    inputProfile: RuntimeFeatureDataProfile | None = None
+    outputProfile: RuntimeFeatureDataProfile | None = None
+    generatedFeatures: list[str] = Field(default_factory=list)
+    selectedFeatures: list[str] = Field(default_factory=list)
+    droppedFeatures: list[str] = Field(default_factory=list)
+    skipReason: str | None = None
+    error: str | None = None
     elapsedSeconds: float | None = None
     warnings: list[str] = Field(default_factory=list)
+    visualization: RuntimeFeatureVisualization | None = None
 
 
 class RuntimeFeaturePipelineTarget(BaseModel):
+    schemaVersion: Literal["0.4"] = "0.4"
     targetColumn: str
     detectedFrequency: str | None = None
+    status: FeatureStepStatus = "pending"
+    progressPercent: int = Field(default=0, ge=0, le=100)
+    currentStepId: str | None = None
+    traceMode: Literal["live", "reconstructed", "legacy_inferred"] = "live"
     warnings: list[str] = Field(default_factory=list)
     families: list[RuntimeFeatureFamily] = Field(default_factory=list)
     steps: list[RuntimeFeaturePipelineStep] = Field(default_factory=list)
@@ -556,6 +734,7 @@ class RuntimeRunDetail(BaseModel):
     models: list[RuntimeModelConsole] = Field(default_factory=list)
     logs: list[RuntimeLogEntry] = Field(default_factory=list)
     timeline: list[RuntimeTimelineEntry] = Field(default_factory=list)
+    events: list[RuntimeEvent] = Field(default_factory=list)
     featurePipeline: list[RuntimeFeaturePipelineTarget] = Field(default_factory=list)
     optimization: list[RuntimeOptimizationState] = Field(default_factory=list)
     error: str | None = None
@@ -564,6 +743,11 @@ class RuntimeRunDetail(BaseModel):
 class RuntimeLogsResponse(BaseModel):
     runId: str
     logs: list[RuntimeLogEntry] = Field(default_factory=list)
+
+
+class RuntimeEventsResponse(BaseModel):
+    runId: str
+    events: list[RuntimeEvent] = Field(default_factory=list)
 
 
 class RuntimeFeaturePipelineResponse(BaseModel):
@@ -648,6 +832,7 @@ class ManifestEnvironment(BaseModel):
     memoryTotalMb: int | None = None
     memoryAvailableMb: int | None = None
     modelCapabilityVersions: dict[str, Any] | None = None
+    packageVersions: dict[str, str] = Field(default_factory=dict)
 
 
 class ManifestDataSnapshot(BaseModel):
@@ -686,16 +871,21 @@ class ManifestTargetSnapshot(BaseModel):
 
 
 class ExperimentManifest(BaseModel):
-    schemaVersion: Literal["0.3"] = "0.3"
+    schemaVersion: Literal["0.3", "0.4"] = "0.4"
     experimentId: str
     experimentName: str
     createdAt: str | None = None
     configHash: str
     sourceFileSha256: str
+    datasetHash: str | None = None
+    featurePipelineVersion: str | None = None
+    runtimeEventSchemaVersion: str | None = None
+    randomSeed: int | None = None
     environment: ManifestEnvironment
     data: ManifestDataSnapshot
     configuration: dict[str, Any]
     targets: list[ManifestTargetSnapshot] = Field(default_factory=list)
+    featurePipelines: list[RuntimeFeaturePipelineTarget] = Field(default_factory=list)
 
 
 class ExperimentRerunFileMatch(BaseModel):

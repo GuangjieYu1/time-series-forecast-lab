@@ -41,3 +41,19 @@ select {
     transform: translateX(260%);
   }
 }
+
+@keyframes feature-flow-stream { from { transform: translateX(-120%); } to { transform: translateX(360%); } }
+@keyframes feature-flow-pulse { 0%, 100% { opacity: .28; transform: scale(.85); } 50% { opacity: 1; transform: scale(1); } }
+@keyframes feature-flow-slide { 0% { left: 0; } 50% { left: 66%; } 100% { left: 0; } }
+@keyframes feature-flow-shift { 0%, 100% { transform: translateX(0); opacity: .45; } 50% { transform: translateX(12px); opacity: 1; } }
+@keyframes feature-flow-pop { 0%, 100% { transform: scale(.85); opacity: .4; } 50% { transform: scale(1.15); opacity: 1; } }
+.feature-flow-stream { animation: feature-flow-stream 2.1s linear infinite; }
+.feature-flow-bar, .feature-calendar-cell, .feature-matrix-cell, .feature-selection-chip { animation: feature-flow-pulse 1.8s ease-in-out infinite; }
+.feature-align-dot, .feature-lag-dot { animation: feature-flow-shift 1.8s ease-in-out infinite; }
+.feature-rolling-window { animation: feature-flow-slide 3s ease-in-out infinite; }
+.feature-merge-node, .feature-holiday-active, .feature-leak-block { animation: feature-flow-pop 1.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .feature-flow-stream, .feature-flow-bar, .feature-calendar-cell, .feature-matrix-cell,
+  .feature-selection-chip, .feature-align-dot, .feature-lag-dot, .feature-rolling-window,
+  .feature-merge-node, .feature-holiday-active, .feature-leak-block { animation: none !important; }
+}

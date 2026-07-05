@@ -47,6 +47,9 @@ _DATA_URL_RE = re.compile(r"^data:image/[^;]+;base64,(.+)$", re.IGNORECASE | re.
 _FONT_REGISTERED = False
 _BASE_FONT_NAME = "Helvetica"
 _EMBEDDED_FONT_CANDIDATES: list[tuple[str, str]] = [
+    ("ReportSans", "C:/Windows/Fonts/simhei.ttf"),
+    ("ReportSans", "C:/Windows/Fonts/msyh.ttc"),
+    ("ReportSans", "C:/Windows/Fonts/simsun.ttc"),
     ("ReportSans", "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
     ("ReportSans", "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
     ("ReportSans", "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf"),

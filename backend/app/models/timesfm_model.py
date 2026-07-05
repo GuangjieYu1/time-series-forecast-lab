@@ -42,6 +42,7 @@ class TimesFmModel:
                 self.model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(
                     source,
                     cache_dir=str(cache_dir),
+                    torch_compile=False,
                 )
                 try:
                     self.model.compile(forecast_config, torch_compile=False)

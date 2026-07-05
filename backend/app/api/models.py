@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 
-from app.core.gpu import get_device, get_memory_info
-from app.schemas import ModelsResponse
+from app.core.gpu import get_device_info
+from app.schemas import DeviceInfoResponse, ModelsResponse
 from app.services.model_registry import get_model_capabilities
 
 
@@ -13,6 +13,6 @@ def list_models():
     return ModelsResponse(models=get_model_capabilities())
 
 
-@router.get("/device")
+@router.get("/device", response_model=DeviceInfoResponse)
 def model_device():
-    return {"device": get_device(), **get_memory_info()}
+    return DeviceInfoResponse.model_validate(get_device_info())

@@ -3,41 +3,37 @@ import { fetchExperimentFeatureFactory } from "../../shared/api/client";
 import { ErrorBanner, LoadingBlock } from "../../shared/components/Status";
 import { Badge, SectionCard } from "../../shared/components/Ui";
 import type { RuntimeFeatureNode, RuntimeFeaturePipelineTarget } from "../../shared/types/api";
+import { FeatureEngineeringFlow } from "./FeatureEngineeringFlow";
 
-function formatDuration(seconds: number | null | undefined) {
-  if (seconds === null || seconds === undefined || Number.isNaN(seconds)) return "-";
-  if (seconds < 1) return "<1s";
-  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
-  const rounded = Math.round(seconds);
-  const minutes = Math.floor(rounded / 60);
-  const rest = rounded % 60;
-  return `${minutes}m ${rest}s`;
-}
 
 function lifecycleLabel(value: RuntimeFeatureNode["lifecycle"]) {
   return {
-    generated: "Generated",
-    selected: "Selected",
-    dropped: "Dropped",
-    used: "Used",
-    important: "Important"
+    generated: "已生成",
+    selected: "已选择",
+    dropped: "已丢弃",
+    used: "已使用",
+    important: "重要"
   }[value];
 }
 
 function featureTypeLabel(value: RuntimeFeatureNode["featureType"]) {
   return {
-    generated: "Generated Feature",
-    known_future_covariate: "Known Future Covariate",
-    static_covariate: "Static Covariate"
+    generated: "生成特征",
+    known_future_covariate: "未来已知协变量",
+    static_covariate: "静态协变量",
+    unknown_future_covariate: "未来未知协变量"
   }[value];
 }
 
 function strategyLabel(value: RuntimeFeatureNode["forecastStrategy"] | RuntimeFeatureNode["backtestStrategy"]) {
   return {
-    generated: "Generated",
-    calendar: "Calendar",
-    repeat_last_known: "Repeat Last Known Value",
-    use_test_timeline: "Use Test Timeline Values"
+    generated: "已生成",
+    calendar: "日历生成",
+    repeat_last_known: "重复最后已知值",
+    use_test_timeline: "使用测试时间线已知值",
+    use_future_rows: "读取未来空目标行",
+    forecast_auxiliary: "辅助模型预测",
+    drop_for_leakage: "防泄漏丢弃"
   }[value];
 }
 
@@ -139,13 +135,13 @@ export function FeatureFactoryPanel({ experimentId, initialTargets = [] }: { exp
         {summary ? (
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-7">
             {[
-              ["Raw Columns", summary.rawColumnCount],
-              ["Generated Features", summary.generatedFeatureCount],
-              ["User Covariates", summary.userCovariateCount],
-              ["Selected", summary.selectedFeatureCount],
-              ["Dropped", summary.droppedFeatureCount],
-              ["Important", summary.importantFeatureCount],
-              ["SHAP Supported", summary.shapSupportedFeatureCount]
+              ["原始列", summary.rawColumnCount],
+              ["生成特征", summary.generatedFeatureCount],
+              ["用户协变量", summary.userCovariateCount],
+              ["已选择", summary.selectedFeatureCount],
+              ["已丢弃", summary.droppedFeatureCount],
+              ["重要特征", summary.importantFeatureCount],
+              ["支持 SHAP", summary.shapSupportedFeatureCount]
             ].map(([label, value]) => (
               <div key={label} className="rounded-3xl border border-slate-200 bg-white px-4 py-4 text-sm dark:border-white/10 dark:bg-[#151b2e]">
                 <div className="text-xs uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">{label}</div>
@@ -156,29 +152,10 @@ export function FeatureFactoryPanel({ experimentId, initialTargets = [] }: { exp
         ) : null}
 
         <div className="rounded-3xl border border-slate-200 bg-white p-5 dark:border-white/10 dark:bg-[#151b2e]">
-          <div className="text-sm font-semibold text-slate-950 dark:text-white">Pipeline Timeline</div>
-          <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">从 Raw Data 到 SHAP 支持范围，逐步展开每一段输入、输出、耗时和 warning。</div>
-          <div className="mt-4 grid gap-3 xl:grid-cols-7">
-            {target.steps.map((step, index) => (
-              <div key={`${step.label}-${index}`} className="rounded-3xl border border-slate-200 bg-slate-50 p-4 text-sm dark:border-white/10 dark:bg-[#0b1020]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500 dark:text-slate-400">Step {index + 1}</div>
-                <div className="mt-1 font-semibold text-slate-950 dark:text-white">{step.label}</div>
-                <div className="mt-3 text-xs leading-6 text-slate-600 dark:text-slate-300">
-                  <div><span className="font-semibold">输入：</span>{step.inputSummary || "-"}</div>
-                  <div className="mt-2"><span className="font-semibold">输出：</span>{step.outputSummary || "-"}</div>
-                </div>
-                <div className="mt-3 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-                  <span>{formatDuration(step.elapsedSeconds)}</span>
-                  <span>{step.warnings.length ? `${step.warnings.length} warnings` : "No warnings"}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+          <FeatureEngineeringFlow targets={[target]} mode="history" />
 
-        <div className="rounded-3xl border border-slate-200 bg-white p-5 dark:border-white/10 dark:bg-[#151b2e]">
-          <div className="text-sm font-semibold text-slate-950 dark:text-white">Feature Machines</div>
-          <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">每个 Machine 展示输入源、输出特征和当前启用状态。Covariate Loader 会同时暴露 Known Future / Static 策略。</div>
+        <div className="text-sm font-semibold text-slate-950 dark:text-white">特征机器</div>
+          <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">每个特征机器展示输入源、输出特征和当前状态；协变量加载器同时展示未来已知、静态和未来未知策略。</div>
           <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
             {target.machines.map((machine) => (
               <div key={machine.id} className="rounded-3xl border border-slate-200 bg-slate-50 p-4 dark:border-white/10 dark:bg-[#0b1020]">
@@ -203,20 +180,20 @@ export function FeatureFactoryPanel({ experimentId, initialTargets = [] }: { exp
 
         {target.covariates.length ? (
           <div className="rounded-3xl border border-slate-200 bg-white p-5 dark:border-white/10 dark:bg-[#151b2e]">
-            <div className="text-sm font-semibold text-slate-950 dark:text-white">Covariate Flow</div>
-            <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">当前版本只把协变量分成 Known Future 和 Static 两类，Static 不会读取测试集真实未来值。</div>
+            <div className="text-sm font-semibold text-slate-950 dark:text-white">协变量流</div>
+            <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">协变量分为未来已知、静态和未来未知三类；未来未知值只有在明确配置辅助预测后才会进入模型。</div>
             <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               {target.covariates.map((covariate) => (
                 <div key={covariate.name} className="rounded-3xl border border-slate-200 bg-slate-50 p-4 dark:border-white/10 dark:bg-[#0b1020]">
                   <div className="flex items-center justify-between gap-2">
                     <div className="font-semibold text-slate-950 dark:text-white">{covariate.name}</div>
-                    <Badge tone={covariate.type === "known_future" ? "info" : "warn"}>
-                      {covariate.type === "known_future" ? "Known Future" : "Static"}
+                    <Badge tone={covariate.type === "known_future" ? "info" : covariate.type === "unknown_future" ? "warn" : "neutral"}>
+                      {covariate.type === "known_future" ? "未来已知" : covariate.type === "unknown_future" ? "未来未知" : "静态"}
                     </Badge>
                   </div>
                   <div className="mt-3 space-y-2 text-xs text-slate-600 dark:text-slate-300">
-                    <div>Backtest：{covariate.backtestStrategy === "use_test_timeline" ? "Use Test Timeline Values" : "Repeat Last Known Value"}</div>
-                    <div>Forecast：{covariate.forecastStrategy === "calendar" ? "Generated By Calendar" : "Repeat Last Known Value"}</div>
+                    <div>回测：{strategyLabel(covariate.backtestStrategy)}</div>
+                    <div>预测：{strategyLabel(covariate.forecastStrategy)}</div>
                   </div>
                   {covariate.note ? (
                     <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-6 text-amber-800 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
@@ -231,8 +208,8 @@ export function FeatureFactoryPanel({ experimentId, initialTargets = [] }: { exp
 
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
           <div className="rounded-3xl border border-slate-200 bg-white p-5 dark:border-white/10 dark:bg-[#151b2e]">
-            <div className="text-sm font-semibold text-slate-950 dark:text-white">Feature Flow Graph</div>
-            <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">点击节点查看来源、Generator、类型、Forecast / Backtest Strategy 与生命周期。</div>
+            <div className="text-sm font-semibold text-slate-950 dark:text-white">特征流图</div>
+            <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">点击节点查看来源、生成器、类型、预测与回测策略以及生命周期。</div>
             <div className="mt-4 space-y-4">
               {target.machines.map((machine) => {
                 const nodes = groupedByMachine.get(machine.id) ?? [];
@@ -243,7 +220,7 @@ export function FeatureFactoryPanel({ experimentId, initialTargets = [] }: { exp
                       <span className="h-px flex-1 bg-slate-200 dark:bg-white/10" />
                     </div>
                     <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4 dark:border-white/10 dark:bg-[#0b1020]">
-                      <div className="text-xs text-slate-500 dark:text-slate-400">Input</div>
+                      <div className="text-xs text-slate-500 dark:text-slate-400">输入</div>
                       <div className="mt-1 text-sm font-medium text-slate-900 dark:text-white">{machine.inputColumns.length ? machine.inputColumns.join(" / ") : "-"}</div>
                       <div className="mt-4 flex flex-wrap gap-2">
                         {nodes.length ? (
@@ -284,15 +261,15 @@ export function FeatureFactoryPanel({ experimentId, initialTargets = [] }: { exp
                 </div>
                 <div className="mt-4 grid gap-3">
                   {[
-                    ["Feature Type", featureTypeLabel(selectedNode.featureType)],
-                    ["Formula", selectedNode.formula],
-                    ["Generator", selectedNode.generator],
-                    ["Forecast Strategy", strategyLabel(selectedNode.forecastStrategy)],
-                    ["Backtest Strategy", strategyLabel(selectedNode.backtestStrategy)],
-                    ["Used During", selectedNode.usedDuring.join(" / ")],
-                    ["Models", selectedNode.modelIds.length ? selectedNode.modelIds.join(", ") : "当前未绑定到具体模型"],
-                    ["Dropped Reason", selectedNode.droppedReason ?? "—"],
-                    ["Lifecycle", selectedNode.lifecycleTrail.length ? selectedNode.lifecycleTrail.join(" → ") : lifecycleLabel(selectedNode.lifecycle)]
+                    ["特征类型", featureTypeLabel(selectedNode.featureType)],
+                    ["公式", selectedNode.formula],
+                    ["生成器", selectedNode.generator],
+                    ["预测策略", strategyLabel(selectedNode.forecastStrategy)],
+                    ["回测策略", strategyLabel(selectedNode.backtestStrategy)],
+                    ["使用阶段", selectedNode.usedDuring.join(" / ")],
+                    ["适用模型", selectedNode.modelIds.length ? selectedNode.modelIds.join(", ") : "当前未绑定到具体模型"],
+                    ["丢弃原因", selectedNode.droppedReason ?? "—"],
+                    ["生命周期", selectedNode.lifecycleTrail.length ? selectedNode.lifecycleTrail.join(" → ") : lifecycleLabel(selectedNode.lifecycle)]
                   ].map(([label, value]) => (
                     <div key={label} className="rounded-2xl bg-slate-50 px-4 py-3 text-sm dark:bg-[#0b1020]">
                       <div className="text-xs text-slate-500 dark:text-slate-400">{label}</div>
@@ -302,7 +279,7 @@ export function FeatureFactoryPanel({ experimentId, initialTargets = [] }: { exp
                 </div>
               </>
             ) : (
-              <div className="flex min-h-[320px] items-center justify-center text-center text-sm text-slate-500 dark:text-slate-400">选择左侧任意节点后，这里会显示 Feature Detail。</div>
+              <div className="flex min-h-[320px] items-center justify-center text-center text-sm text-slate-500 dark:text-slate-400">选择左侧任意节点后，这里会显示 特征详情。</div>
             )}
           </div>
         </div>
@@ -311,9 +288,9 @@ export function FeatureFactoryPanel({ experimentId, initialTargets = [] }: { exp
           <div className="rounded-3xl border border-slate-200 bg-white p-5 dark:border-white/10 dark:bg-[#151b2e]">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <div className="text-sm font-semibold text-slate-950 dark:text-white">Feature Selection</div>
+                <div className="text-sm font-semibold text-slate-950 dark:text-white">特征筛选</div>
                 <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                  Generated {target.selection.generatedCount} → Selected {target.selection.selectedCount} → Dropped {target.selection.droppedCount}
+                  已生成 {target.selection.generatedCount} → 已选择 {target.selection.selectedCount} → 已丢弃 {target.selection.droppedCount}
                 </div>
               </div>
             </div>
@@ -322,7 +299,7 @@ export function FeatureFactoryPanel({ experimentId, initialTargets = [] }: { exp
                 <div key={`${item.status}-${item.name}`} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm dark:border-white/10 dark:bg-[#0b1020]">
                   <div className="flex items-center justify-between gap-2">
                     <div className="font-medium text-slate-900 dark:text-white">{item.name}</div>
-                    <Badge tone={item.status === "selected" ? "good" : "neutral"}>{item.status === "selected" ? "Selected" : "Dropped"}</Badge>
+                    <Badge tone={item.status === "selected" ? "good" : "neutral"}>{item.status === "selected" ? "已选择" : "已丢弃"}</Badge>
                   </div>
                   <div className="mt-2 text-xs leading-6 text-slate-500 dark:text-slate-400">{item.reason ?? "已进入训练链路。"}</div>
                 </div>

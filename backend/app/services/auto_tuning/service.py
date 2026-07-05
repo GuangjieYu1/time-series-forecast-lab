@@ -483,6 +483,8 @@ def _resolve_tree_model_with_optuna(
                 best_metric=best_metric,
             )
             return metric_value
+        except optuna.TrialPruned:
+            raise
         except Exception as exc:
             warnings.append(f"{model_id} Trial #{trial_number} 评估失败：{exc}")
             trials.append(

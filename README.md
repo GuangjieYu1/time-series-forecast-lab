@@ -2,6 +2,10 @@
 
 Interactive lab for importing time-series data, comparing multiple forecasting models with a holdout backtest, reviewing residuals and metrics, selecting a final model, and saving experiment history without storing the original uploaded file.
 
+## v0.4 Roadmap
+
+Development is converging on the [Transparent Time Series Experiment Platform](docs/V0.4_TRANSPARENT_PLATFORM.md): observable, explainable, reproducible, and benchmarkable experiments. v0.4 does not add new forecasting models.
+
 ## Current Scope
 
 v0.2 keeps the v0.1 forecast workflow intact and adds product hardening:
@@ -138,8 +142,20 @@ Priority is:
 cuda > mps > cpu
 ```
 
-## Test Commands
+The device response distinguishes NVIDIA hardware detection from CUDA runtime availability. A machine can have an NVIDIA GPU while a CPU-only PyTorch build is installed; in that case `hardwareDetected=true`, `runtimeAvailable=false`, and models continue on CPU with a readable reason.
 
+Windows CUDA installation for the tested CUDA 13.2 wheel:
+
+```powershell
+cd backend
+.\.venv\Scripts\Activate.ps1
+pip install --force-reinstall -r requirements-gpu-cu132.txt
+python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
+```
+
+The current machine was verified with an NVIDIA RTX 4060 Ti and `torch 2.12.1+cu132`. Select the PyTorch wheel matching the CUDA version supported by the target machine when deploying elsewhere.
+
+## Test Commands
 Frontend:
 
 ```powershell

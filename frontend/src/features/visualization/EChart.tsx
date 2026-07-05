@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react";
 import * as echarts from "echarts";
-import type { EChartsOption } from "echarts";
+import type { EChartsOption, EChartsType } from "echarts";
+
+export type EChartEventHandlers = Record<string, (params: unknown, chart: EChartsType) => void>;
 
 export async function renderChartOptionToDataUrl(
   option: EChartsOption,
@@ -42,20 +44,34 @@ export async function renderChartOptionToDataUrl(
   }
 }
 
-export function EChart({ option, height = 360 }: { option: EChartsOption; height?: number }) {
+export function EChart({
+  option,
+  height = 360,
+  events
+}: {
+  option: EChartsOption;
+  height?: number;
+  events?: EChartEventHandlers;
+}) {
   const ref = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!ref.current) return;
     const chart = echarts.init(ref.current);
     chart.setOption(option);
+    const listeners = Object.entries(events ?? {}).map(([eventName, handler]) => {
+      const listener = (params: unknown) => handler(params, chart);
+      chart.on(eventName, listener);
+      return [eventName, listener] as const;
+    });
     const resize = () => chart.resize();
     window.addEventListener("resize", resize);
     return () => {
+      listeners.forEach(([eventName, listener]) => chart.off(eventName, listener));
       window.removeEventListener("resize", resize);
       chart.dispose();
     };
-  }, [option]);
+  }, [events, option]);
 
   return <div ref={ref} style={{ width: "100%", height }} />;
 }

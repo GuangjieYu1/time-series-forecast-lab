@@ -11,10 +11,13 @@ import type {
   ForecastProgress,
   ForecastRunRequest,
   ForecastRunResponse,
+  HolidayCalendarCatalog,
   LocalRebuildResponse,
   ModelCapability,
   RuntimeEstimateRequest,
   RuntimeEstimateResponse,
+  RuntimeEvent,
+  RuntimeEventsResponse,
   RuntimeRunDetail,
   ReportPdfArtifact,
   ReportOptions,
@@ -66,6 +69,10 @@ export async function fetchSheetPreview(uploadId: string, sheetName: string): Pr
   return parseResponse<SheetPreview>(await fetch(`/api/upload/${uploadId}/sheets/${encodeURIComponent(sheetName)}/preview?limit=100`));
 }
 
+export async function fetchHolidayCalendars(): Promise<HolidayCalendarCatalog> {
+  return parseResponse<HolidayCalendarCatalog>(await fetch("/api/features/holiday-calendars"));
+}
+
 export async function fetchModels(): Promise<ModelCapability[]> {
   const body = await parseResponse<{ models: ModelCapability[] }>(await fetch("/api/models"));
   return body.models;
@@ -81,7 +88,19 @@ export async function fetchDeviceInfo(): Promise<DeviceInfo> {
   return {
     device: body.device,
     memoryTotalMb: body.memoryTotalMb ?? null,
-    memoryAvailableMb: body.memoryAvailableMb ?? null
+    memoryAvailableMb: body.memoryAvailableMb ?? null,
+    accelerator: body.accelerator ?? {
+      hardwareDetected: false,
+      runtimeAvailable: false,
+      type: null,
+      name: null,
+      memoryTotalMb: null,
+      driverVersion: null,
+      frameworkVersion: null,
+      frameworkBuild: null,
+      cudaRuntime: null,
+      reason: null
+    }
   };
 }
 
@@ -111,6 +130,25 @@ export async function fetchRuntimeEstimate(request: RuntimeEstimateRequest): Pro
 
 export async function fetchRuntimeDetail(runtimeId: string): Promise<RuntimeRunDetail> {
   return parseResponse<RuntimeRunDetail>(await fetch(`/api/runtime/${encodeURIComponent(runtimeId)}`));
+}
+
+export async function fetchRuntimeEvents(runtimeId: string): Promise<RuntimeEventsResponse> {
+  return parseResponse<RuntimeEventsResponse>(await fetch(`/api/runtime/${encodeURIComponent(runtimeId)}/events`));
+}
+
+export function subscribeRuntimeEvents(
+  runId: string,
+  onEvent: (event: RuntimeEvent) => void,
+  afterSequence = 0
+): () => void {
+  const source = new EventSource(`/api/runtime/${encodeURIComponent(runId)}/events/stream?afterSequence=${afterSequence}`);
+  const handleRuntimeEvent = (message: MessageEvent<string>) => {
+    const event = JSON.parse(message.data) as RuntimeEvent;
+    onEvent(event);
+    if (event.eventType === "terminal") source.close();
+  };
+  source.addEventListener("runtime", handleRuntimeEvent as EventListener);
+  return () => source.close();
 }
 
 export function createRunId(): string {

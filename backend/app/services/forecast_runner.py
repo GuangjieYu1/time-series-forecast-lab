@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Callable, Literal
+from typing import Callable, Literal, TYPE_CHECKING
 
 import pandas as pd
 
 from app.core.errors import AppError
-from app.schemas import FinalForecastResponse, ForecastPoint, HistoryPoint
+from app.schemas import CovariateConfig, FinalForecastResponse, ForecastPoint, HistoryPoint, HolidayConfig
 from app.services.covariate_flow import build_future_covariate_rows
 from app.services.model_executor import fit_model_instance, predict_model_instance, run_isolated_fit_predict, should_isolate_model
 from app.services.model_registry import MODEL_CAPABILITIES, create_model, validate_horizon
@@ -16,6 +16,9 @@ from app.services.series_builder import PANDAS_FREQ
 
 FinalProgressCallback = Callable[[Literal["fitting", "predicting"]], None]
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from app.services.feature_factory import PreparedFeatureMatrix
 
 
 def _future_times(last_time: datetime, frequency: str, horizon: int) -> list[datetime]:
@@ -32,7 +35,11 @@ def run_final_forecast(
     history: list[dict],
     model_parameters: dict[str, dict] | None = None,
     covariate_history: list[dict[str, float]] | None = None,
+    known_future_rows: list[dict[str, float]] | None = None,
+    covariate_configs: list[CovariateConfig] | None = None,
+    holiday_config: HolidayConfig | None = None,
     feature_config: dict[str, bool] | None = None,
+    prepared_features: "PreparedFeatureMatrix | None" = None,
     progress_callback: FinalProgressCallback | None = None,
 ) -> FinalForecastResponse:
     if final_model_id not in MODEL_CAPABILITIES:
@@ -52,8 +59,14 @@ def run_final_forecast(
     future_covariates = build_future_covariate_rows(
         covariate_columns=covariate_columns,
         history_rows=covariate_history,
-        observed_future_rows=None,
+        observed_future_rows=known_future_rows,
         future_times=future_times,
+        history_times=times,
+        covariate_configs=covariate_configs,
+        frequency=frequency,
+        primary_model_id=final_model_id,
+        primary_model_parameters=model_params,
+        holiday_config=holiday_config,
     )
     try:
         if progress_callback:
@@ -78,6 +91,7 @@ def run_final_forecast(
                 covariates=covariate_history,
                 future_covariates=future_covariates,
                 feature_config=feature_config,
+                prepared_features=prepared_features,
             )
             if progress_callback:
                 progress_callback("predicting")
@@ -91,6 +105,7 @@ def run_final_forecast(
                 frequency,
                 covariates=covariate_history,
                 feature_config=feature_config,
+                prepared_features=prepared_features,
             )
             if progress_callback:
                 progress_callback("predicting")

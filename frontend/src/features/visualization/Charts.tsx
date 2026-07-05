@@ -1,5 +1,5 @@
 import type { EChartsOption } from "echarts";
-import { EChart } from "./EChart";
+import { EChart, type EChartEventHandlers } from "./EChart";
 import type { FinalForecastResponse, ForecastRunResponse, RankedModel } from "../../shared/types/api";
 import { zhCN } from "../../shared/i18n/zhCN";
 
@@ -104,8 +104,36 @@ function actualLineStyle(width = 5) {
   };
 }
 
+function updateActualChartFocus(chart: Parameters<EChartEventHandlers[string]>[1], seriesIds: string[], activeId: string | null) {
+  chart.setOption({
+    series: seriesIds.map((seriesId) => {
+      const isActual = seriesId === "actual";
+      const isVisible = activeId === null || (activeId === "actual" ? isActual : isActual || seriesId === activeId);
+      return {
+        id: seriesId,
+        z: isActual ? 20 : isVisible ? 12 : 2,
+        lineStyle: {
+          opacity: isVisible ? (isActual ? 1 : activeId === seriesId ? 1 : 0.82) : 0.1,
+          width: isActual ? (activeId ? 6 : 5) : activeId === seriesId ? 4 : 2
+        }
+      };
+    })
+  });
+}
+
 export function ActualVsPredictedChart({ result, visibleModelIds, height }: { result: ForecastRunResponse; visibleModelIds?: string[]; height?: number }) {
-  return <EChart height={height} option={buildActualVsPredictedOption({ result, visibleModelIds })} />;
+  const shown = (visibleModelIds ?? defaultVisibleModelIds(result)).filter((id) => result.backtest.predictions[id]);
+  const seriesIds = ["actual", ...shown];
+  const events: EChartEventHandlers = {
+    mouseover: (params, chart) => {
+      const event = params as { componentType?: string; seriesId?: string };
+      if (event.componentType === "series" && event.seriesId && seriesIds.includes(event.seriesId)) {
+        updateActualChartFocus(chart, seriesIds, event.seriesId);
+      }
+    },
+    globalout: (_params, chart) => updateActualChartFocus(chart, seriesIds, null)
+  };
+  return <EChart height={height} option={buildActualVsPredictedOption({ result, visibleModelIds: shown })} events={events} />;
 }
 
 export function buildActualVsPredictedOption({
@@ -125,6 +153,7 @@ export function buildActualVsPredictedOption({
   const times = result.backtest.actual.map((point) => point.time);
   const series = [
     {
+      id: "actual",
       name: zhCN.charts.actual,
       type: "line",
       smooth: true,
@@ -132,20 +161,39 @@ export function buildActualVsPredictedOption({
       lineStyle: actualLineStyle(),
       z: 20,
       showSymbol: false,
-      emphasis: { focus: "series", lineStyle: actualLineStyle(6) }
+      emphasis: { lineStyle: actualLineStyle(6) }
     },
     ...shown
       .filter((id) => result.backtest.predictions[id])
       .map((id) => ({
+        id,
         name: modelName(result.rankedModels, id),
         type: "line",
         smooth: true,
         data: result.backtest.predictions[id].map((point) => point.predicted),
-        lineStyle: lineStyle(id)
+        lineStyle: lineStyle(id),
+        emphasis: { lineStyle: { ...lineStyle(id, 4), opacity: 1 } }
       }))
   ];
   return {
     ...baseOption(zhCN.charts.actualVsPredicted, { includeToolbox, includeDataZoom, animation }),
+    tooltip: {
+      trigger: "item",
+      borderWidth: 1,
+      confine: true,
+      backgroundColor: "rgba(15,23,42,0.94)",
+      borderColor: "rgba(148,163,184,0.25)",
+      textStyle: { color: "#F8FAFC" },
+      formatter: (params: unknown) => {
+        const point = params as { seriesId?: string; seriesName?: string; dataIndex?: number; value?: number; marker?: string };
+        const dataIndex = point.dataIndex ?? 0;
+        const time = times[dataIndex] ?? "";
+        const actualValue = result.backtest.actual[dataIndex]?.value;
+        const actualText = `${zhCN.charts.actual}: ${actualValue ?? "-"}`;
+        if (!point.seriesId || point.seriesId === "actual") return `${time}<br/>${point.marker ?? ""}${actualText}`;
+        return `${time}<br/><span style="color:${modelColorMap.actual}">鈼?/span> ${actualText}<br/>${point.marker ?? ""}${point.seriesName ?? point.seriesId}: ${point.value ?? "-"}`;
+      }
+    },
     xAxis: timeCategoryAxis(times),
     yAxis: valueAxis({ scale: true }),
     series: series as EChartsOption["series"]

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Badge, SectionCard, Tabs, surface } from "../../shared/components/Ui";
 import type {
+  FeatureStepStatus,
   RuntimeFeatureNode,
   RuntimeFeaturePipelineTarget,
   RuntimeModelConsole,
@@ -60,7 +61,7 @@ function runtimeStatusLabel(status: RuntimeRunDetail["status"] | RuntimeModelCon
   }[status] ?? String(status);
 }
 
-function stepTone(status: RuntimeStepStatus) {
+function stepTone(status: FeatureStepStatus) {
   if (status === "completed") return "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-200";
   if (status === "running") return "border-cyan-200 bg-cyan-50 text-cyan-700 dark:border-cyan-400/20 dark:bg-cyan-400/10 dark:text-cyan-200";
   if (status === "failed") return "border-red-200 bg-red-50 text-red-700 dark:border-red-400/20 dark:bg-red-400/10 dark:text-red-200";
@@ -82,6 +83,13 @@ function lifecycleLabel(lifecycle: RuntimeFeatureNode["lifecycle"]) {
     used: "Used",
     important: "Important"
   }[lifecycle];
+}
+
+function timelineTone(entry: RuntimeRunDetail["timeline"][number]) {
+  if (entry.level === "warn") return "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100";
+  if (entry.level === "error") return "border-red-200 bg-red-50 text-red-700 dark:border-red-400/20 dark:bg-red-400/10 dark:text-red-200";
+  if (entry.level === "success") return "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-200";
+  return stepTone(entry.status);
 }
 
 function trialStatusTone(status: "running" | "success" | "failed" | "pruned"): "neutral" | "good" | "warn" | "bad" | "info" {
@@ -192,7 +200,7 @@ function ConsoleView({
 
       {selectedModel ? (
         <div className="space-y-4">
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-[#151b2e]">
+          <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-[#151b2e]">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <div className="text-lg font-semibold text-slate-950 dark:text-white">{selectedModel.modelName}</div>
@@ -231,7 +239,7 @@ function ConsoleView({
                 ["预测耗时", formatDuration(selectedModel.predictSeconds)],
                 ["线程", selectedModel.resource?.threadCount === null || selectedModel.resource?.threadCount === undefined ? "-" : String(selectedModel.resource.threadCount)]
               ].map(([label, value]) => (
-                <div key={label} className="rounded-2xl border border-slate-200 px-4 py-3 text-sm dark:border-white/10">
+                <div key={label} className="min-w-0 break-words rounded-2xl border border-slate-200 px-4 py-3 text-sm dark:border-white/10">
                   <div className="text-xs text-slate-500 dark:text-slate-400">{label}</div>
                   <div className="mt-2 font-medium text-slate-900 dark:text-white">{value}</div>
                 </div>
@@ -240,7 +248,7 @@ function ConsoleView({
           </div>
 
           {selectedModel.optimization ? (
-            <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-[#151b2e]">
+            <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-[#151b2e]">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="text-sm font-semibold text-slate-950 dark:text-white">Optimization Console</div>
                 <Badge tone={runtimeStatusTone(selectedModel.optimization.status)}>{runtimeStatusLabel(selectedModel.optimization.status)}</Badge>
@@ -767,12 +775,12 @@ function OptimizationView({
 
 function TimelineView({ runtime }: { runtime: RuntimeRunDetail }) {
   return (
-    <div className="grid gap-4 xl:grid-cols-2">
-      <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-[#151b2e]">
+    <div className="grid min-w-0 gap-4 xl:grid-cols-2">
+      <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-[#151b2e]">
         <div className="text-sm font-semibold text-slate-950 dark:text-white">Runtime Timeline</div>
-        <div className="mt-3 max-h-[520px] space-y-3 overflow-auto">
+        <div className="mt-3 max-h-[520px] space-y-3 overflow-y-auto overflow-x-hidden">
           {runtime.timeline.map((entry) => (
-            <div key={entry.id} className={`rounded-2xl border px-4 py-3 text-sm ${stepTone(entry.status)}`}>
+            <div key={entry.id} className={`min-w-0 break-words rounded-2xl border px-4 py-3 text-sm ${timelineTone(entry)}`}>
               <div className="flex items-center justify-between gap-3">
                 <div className="font-medium">{entry.label}</div>
                 <div className="text-xs">{formatTimestamp(entry.timestamp)}</div>
@@ -788,11 +796,11 @@ function TimelineView({ runtime }: { runtime: RuntimeRunDetail }) {
         </div>
       </div>
 
-      <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-[#151b2e]">
+      <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-[#151b2e]">
         <div className="text-sm font-semibold text-slate-950 dark:text-white">Live Log</div>
-        <div className="mt-3 max-h-[520px] space-y-3 overflow-auto">
+        <div className="mt-3 max-h-[520px] space-y-3 overflow-y-auto overflow-x-hidden">
           {runtime.logs.map((entry) => (
-            <div key={entry.id} className="rounded-2xl border border-slate-200 px-4 py-3 text-sm dark:border-white/10">
+            <div key={entry.id} className="min-w-0 break-words rounded-2xl border border-slate-200 px-4 py-3 text-sm dark:border-white/10">
               <div className="flex items-center justify-between gap-3">
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge tone={entry.level === "success" ? "good" : entry.level === "error" ? "bad" : entry.level === "warn" ? "warn" : "info"}>

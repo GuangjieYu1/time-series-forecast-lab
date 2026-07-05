@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import experiments, forecast, llm, models, reports, runtime, system, upload
+from app.api import experiments, features, forecast, llm, models, reports, runtime, system, upload
 from app.core.config import get_settings
 from app.core.constants import APP_VERSION
 from app.core.errors import AppError, error_payload
@@ -67,6 +67,7 @@ def health():
 
 app.include_router(upload.router)
 app.include_router(models.router)
+app.include_router(features.router)
 app.include_router(runtime.router)
 app.include_router(forecast.router)
 app.include_router(experiments.router)
