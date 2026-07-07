@@ -21,6 +21,8 @@ services:
     environment:
       - HF_HOME=/app/.model_cache/huggingface
       - TIMESFM_CACHE_DIR=/app/.model_cache/timesfm
+      - WECOM_FEEDBACK_WEBHOOK_URL=${WECOM_FEEDBACK_WEBHOOK_URL:-}
+      - FEEDBACK_NOTIFICATION_TIMEOUT_SECONDS=${FEEDBACK_NOTIFICATION_TIMEOUT_SECONDS:-5.0}
 
   frontend:
     build:
