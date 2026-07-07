@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Literal
@@ -912,6 +912,112 @@ class ExperimentRerunResponse(BaseModel):
     fileMatch: ExperimentRerunFileMatch
 
 
+WorkbenchAgentMode = Literal["offline", "online", "dual"]
+WorkbenchIdeaRoute = Literal["feature_engineering_data", "custom_model", "hybrid", "clarify", "unsupported"]
+
+
+class WorkbenchIdeaContext(BaseModel):
+    targetColumn: str | None = None
+    frequency: str | None = None
+    availableColumns: list[str] = Field(default_factory=list)
+    horizon: int | None = None
+    domain: str | None = None
+
+
+class WorkbenchIdeaAnalyzeRequest(BaseModel):
+    idea: str = Field(min_length=1)
+    context: WorkbenchIdeaContext = Field(default_factory=WorkbenchIdeaContext)
+    mode: WorkbenchAgentMode = "offline"
+
+
+class WorkbenchDataSourceCandidate(BaseModel):
+    id: str
+    name: str
+    category: Literal["built_in", "user_upload", "external_registry", "connector_placeholder"]
+    description: str
+    frequencySupport: list[str] = Field(default_factory=list)
+    futureAvailability: Literal["known_future", "static", "unknown_future", "not_applicable"] = "not_applicable"
+    implementationStatus: Literal["available", "placeholder", "unsupported"] = "available"
+    warnings: list[str] = Field(default_factory=list)
+
+
+class WorkbenchDataSearchPlan(BaseModel):
+    query: str
+    intent: str
+    requiredFields: list[str] = Field(default_factory=list)
+    suggestedJoinKeys: list[str] = Field(default_factory=list)
+    candidateApiCalls: list[str] = Field(default_factory=list)
+
+
+class WorkbenchCovariatePlan(BaseModel):
+    suggestedColumns: list[str] = Field(default_factory=list)
+    covariateType: Literal["known_future", "static", "unknown_future", "mixed", "none"] = "none"
+    backtestPolicy: str = ""
+    forecastPolicy: str = ""
+    leakagePolicy: str = ""
+
+
+class WorkbenchCustomModelSpec(BaseModel):
+    modelId: str | None = None
+    displayName: str | None = None
+    objective: str | None = None
+    requiredInputs: list[str] = Field(default_factory=list)
+    trainingStrategy: str | None = None
+    predictionInterface: str | None = None
+    safetyNotes: list[str] = Field(default_factory=list)
+    executableCodeAllowed: bool = False
+
+
+class WorkbenchOnlineObservation(BaseModel):
+    attempted: bool = False
+    status: Literal["not_configured", "skipped", "success", "failed"] = "skipped"
+    message: str = ""
+    route: WorkbenchIdeaRoute | None = None
+    confidence: float | None = None
+
+
+class WorkbenchIdeaAnalyzeResponse(BaseModel):
+    route: WorkbenchIdeaRoute
+    confidence: float = Field(ge=0, le=1)
+    rationale: str
+    requiredInputs: list[str] = Field(default_factory=list)
+    dataSearchPlan: WorkbenchDataSearchPlan | None = None
+    candidateDataSources: list[WorkbenchDataSourceCandidate] = Field(default_factory=list)
+    covariatePlan: WorkbenchCovariatePlan | None = None
+    customModelSpec: WorkbenchCustomModelSpec | None = None
+    leakageWarnings: list[str] = Field(default_factory=list)
+    nextApiCalls: list[str] = Field(default_factory=list)
+    onlineObservation: WorkbenchOnlineObservation | None = None
+
+
+class WorkbenchDataSourceSearchRequest(BaseModel):
+    query: str = ""
+    domain: str | None = None
+    frequency: str | None = None
+    route: WorkbenchIdeaRoute | None = None
+
+
+class WorkbenchDataSourceSearchResponse(BaseModel):
+    query: str
+    candidates: list[WorkbenchDataSourceCandidate] = Field(default_factory=list)
+
+
+class WorkbenchCustomModelSpecRequest(BaseModel):
+    idea: str = Field(min_length=1)
+    context: WorkbenchIdeaContext = Field(default_factory=WorkbenchIdeaContext)
+
+
+class WorkbenchCustomModelValidateRequest(BaseModel):
+    spec: WorkbenchCustomModelSpec
+
+
+class WorkbenchCustomModelValidateResponse(BaseModel):
+    valid: bool
+    errors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    normalizedSpec: WorkbenchCustomModelSpec
+
+
 class DeepSeekConnectionRequest(BaseModel):
     apiKey: str = Field(min_length=1)
     baseUrl: str = "https://api.deepseek.com"
@@ -977,3 +1083,47 @@ class ReportPdfArtifact(BaseModel):
 class GenerateReportPdfRequest(BaseModel):
     title: str | None = None
     visualArtifacts: list[ReportPdfArtifact] = Field(default_factory=list)
+
+
+FeedbackKind = Literal["urgent", "feedback", "ramble"]
+FeedbackStatus = Literal["open", "in_progress", "done", "ignored"]
+FeedbackNotifyStatus = Literal["pending", "sent", "failed", "skipped"]
+
+
+class FeedbackCreateRequest(BaseModel):
+    kind: FeedbackKind = "feedback"
+    title: str | None = Field(default=None, max_length=255)
+    content: str = Field(min_length=1, max_length=8000)
+    sourcePage: str | None = Field(default=None, max_length=512)
+
+
+class FeedbackItem(BaseModel):
+    feedbackId: str
+    kind: FeedbackKind
+    title: str | None = None
+    content: str
+    sourcePage: str | None = None
+    status: FeedbackStatus
+    notifyStatus: FeedbackNotifyStatus
+    notifyError: str | None = None
+    createdAt: str
+    updatedAt: str
+
+
+class FeedbackListResponse(BaseModel):
+    items: list[FeedbackItem]
+
+
+class FeedbackStatusUpdateRequest(BaseModel):
+    status: FeedbackStatus
+
+
+class FeedbackNotifyTestRequest(BaseModel):
+    message: str = Field(default="企业微信反馈通知测试", min_length=1, max_length=1000)
+
+
+class FeedbackNotifyTestResponse(BaseModel):
+    success: bool
+    notifyStatus: FeedbackNotifyStatus
+    message: str
+    error: str | None = None

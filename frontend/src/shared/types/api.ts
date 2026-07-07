@@ -1,4 +1,4 @@
-export type InferredType = "datetime" | "number" | "boolean" | "string" | "empty";
+﻿export type InferredType = "datetime" | "number" | "boolean" | "string" | "empty";
 
 export interface ColumnProfile {
   name: string;
@@ -830,4 +830,39 @@ export interface ReportPdfArtifact {
   caption: string;
   dataUrl: string;
   summary: string[];
+}
+
+export type FeedbackKind = "urgent" | "feedback" | "ramble";
+export type FeedbackStatus = "open" | "in_progress" | "done" | "ignored";
+export type FeedbackNotifyStatus = "pending" | "sent" | "failed" | "skipped";
+
+export interface FeedbackCreateRequest {
+  kind: FeedbackKind;
+  title?: string | null;
+  content: string;
+  sourcePage?: string | null;
+}
+
+export interface FeedbackItem {
+  feedbackId: string;
+  kind: FeedbackKind;
+  title: string | null;
+  content: string;
+  sourcePage: string | null;
+  status: FeedbackStatus;
+  notifyStatus: FeedbackNotifyStatus;
+  notifyError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FeedbackListResponse {
+  items: FeedbackItem[];
+}
+
+export interface FeedbackNotifyTestResponse {
+  success: boolean;
+  notifyStatus: FeedbackNotifyStatus;
+  message: string;
+  error: string | null;
 }

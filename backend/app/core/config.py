@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"])
     local_rebuild_password: str = "Ygj9871!"
     local_rebuild_allowed_hosts: list[str] = Field(default_factory=lambda: ["127.0.0.1", "::1", "localhost"])
+    wecom_feedback_webhook_url: str | None = None
+    feedback_notification_timeout_seconds: float = 5.0
 
     @property
     def upload_dir(self) -> Path:

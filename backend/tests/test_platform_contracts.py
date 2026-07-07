@@ -69,7 +69,7 @@ def test_benchmark_summary_contract_has_stable_shape():
             "cases": [],
         }
     )
-    assert summary.schemaVersion == "0.4"
+    assert summary.schemaVersion == "0.5"
     assert summary.successRate == 0.0
 
 def test_runtime_tracker_emits_ordered_canonical_events():

@@ -1,25 +1,1187 @@
 {
+  "schemaVersion": "0.5",
   "profile": "fast",
-  "generatedAt": "2026-07-01T03:47:25.272703+00:00",
-  "seconds": 0.8802,
-  "totalCases": 1,
-  "successfulRuns": 1,
+  "suite": "all",
+  "agentMode": "offline",
+  "generatedAt": "2026-07-07T17:10:26.066124+00:00",
+  "seconds": 37.0857,
+  "totalCases": 11,
+  "successfulRuns": 11,
   "failedRuns": 0,
+  "successRate": 1.0,
+  "failureRate": 0.0,
+  "failedAssertions": 0,
+  "warningAssertions": 0,
   "cases": [
     {
-      "name": "etth1_smoke",
+      "name": "daily_clean",
+      "suite": "stability",
       "category": "clean",
+      "fileFormat": "csv",
+      "rowCount": 90,
+      "columnCount": 2,
+      "targetColumns": [
+        "value"
+      ],
+      "covariateColumns": [],
+      "selectedModels": [
+        "naive",
+        "moving_average",
+        "ets"
+      ],
       "uploadStatus": "200",
       "runStatus": "200",
-      "seconds": 0.8801,
-      "memoryMb": 42.25,
+      "seconds": 3.7075,
+      "memoryMb": 569.58,
       "warningCount": 1,
+      "bestMae": 4.06024420434343e-14,
+      "dataHealthScore": 0.0,
+      "modelStatuses": {
+        "ets": "success",
+        "naive": "success",
+        "moving_average": "success"
+      },
+      "modelResults": [
+        {
+          "modelId": "ets",
+          "modelName": "ETS",
+          "status": "success",
+          "warnings": [],
+          "error": null,
+          "metrics": {
+            "mae": 4.06024420434343e-14,
+            "mse": 2.1925825388542866e-27,
+            "rmse": 4.6825020436239924e-14,
+            "wape": 2.724996110297604e-16
+          }
+        },
+        {
+          "modelId": "naive",
+          "modelName": "Naive",
+          "status": "success",
+          "warnings": [],
+          "error": null,
+          "metrics": {
+            "mae": 15.0,
+            "mse": 290.0,
+            "rmse": 17.029386365926403,
+            "wape": 0.10067114093959731
+          }
+        },
+        {
+          "modelId": "moving_average",
+          "modelName": "Moving Average",
+          "status": "success",
+          "warnings": [],
+          "error": null,
+          "metrics": {
+            "mae": 21.0,
+            "mse": 506.0,
+            "rmse": 22.494443758403985,
+            "wape": 0.14093959731543623
+          }
+        }
+      ],
+      "experimentId": "exp_884519b5d3e3",
+      "error": null,
+      "passed": true,
+      "assertions": [
+        {
+          "name": "api_run_success",
+          "status": "passed",
+          "message": "Forecast API run must complete successfully.",
+          "expected": 200,
+          "actual": "200",
+          "tolerance": null
+        }
+      ],
+      "artifacts": {},
+      "thresholds": {},
+      "aggregationResult": null,
+      "featureLiftResult": null,
+      "reproducibilityResult": null,
+      "agentRoutingResult": null
+    },
+    {
+      "name": "daily_dirty",
+      "suite": "stability",
+      "category": "dirty",
+      "fileFormat": "csv",
+      "rowCount": 80,
+      "columnCount": 2,
+      "targetColumns": [
+        "value"
+      ],
+      "covariateColumns": [],
+      "selectedModels": [
+        "naive",
+        "moving_average",
+        "arima"
+      ],
+      "uploadStatus": "200",
+      "runStatus": "200",
+      "seconds": 1.0017,
+      "memoryMb": 40.83,
+      "warningCount": 4,
+      "bestMae": 14.259063078395815,
+      "dataHealthScore": 0.0,
+      "modelStatuses": {
+        "arima": "success",
+        "naive": "success",
+        "moving_average": "success"
+      },
+      "modelResults": [
+        {
+          "modelId": "arima",
+          "modelName": "ARIMA",
+          "status": "success",
+          "warnings": [],
+          "error": null,
+          "metrics": {
+            "mae": 14.259063078395815,
+            "mse": 495.8667210305054,
+            "rmse": 22.26806504909004,
+            "wape": 0.08543476979266516
+          }
+        },
+        {
+          "modelId": "naive",
+          "modelName": "Naive",
+          "status": "success",
+          "warnings": [],
+          "error": null,
+          "metrics": {
+            "mae": 20.9,
+            "mse": 796.7,
+            "rmse": 28.22587465429548,
+            "wape": 0.12522468544038345
+          }
+        },
+        {
+          "modelId": "moving_average",
+          "modelName": "Moving Average",
+          "status": "success",
+          "warnings": [],
+          "error": null,
+          "metrics": {
+            "mae": 25.757142857142867,
+            "mse": 1038.7765306122453,
+            "rmse": 32.23005632344203,
+            "wape": 0.15432679962338447
+          }
+        }
+      ],
+      "experimentId": "exp_851134776fe8",
+      "error": null,
+      "passed": true,
+      "assertions": [
+        {
+          "name": "api_run_success",
+          "status": "passed",
+          "message": "Forecast API run must complete successfully.",
+          "expected": 200,
+          "actual": "200",
+          "tolerance": null
+        }
+      ],
+      "artifacts": {},
+      "thresholds": {},
+      "aggregationResult": null,
+      "featureLiftResult": null,
+      "reproducibilityResult": null,
+      "agentRoutingResult": null
+    },
+    {
+      "name": "daily_edge_short",
+      "suite": "stability",
+      "category": "edge",
+      "fileFormat": "csv",
+      "rowCount": 12,
+      "columnCount": 2,
+      "targetColumns": [
+        "value"
+      ],
+      "covariateColumns": [],
+      "selectedModels": [
+        "naive",
+        "moving_average"
+      ],
+      "uploadStatus": "200",
+      "runStatus": "200",
+      "seconds": 0.616,
+      "memoryMb": 7.67,
+      "warningCount": 2,
+      "bestMae": 2.0,
+      "dataHealthScore": 80.0,
       "modelStatuses": {
         "naive": "success",
-        "xgboost": "failed"
+        "moving_average": "success"
       },
-      "experimentId": "exp_224e3dd330d9",
-      "error": null
+      "modelResults": [
+        {
+          "modelId": "naive",
+          "modelName": "Naive",
+          "status": "success",
+          "warnings": [],
+          "error": null,
+          "metrics": {
+            "mae": 2.0,
+            "mse": 4.666666666666667,
+            "rmse": 2.160246899469287,
+            "wape": 0.09523809523809523
+          }
+        },
+        {
+          "modelId": "moving_average",
+          "modelName": "Moving Average",
+          "status": "success",
+          "warnings": [],
+          "error": null,
+          "metrics": {
+            "mae": 5.0,
+            "mse": 25.666666666666668,
+            "rmse": 5.066228051190222,
+            "wape": 0.23809523809523808
+          }
+        }
+      ],
+      "experimentId": "exp_9bd58fff0b19",
+      "error": null,
+      "passed": true,
+      "assertions": [
+        {
+          "name": "api_run_success",
+          "status": "passed",
+          "message": "Forecast API run must complete successfully.",
+          "expected": 200,
+          "actual": "200",
+          "tolerance": null
+        }
+      ],
+      "artifacts": {},
+      "thresholds": {},
+      "aggregationResult": null,
+      "featureLiftResult": null,
+      "reproducibilityResult": null,
+      "agentRoutingResult": null
+    },
+    {
+      "name": "large_hourly",
+      "suite": "stability",
+      "category": "large",
+      "fileFormat": "csv",
+      "rowCount": 120000,
+      "columnCount": 2,
+      "targetColumns": [
+        "value"
+      ],
+      "covariateColumns": [],
+      "selectedModels": [
+        "naive",
+        "moving_average"
+      ],
+      "uploadStatus": "200",
+      "runStatus": "200",
+      "seconds": 17.6386,
+      "memoryMb": 274.44,
+      "warningCount": 0,
+      "bestMae": 6.688691071428489,
+      "dataHealthScore": 100.0,
+      "modelStatuses": {
+        "moving_average": "success",
+        "naive": "success"
+      },
+      "modelResults": [
+        {
+          "modelId": "moving_average",
+          "modelName": "Moving Average",
+          "status": "success",
+          "warnings": [],
+          "error": null,
+          "metrics": {
+            "mae": 6.688691071428489,
+            "mse": 65.61067390368032,
+            "rmse": 8.100041598885793,
+            "wape": 0.0026668999849134125
+          }
+        },
+        {
+          "modelId": "naive",
+          "modelName": "Naive",
+          "status": "success",
+          "warnings": [],
+          "error": null,
+          "metrics": {
+            "mae": 8.061025000000038,
+            "mse": 91.59962380291739,
+            "rmse": 9.570769237784255,
+            "wape": 0.00321407390793061
+          }
+        }
+      ],
+      "experimentId": "exp_5a6c3ecaf0a7",
+      "error": null,
+      "passed": true,
+      "assertions": [
+        {
+          "name": "api_run_success",
+          "status": "passed",
+          "message": "Forecast API run must complete successfully.",
+          "expected": 200,
+          "actual": "200",
+          "tolerance": null
+        }
+      ],
+      "artifacts": {},
+      "thresholds": {},
+      "aggregationResult": null,
+      "featureLiftResult": null,
+      "reproducibilityResult": null,
+      "agentRoutingResult": null
+    },
+    {
+      "name": "etth1_smoke",
+      "suite": "stability",
+      "category": "clean",
+      "fileFormat": "csv",
+      "rowCount": 17420,
+      "columnCount": 8,
+      "targetColumns": [
+        "OT"
+      ],
+      "covariateColumns": [],
+      "selectedModels": [
+        "naive",
+        "xgboost"
+      ],
+      "uploadStatus": "200",
+      "runStatus": "200",
+      "seconds": 5.5847,
+      "memoryMb": 0.0,
+      "warningCount": 2,
+      "bestMae": 0.8600701093673712,
+      "dataHealthScore": 95.0,
+      "modelStatuses": {
+        "xgboost": "success",
+        "naive": "success"
+      },
+      "modelResults": [
+        {
+          "modelId": "xgboost",
+          "modelName": "XGBoost",
+          "status": "success",
+          "warnings": [
+            "机器学习模型使用 lag 特征、滚动统计、日历/趋势特征、5 个用户协变量 进行递归多步预测。"
+          ],
+          "error": null,
+          "metrics": {
+            "mae": 0.8600701093673712,
+            "mse": 0.8548363802527784,
+            "rmse": 0.9245736207856995,
+            "wape": 0.08883759905232887
+          }
+        },
+        {
+          "modelId": "naive",
+          "modelName": "Naive",
+          "status": "success",
+          "warnings": [],
+          "error": null,
+          "metrics": {
+            "mae": 0.9409583806991583,
+            "mse": 1.014430640705201,
+            "rmse": 1.0071894760695235,
+            "wape": 0.09719263864543243
+          }
+        }
+      ],
+      "experimentId": "exp_7ae7bdcc0627",
+      "error": null,
+      "passed": true,
+      "assertions": [
+        {
+          "name": "api_run_success",
+          "status": "passed",
+          "message": "Forecast API run must complete successfully.",
+          "expected": 200,
+          "actual": "200",
+          "tolerance": null
+        }
+      ],
+      "artifacts": {},
+      "thresholds": {},
+      "aggregationResult": null,
+      "featureLiftResult": null,
+      "reproducibilityResult": null,
+      "agentRoutingResult": null
+    },
+    {
+      "name": "raw_detail_sum",
+      "suite": "aggregation_correctness",
+      "category": "aggregation",
+      "fileFormat": "csv",
+      "rowCount": 10,
+      "columnCount": 5,
+      "targetColumns": [
+        "passenger_count"
+      ],
+      "covariateColumns": [],
+      "selectedModels": [
+        "naive"
+      ],
+      "uploadStatus": "200",
+      "runStatus": "200",
+      "seconds": 0.6953,
+      "memoryMb": 0.0,
+      "warningCount": 2,
+      "bestMae": 6.0,
+      "dataHealthScore": 0.0,
+      "modelStatuses": {
+        "naive": "success"
+      },
+      "modelResults": [
+        {
+          "modelId": "naive",
+          "modelName": "Naive",
+          "status": "success",
+          "warnings": [],
+          "error": null,
+          "metrics": {
+            "mae": 6.0,
+            "mse": 52.0,
+            "rmse": 7.211102550927978,
+            "wape": 0.25
+          }
+        }
+      ],
+      "experimentId": "exp_9dc75d6acc56",
+      "error": null,
+      "passed": true,
+      "assertions": [
+        {
+          "name": "golden_series_length",
+          "status": "passed",
+          "message": "聚合后的时间点数量必须与 golden series 一致。",
+          "expected": 6,
+          "actual": 6,
+          "tolerance": null
+        },
+        {
+          "name": "golden_series_values",
+          "status": "passed",
+          "message": "聚合后的数值必须与 golden series 对齐。",
+          "expected": [
+            [
+              "2024-01-01T00:00:00",
+              30.0
+            ],
+            [
+              "2024-01-02T00:00:00",
+              12.0
+            ],
+            [
+              "2024-01-03T00:00:00",
+              30.0
+            ],
+            [
+              "2024-01-04T00:00:00",
+              18.0
+            ],
+            [
+              "2024-01-05T00:00:00",
+              20.0
+            ],
+            [
+              "2024-01-06T00:00:00",
+              28.0
+            ]
+          ],
+          "actual": [
+            [
+              "2024-01-01T00:00:00",
+              30.0
+            ],
+            [
+              "2024-01-02T00:00:00",
+              12.0
+            ],
+            [
+              "2024-01-03T00:00:00",
+              30.0
+            ],
+            [
+              "2024-01-04T00:00:00",
+              18.0
+            ],
+            [
+              "2024-01-05T00:00:00",
+              20.0
+            ],
+            [
+              "2024-01-06T00:00:00",
+              28.0
+            ]
+          ],
+          "tolerance": 0.0
+        }
+      ],
+      "artifacts": {},
+      "thresholds": {},
+      "aggregationResult": {
+        "method": "sum",
+        "maxAbsDiff": 0.0,
+        "comparedPoints": 6,
+        "expectedSeriesHash": "a7629f87c33fbaa0309b4baac4dcfbd54adc87f20fc6f26847b522866f0bd8f9",
+        "actualSeriesHash": "a7629f87c33fbaa0309b4baac4dcfbd54adc87f20fc6f26847b522866f0bd8f9"
+      },
+      "featureLiftResult": null,
+      "reproducibilityResult": null,
+      "agentRoutingResult": null
+    },
+    {
+      "name": "raw_detail_mean",
+      "suite": "aggregation_correctness",
+      "category": "aggregation",
+      "fileFormat": "csv",
+      "rowCount": 10,
+      "columnCount": 5,
+      "targetColumns": [
+        "passenger_count"
+      ],
+      "covariateColumns": [],
+      "selectedModels": [
+        "naive"
+      ],
+      "uploadStatus": "200",
+      "runStatus": "200",
+      "seconds": 1.2576,
+      "memoryMb": 0.0,
+      "warningCount": 3,
+      "bestMae": 8.0,
+      "dataHealthScore": 0.0,
+      "modelStatuses": {
+        "naive": "success"
+      },
+      "modelResults": [
+        {
+          "modelId": "naive",
+          "modelName": "Naive",
+          "status": "success",
+          "warnings": [],
+          "error": null,
+          "metrics": {
+            "mae": 8.0,
+            "mse": 73.0,
+            "rmse": 8.54400374531753,
+            "wape": 0.47058823529411764
+          }
+        }
+      ],
+      "experimentId": "exp_96fa50e2ad8f",
+      "error": null,
+      "passed": true,
+      "assertions": [
+        {
+          "name": "golden_series_length",
+          "status": "passed",
+          "message": "聚合后的时间点数量必须与 golden series 一致。",
+          "expected": 6,
+          "actual": 6,
+          "tolerance": null
+        },
+        {
+          "name": "golden_series_values",
+          "status": "passed",
+          "message": "聚合后的数值必须与 golden series 对齐。",
+          "expected": [
+            [
+              "2024-01-01T00:00:00",
+              15.0
+            ],
+            [
+              "2024-01-02T00:00:00",
+              12.0
+            ],
+            [
+              "2024-01-03T00:00:00",
+              30.0
+            ],
+            [
+              "2024-01-04T00:00:00",
+              9.0
+            ],
+            [
+              "2024-01-05T00:00:00",
+              20.0
+            ],
+            [
+              "2024-01-06T00:00:00",
+              14.0
+            ]
+          ],
+          "actual": [
+            [
+              "2024-01-01T00:00:00",
+              15.0
+            ],
+            [
+              "2024-01-02T00:00:00",
+              12.0
+            ],
+            [
+              "2024-01-03T00:00:00",
+              30.0
+            ],
+            [
+              "2024-01-04T00:00:00",
+              9.0
+            ],
+            [
+              "2024-01-05T00:00:00",
+              20.0
+            ],
+            [
+              "2024-01-06T00:00:00",
+              14.0
+            ]
+          ],
+          "tolerance": 1e-09
+        }
+      ],
+      "artifacts": {},
+      "thresholds": {
+        "tolerance": 1e-09
+      },
+      "aggregationResult": {
+        "method": "mean",
+        "maxAbsDiff": 0.0,
+        "comparedPoints": 6,
+        "expectedSeriesHash": "b104d1018c9b98f094243db327335795817055a62617a1048b0c2487fd710b94",
+        "actualSeriesHash": "b104d1018c9b98f094243db327335795817055a62617a1048b0c2487fd710b94"
+      },
+      "featureLiftResult": null,
+      "reproducibilityResult": null,
+      "agentRoutingResult": null
+    },
+    {
+      "name": "raw_detail_count",
+      "suite": "aggregation_correctness",
+      "category": "aggregation",
+      "fileFormat": "csv",
+      "rowCount": 10,
+      "columnCount": 5,
+      "targetColumns": [
+        "passenger_count"
+      ],
+      "covariateColumns": [],
+      "selectedModels": [
+        "naive"
+      ],
+      "uploadStatus": "200",
+      "runStatus": "200",
+      "seconds": 0.5221,
+      "memoryMb": 0.0,
+      "warningCount": 2,
+      "bestMae": 0.5,
+      "dataHealthScore": 0.0,
+      "modelStatuses": {
+        "naive": "success"
+      },
+      "modelResults": [
+        {
+          "modelId": "naive",
+          "modelName": "Naive",
+          "status": "success",
+          "warnings": [],
+          "error": null,
+          "metrics": {
+            "mae": 0.5,
+            "mse": 0.5,
+            "rmse": 0.7071067811865476,
+            "wape": 0.3333333333333333
+          }
+        }
+      ],
+      "experimentId": "exp_ce2cfe052e8d",
+      "error": null,
+      "passed": true,
+      "assertions": [
+        {
+          "name": "golden_series_length",
+          "status": "passed",
+          "message": "聚合后的时间点数量必须与 golden series 一致。",
+          "expected": 6,
+          "actual": 6,
+          "tolerance": null
+        },
+        {
+          "name": "golden_series_values",
+          "status": "passed",
+          "message": "聚合后的数值必须与 golden series 对齐。",
+          "expected": [
+            [
+              "2024-01-01T00:00:00",
+              2.0
+            ],
+            [
+              "2024-01-02T00:00:00",
+              2.0
+            ],
+            [
+              "2024-01-03T00:00:00",
+              1.0
+            ],
+            [
+              "2024-01-04T00:00:00",
+              2.0
+            ],
+            [
+              "2024-01-05T00:00:00",
+              1.0
+            ],
+            [
+              "2024-01-06T00:00:00",
+              2.0
+            ]
+          ],
+          "actual": [
+            [
+              "2024-01-01T00:00:00",
+              2.0
+            ],
+            [
+              "2024-01-02T00:00:00",
+              2.0
+            ],
+            [
+              "2024-01-03T00:00:00",
+              1.0
+            ],
+            [
+              "2024-01-04T00:00:00",
+              2.0
+            ],
+            [
+              "2024-01-05T00:00:00",
+              1.0
+            ],
+            [
+              "2024-01-06T00:00:00",
+              2.0
+            ]
+          ],
+          "tolerance": 0.0
+        }
+      ],
+      "artifacts": {},
+      "thresholds": {},
+      "aggregationResult": {
+        "method": "count",
+        "maxAbsDiff": 0.0,
+        "comparedPoints": 6,
+        "expectedSeriesHash": "3739728c36b831ef74a04f83bbe530f465150a7933137dd66ff71a9d688fbff6",
+        "actualSeriesHash": "3739728c36b831ef74a04f83bbe530f465150a7933137dd66ff71a9d688fbff6"
+      },
+      "featureLiftResult": null,
+      "reproducibilityResult": null,
+      "agentRoutingResult": null
+    },
+    {
+      "name": "repro_daily_clean",
+      "suite": "reproducibility",
+      "category": "reproducibility",
+      "fileFormat": "csv",
+      "rowCount": null,
+      "columnCount": null,
+      "targetColumns": [
+        "value"
+      ],
+      "covariateColumns": [],
+      "selectedModels": [
+        "naive",
+        "moving_average"
+      ],
+      "uploadStatus": "200",
+      "runStatus": "200",
+      "seconds": 1.2822,
+      "memoryMb": 0.0,
+      "warningCount": 0,
+      "bestMae": null,
+      "dataHealthScore": null,
+      "modelStatuses": {},
+      "modelResults": [],
+      "experimentId": null,
+      "error": null,
+      "passed": true,
+      "assertions": [
+        {
+          "name": "manifest_datasetHash",
+          "status": "passed",
+          "message": "Manifest datasetHash 必须一致。",
+          "expected": "729f94799fed8ba56b4c8dbd54fa692109aabfcad0c25d6b734877b860f67b5c",
+          "actual": "729f94799fed8ba56b4c8dbd54fa692109aabfcad0c25d6b734877b860f67b5c",
+          "tolerance": null
+        },
+        {
+          "name": "manifest_configHash",
+          "status": "passed",
+          "message": "Manifest configHash 必须一致。",
+          "expected": "719b0ae477a1feb292fce1ec256310cf5e5bf18cc9b11dc639b5f9ba9959220e",
+          "actual": "719b0ae477a1feb292fce1ec256310cf5e5bf18cc9b11dc639b5f9ba9959220e",
+          "tolerance": null
+        },
+        {
+          "name": "manifest_featurePipelineVersion",
+          "status": "passed",
+          "message": "Manifest featurePipelineVersion 必须一致。",
+          "expected": "0.4",
+          "actual": "0.4",
+          "tolerance": null
+        },
+        {
+          "name": "manifest_runtimeEventSchemaVersion",
+          "status": "passed",
+          "message": "Manifest runtimeEventSchemaVersion 必须一致。",
+          "expected": "0.4",
+          "actual": "0.4",
+          "tolerance": null
+        },
+        {
+          "name": "manifest_randomSeed",
+          "status": "passed",
+          "message": "Manifest randomSeed 必须一致。",
+          "expected": 42,
+          "actual": 42,
+          "tolerance": null
+        },
+        {
+          "name": "aggregated_series_hash",
+          "status": "passed",
+          "message": "聚合后的历史序列 hash 必须一致。",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "name": "metric_naive_mae",
+          "status": "passed",
+          "message": "naive mae 必须在容差内复现。",
+          "expected": 8.0,
+          "actual": 8.0,
+          "tolerance": 1e-08
+        },
+        {
+          "name": "metric_naive_mse",
+          "status": "passed",
+          "message": "naive mse 必须在容差内复现。",
+          "expected": 80.0,
+          "actual": 80.0,
+          "tolerance": 1e-08
+        },
+        {
+          "name": "metric_naive_rmse",
+          "status": "passed",
+          "message": "naive rmse 必须在容差内复现。",
+          "expected": 8.94427190999916,
+          "actual": 8.94427190999916,
+          "tolerance": 1e-08
+        },
+        {
+          "name": "metric_naive_wape",
+          "status": "passed",
+          "message": "naive wape 必须在容差内复现。",
+          "expected": 0.05128205128205128,
+          "actual": 0.05128205128205128,
+          "tolerance": 1e-08
+        },
+        {
+          "name": "metric_moving_average_mae",
+          "status": "passed",
+          "message": "moving_average mae 必须在容差内复现。",
+          "expected": 14.0,
+          "actual": 14.0,
+          "tolerance": 1e-08
+        },
+        {
+          "name": "metric_moving_average_mse",
+          "status": "passed",
+          "message": "moving_average mse 必须在容差内复现。",
+          "expected": 212.0,
+          "actual": 212.0,
+          "tolerance": 1e-08
+        },
+        {
+          "name": "metric_moving_average_rmse",
+          "status": "passed",
+          "message": "moving_average rmse 必须在容差内复现。",
+          "expected": 14.560219778561036,
+          "actual": 14.560219778561036,
+          "tolerance": 1e-08
+        },
+        {
+          "name": "metric_moving_average_wape",
+          "status": "passed",
+          "message": "moving_average wape 必须在容差内复现。",
+          "expected": 0.08974358974358974,
+          "actual": 0.08974358974358974,
+          "tolerance": 1e-08
+        },
+        {
+          "name": "backtest_predictions",
+          "status": "passed",
+          "message": "backtest predictions/residual 必须一致。",
+          "expected": null,
+          "actual": null,
+          "tolerance": null
+        },
+        {
+          "name": "recommended_model",
+          "status": "passed",
+          "message": "推荐模型必须一致。",
+          "expected": "naive",
+          "actual": "naive",
+          "tolerance": null
+        }
+      ],
+      "artifacts": {},
+      "thresholds": {
+        "metricTolerance": 1e-08
+      },
+      "aggregationResult": null,
+      "featureLiftResult": null,
+      "reproducibilityResult": {
+        "reproducibilityScore": 1.0,
+        "driftItems": [],
+        "ignoredVolatileFields": [
+          "runtime elapsed seconds",
+          "memory snapshots",
+          "log timestamps",
+          "experimentId",
+          "experimentName",
+          "createdAt"
+        ],
+        "firstExperimentId": "exp_feeed827591d",
+        "secondExperimentId": "exp_2ba18536a9fb"
+      },
+      "agentRoutingResult": null
+    },
+    {
+      "name": "feature_lift_covariate_effect",
+      "suite": "feature_lift",
+      "category": "feature",
+      "fileFormat": "csv",
+      "rowCount": null,
+      "columnCount": null,
+      "targetColumns": [
+        "value"
+      ],
+      "covariateColumns": [
+        "promo"
+      ],
+      "selectedModels": [
+        "random_forest"
+      ],
+      "uploadStatus": "200",
+      "runStatus": "200",
+      "seconds": 4.7181,
+      "memoryMb": 0.0,
+      "warningCount": 0,
+      "bestMae": null,
+      "dataHealthScore": null,
+      "modelStatuses": {},
+      "modelResults": [],
+      "experimentId": null,
+      "error": null,
+      "passed": true,
+      "assertions": [
+        {
+          "name": "positive_feature_run_success",
+          "status": "passed",
+          "message": "启用/禁用协变量的正例实验都必须运行成功。",
+          "expected": 200,
+          "actual": {
+            "baseline": 200,
+            "feature": 200
+          },
+          "tolerance": null
+        },
+        {
+          "name": "positive_feature_lift",
+          "status": "passed",
+          "message": "正例中协变量参入后 MAE 至少改善 15%。",
+          "expected": 0.15,
+          "actual": 0.8816581920605909,
+          "tolerance": null
+        },
+        {
+          "name": "noise_covariate_not_overclaimed",
+          "status": "passed",
+          "message": "噪声协变量不应造成超过 10% 的性能退化。",
+          "expected": 0.1,
+          "actual": -0.059256869571316116,
+          "tolerance": null
+        },
+        {
+          "name": "unknown_future_analysis_only_documented",
+          "status": "passed",
+          "message": "unknown_future analysis_only 必须进入说明但不得作为可用未来真实值。",
+          "expected": true,
+          "actual": true,
+          "tolerance": null
+        }
+      ],
+      "artifacts": {},
+      "thresholds": {
+        "minImprovementRatio": 0.15,
+        "maxNoiseDegradationRatio": 0.1
+      },
+      "aggregationResult": null,
+      "featureLiftResult": {
+        "modelId": "random_forest",
+        "baselineMae": 10.616858609885282,
+        "featureMae": 1.2564182425309056,
+        "improvementRatio": 0.8816581920605909,
+        "noiseDegradationRatio": -0.059256869571316116,
+        "leakageProtected": true
+      },
+      "reproducibilityResult": null,
+      "agentRoutingResult": null
+    },
+    {
+      "name": "workbench_agent_golden_routes",
+      "suite": "agent_routing",
+      "category": "agent",
+      "fileFormat": "json",
+      "rowCount": null,
+      "columnCount": null,
+      "targetColumns": [],
+      "covariateColumns": [],
+      "selectedModels": [],
+      "uploadStatus": "skipped",
+      "runStatus": "200",
+      "seconds": 0.0363,
+      "memoryMb": 0.0,
+      "warningCount": 0,
+      "bestMae": null,
+      "dataHealthScore": null,
+      "modelStatuses": {},
+      "modelResults": [],
+      "experimentId": null,
+      "error": null,
+      "passed": true,
+      "assertions": [
+        {
+          "name": "route_accuracy",
+          "status": "passed",
+          "message": "离线黄金集 route accuracy 必须 >= 90%。",
+          "expected": 0.9,
+          "actual": 1.0,
+          "tolerance": null
+        },
+        {
+          "name": "schema_validity",
+          "status": "passed",
+          "message": "Agent 响应 schema validity 必须为 100%。",
+          "expected": 1.0,
+          "actual": 1.0,
+          "tolerance": null
+        },
+        {
+          "name": "leakage_warning_recall",
+          "status": "passed",
+          "message": "泄漏风险召回率必须 >= 95%。",
+          "expected": 0.95,
+          "actual": 1.0,
+          "tolerance": null
+        },
+        {
+          "name": "unsupported_promise_count",
+          "status": "passed",
+          "message": "unsupported 场景不能承诺后续执行接口。",
+          "expected": 0,
+          "actual": 0,
+          "tolerance": null
+        }
+      ],
+      "artifacts": {
+        "cases": [
+          {
+            "name": "holiday_data",
+            "expectedRoute": "feature_engineering_data",
+            "actualRoute": "feature_engineering_data",
+            "status": 200
+          },
+          {
+            "name": "weather_data",
+            "expectedRoute": "feature_engineering_data",
+            "actualRoute": "feature_engineering_data",
+            "status": 200
+          },
+          {
+            "name": "fuel_market",
+            "expectedRoute": "feature_engineering_data",
+            "actualRoute": "feature_engineering_data",
+            "status": 200
+          },
+          {
+            "name": "promo_data",
+            "expectedRoute": "feature_engineering_data",
+            "actualRoute": "feature_engineering_data",
+            "status": 200
+          },
+          {
+            "name": "custom_loss",
+            "expectedRoute": "custom_model",
+            "actualRoute": "custom_model",
+            "status": 200
+          },
+          {
+            "name": "hierarchical_model",
+            "expectedRoute": "custom_model",
+            "actualRoute": "custom_model",
+            "status": 200
+          },
+          {
+            "name": "robust_model",
+            "expectedRoute": "custom_model",
+            "actualRoute": "custom_model",
+            "status": 200
+          },
+          {
+            "name": "hybrid_market_model",
+            "expectedRoute": "hybrid",
+            "actualRoute": "hybrid",
+            "status": 200
+          },
+          {
+            "name": "clarify_vague",
+            "expectedRoute": "clarify",
+            "actualRoute": "clarify",
+            "status": 200
+          },
+          {
+            "name": "unsupported_sensitive",
+            "expectedRoute": "unsupported",
+            "actualRoute": "unsupported",
+            "status": 200
+          }
+        ]
+      },
+      "thresholds": {
+        "routeAccuracy": 0.9,
+        "schemaValidity": 1.0,
+        "leakageWarningRecall": 0.95
+      },
+      "aggregationResult": null,
+      "featureLiftResult": null,
+      "reproducibilityResult": null,
+      "agentRoutingResult": {
+        "routeAccuracy": 1.0,
+        "schemaValidity": 1.0,
+        "leakageWarningRecall": 1.0,
+        "unsupportedPromiseCount": 0,
+        "onlineWarnings": []
+      }
     }
   ]
 }

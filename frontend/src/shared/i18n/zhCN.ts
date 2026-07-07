@@ -8,6 +8,7 @@ export const zhCN = {
     forecast: "预测实验",
     models: "模型库",
     experiments: "实验历史",
+    feedback: "反馈中心",
     settings: "API 设置"
   },
   status: {

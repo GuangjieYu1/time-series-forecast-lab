@@ -1,10 +1,14 @@
-import type {
+﻿import type {
   DeepSeekConnectionResponse,
   DeepSeekSettings,
   DeviceInfo,
   ExperimentDetail,
   FeatureFactoryResponse,
   ExperimentManifest,
+  FeedbackCreateRequest,
+  FeedbackItem,
+  FeedbackListResponse,
+  FeedbackNotifyTestResponse,
   ExperimentRerunResponse,
   ExperimentListItem,
   FinalForecastResponse,
@@ -257,6 +261,41 @@ export async function triggerLocalRebuild(password: string): Promise<LocalRebuil
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ password, delaySeconds: 2 })
+    })
+  );
+}
+
+export async function createFeedback(request: FeedbackCreateRequest): Promise<FeedbackItem> {
+  return parseResponse<FeedbackItem>(
+    await fetch("/api/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request)
+    })
+  );
+}
+
+export async function fetchFeedback(limit = 50): Promise<FeedbackItem[]> {
+  const body = await parseResponse<FeedbackListResponse>(await fetch(`/api/feedback?limit=${limit}`));
+  return body.items;
+}
+
+export async function updateFeedbackStatus(feedbackId: string, status: FeedbackItem["status"]): Promise<FeedbackItem> {
+  return parseResponse<FeedbackItem>(
+    await fetch(`/api/feedback/${encodeURIComponent(feedbackId)}/status`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status })
+    })
+  );
+}
+
+export async function testWeComFeedbackNotification(message: string): Promise<FeedbackNotifyTestResponse> {
+  return parseResponse<FeedbackNotifyTestResponse>(
+    await fetch("/api/feedback/test-wecom", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message })
     })
   );
 }

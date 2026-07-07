@@ -4,6 +4,14 @@ import json
 from pathlib import Path
 
 
+def _fmt(value):
+    if value is None:
+        return "-"
+    if isinstance(value, float):
+        return f"{value:.6g}"
+    return str(value)
+
+
 def write_summary(output_dir: Path, summary: dict) -> tuple[Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "benchmark_summary.json"
@@ -13,64 +21,36 @@ def write_summary(output_dir: Path, summary: dict) -> tuple[Path, Path]:
     lines = [
         "# Benchmark Summary",
         "",
+        f"- schema: `{summary.get('schemaVersion', '0.5')}`",
+        f"- suite: `{summary.get('suite', 'all')}`",
         f"- profile: `{summary['profile']}`",
+        f"- agent mode: `{summary.get('agentMode', 'offline')}`",
         f"- total cases: `{summary['totalCases']}`",
         f"- successful API runs: `{summary['successfulRuns']}`",
         f"- failed API runs: `{summary['failedRuns']}`",
+        f"- failed assertions: `{summary.get('failedAssertions', 0)}`",
+        f"- warning assertions: `{summary.get('warningAssertions', 0)}`",
         f"- generated at: `{summary['generatedAt']}`",
         "",
-        "| case | category | format | rows | cols | health | best_mae | upload | run | seconds | warnings |",
-        "| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: |",
+        "| case | suite | category | passed | rows | best_mae | run | seconds | assertions |",
+        "| --- | --- | --- | --- | ---: | ---: | --- | ---: | ---: |",
     ]
     for case in summary["cases"]:
-        lines.append(
-            f"| {case['name']} | {case['category']} | {case.get('fileFormat', '-')} | {case.get('rowCount', '-')} | {case.get('columnCount', '-')} | {case.get('dataHealthScore', '-')} | {case.get('bestMae', '-')} | {case['uploadStatus']} | {case['runStatus']} | {case['seconds']} | {case['warningCount']} |"
-        )
+        lines.append(f"| {case['name']} | {case.get('suite', '-')} | {case['category']} | {case.get('passed', True)} | {_fmt(case.get('rowCount'))} | {_fmt(case.get('bestMae'))} | {case.get('runStatus', '-')} | {_fmt(case.get('seconds'))} | {len(case.get('assertions', []))} |")
     for case in summary["cases"]:
-        lines.extend(
-            [
-                "",
-                f"## {case['name']}",
-                "",
-                f"- category: `{case['category']}`",
-                f"- file format: `{case.get('fileFormat', '-')}`",
-                f"- target columns: `{', '.join(case.get('targetColumns', [])) or '-'}`",
-                f"- covariate columns: `{', '.join(case.get('covariateColumns', [])) or '-'}`",
-                f"- selected models: `{', '.join(case.get('selectedModels', [])) or '-'}`",
-                f"- data health score: `{case.get('dataHealthScore', '-')}`",
-                f"- best MAE: `{case.get('bestMae', '-')}`",
-                f"- warning count: `{case['warningCount']}`",
-            ]
-        )
+        lines.extend(["", f"## {case['name']}", "", f"- suite: `{case.get('suite', '-')}`", f"- category: `{case['category']}`", f"- passed: `{case.get('passed', True)}`", f"- warning count: `{case.get('warningCount', 0)}`"])
         if case.get("error"):
             lines.extend(["", "### run error", "", "```text", str(case["error"]), "```"])
+        assertions = case.get("assertions", [])
+        if assertions:
+            lines.extend(["", "### assertions", "", "| assertion | status | message |", "| --- | --- | --- |"])
+            for assertion in assertions:
+                lines.append(f"| {assertion.get('name')} | {assertion.get('status')} | {str(assertion.get('message', '')).replace('|', '/')} |")
         model_results = case.get("modelResults", [])
         if model_results:
-            lines.extend(
-                [
-                    "",
-                    "### model results",
-                    "",
-                    "| model | status | MAE | RMSE | WAPE | warnings | error |",
-                    "| --- | --- | ---: | ---: | ---: | ---: | --- |",
-                ]
-            )
+            lines.extend(["", "### model results", "", "| model | status | MAE | RMSE | WAPE | warnings | error |", "| --- | --- | ---: | ---: | ---: | ---: | --- |"])
             for model in model_results:
                 metrics = model.get("metrics") or {}
-                lines.append(
-                    "| "
-                    + " | ".join(
-                        [
-                            str(model.get("modelName") or model.get("modelId") or "-"),
-                            str(model.get("status") or "-"),
-                            str(metrics.get("mae", "-")),
-                            str(metrics.get("rmse", "-")),
-                            str(metrics.get("wape", "-")),
-                            str(len(model.get("warnings", []))),
-                            str(model.get("error") or "-"),
-                        ]
-                    )
-                    + " |"
-                )
+                lines.append("| " + " | ".join([str(model.get("modelName") or model.get("modelId") or "-"), str(model.get("status") or "-"), _fmt(metrics.get("mae")), _fmt(metrics.get("rmse")), _fmt(metrics.get("wape")), str(len(model.get("warnings", []))), str(model.get("error") or "-")]) + " |")
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return json_path, md_path

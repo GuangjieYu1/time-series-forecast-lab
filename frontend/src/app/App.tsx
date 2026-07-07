@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { ExperimentDetailPage } from "../features/experiments/ExperimentDetailPage";
 import { ExperimentsPage } from "../features/experiments/ExperimentsPage";
+import { FeedbackPage } from "../features/feedback/FeedbackPage";
 import { ForecastPage } from "../features/forecast/ForecastPage";
 import { ModelsPage } from "../features/models/ModelsPage";
 import { OverviewPage } from "../features/overview/OverviewPage";
@@ -19,6 +20,7 @@ const navItems = [
   { to: "/forecast", label: zhCN.nav.forecast, code: "FX" },
   { to: "/models", label: zhCN.nav.models, code: "MD" },
   { to: "/experiments", label: zhCN.nav.experiments, code: "HX" },
+  { to: "/feedback", label: zhCN.nav.feedback, code: "FB" },
   { to: "/settings", label: zhCN.nav.settings, code: "AI" }
 ];
 
@@ -238,6 +240,7 @@ export function App() {
             <Route path="/models" element={<ModelsPage />} />
             <Route path="/experiments" element={<ExperimentsPage />} />
             <Route path="/experiments/:id" element={<ExperimentDetailPage />} />
+            <Route path="/feedback" element={<FeedbackPage />} />
             <Route path="/settings" element={<ApiSettingsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
