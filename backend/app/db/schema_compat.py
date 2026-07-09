@@ -6,6 +6,7 @@ from sqlalchemy.engine import Engine
 
 EXPERIMENT_COMPAT_COLUMNS: dict[str, str] = {
     "manifest_json": "TEXT",
+    "attribution_json": "TEXT",
     "config_hash": "TEXT",
     "source_file_sha256": "TEXT",
     "app_version": "TEXT",

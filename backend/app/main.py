@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import auth, experiments, features, feedback, forecast, llm, models, reports, runtime, system, upload, user_groups, users, workbench_agent, workspaces
+from app.api import agent_runs, auth, experiments, features, feedback, forecast, llm, models, reports, runtime, system, upload, user_groups, users, workbench_agent, workspaces
 from app.core.config import get_settings
 from app.core.constants import APP_VERSION
 from app.core.errors import AppError, error_payload
@@ -74,6 +74,7 @@ app.include_router(feedback.router)
 app.include_router(runtime.router)
 app.include_router(forecast.router)
 app.include_router(experiments.router)
+app.include_router(agent_runs.router)
 app.include_router(llm.router)
 app.include_router(reports.router)
 app.include_router(system.router)

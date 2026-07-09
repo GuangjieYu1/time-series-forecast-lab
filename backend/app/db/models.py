@@ -95,6 +95,7 @@ class ExperimentRecord(Base):
     final_forecast_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     model_logs_json: Mapped[str] = mapped_column(Text, nullable=False)
     runtime_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attribution_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     manifest_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     config_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     source_file_sha256: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -113,6 +114,33 @@ class ReportRecord(Base):
     content_markdown: Mapped[str] = mapped_column(Text, nullable=False)
     model: Mapped[str] = mapped_column(String(100), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
+class AgentRunRecord(Base):
+    __tablename__ = "agent_runs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, index=True)
+    experiment_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    workspace_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    created_by_user_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    request_json: Mapped[str] = mapped_column(Text, nullable=False)
+    context_json: Mapped[str] = mapped_column(Text, nullable=False)
+    plan_json: Mapped[str] = mapped_column(Text, nullable=False)
+    events_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    artifacts_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    messages_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    invocations_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    summary_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="planned", index=True)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
 
 class FeedbackRecord(Base):
     __tablename__ = "feedback_records"

@@ -3,8 +3,8 @@
   "profile": "fast",
   "suite": "all",
   "agentMode": "offline",
-  "generatedAt": "2026-07-08T13:28:10.667954+00:00",
-  "seconds": 20.2098,
+  "generatedAt": "2026-07-09T10:38:49.793142+00:00",
+  "seconds": 20.1207,
   "totalCases": 11,
   "successfulRuns": 11,
   "failedRuns": 0,
@@ -31,8 +31,8 @@
       ],
       "uploadStatus": "200",
       "runStatus": "200",
-      "seconds": 1.743,
-      "memoryMb": 291.39,
+      "seconds": 1.6375,
+      "memoryMb": 302.35,
       "warningCount": 1,
       "bestMae": 0.0,
       "dataHealthScore": 0.0,
@@ -82,7 +82,7 @@
           }
         }
       ],
-      "experimentId": "exp_3ce6aa3a4733",
+      "experimentId": "exp_2c5ffa1867dd",
       "error": null,
       "passed": true,
       "assertions": [
@@ -120,8 +120,8 @@
       ],
       "uploadStatus": "200",
       "runStatus": "200",
-      "seconds": 0.8519,
-      "memoryMb": 46.49,
+      "seconds": 0.8584,
+      "memoryMb": 41.09,
       "warningCount": 4,
       "bestMae": 14.258965216233491,
       "dataHealthScore": 0.0,
@@ -171,7 +171,7 @@
           }
         }
       ],
-      "experimentId": "exp_7c8e68339230",
+      "experimentId": "exp_aac31eb43de2",
       "error": null,
       "passed": true,
       "assertions": [
@@ -208,8 +208,8 @@
       ],
       "uploadStatus": "200",
       "runStatus": "200",
-      "seconds": 0.6494,
-      "memoryMb": 19.56,
+      "seconds": 0.6214,
+      "memoryMb": 15.31,
       "warningCount": 2,
       "bestMae": 2.0,
       "dataHealthScore": 80.0,
@@ -245,7 +245,7 @@
           }
         }
       ],
-      "experimentId": "exp_c1feff65a36a",
+      "experimentId": "exp_88e566de1a67",
       "error": null,
       "passed": true,
       "assertions": [
@@ -282,8 +282,8 @@
       ],
       "uploadStatus": "200",
       "runStatus": "200",
-      "seconds": 7.8308,
-      "memoryMb": 296.17,
+      "seconds": 7.8905,
+      "memoryMb": 313.19,
       "warningCount": 0,
       "bestMae": 6.688691071428489,
       "dataHealthScore": 100.0,
@@ -319,7 +319,7 @@
           }
         }
       ],
-      "experimentId": "exp_523620727f9c",
+      "experimentId": "exp_48da0e65a56e",
       "error": null,
       "passed": true,
       "assertions": [
@@ -356,7 +356,7 @@
       ],
       "uploadStatus": "200",
       "runStatus": "200",
-      "seconds": 2.9638,
+      "seconds": 2.692,
       "memoryMb": 0.0,
       "warningCount": 2,
       "bestMae": 0.8600645462671922,
@@ -395,7 +395,7 @@
           }
         }
       ],
-      "experimentId": "exp_e1b7e510cb6d",
+      "experimentId": "exp_8e52ddfa4719",
       "error": null,
       "passed": true,
       "assertions": [
@@ -431,7 +431,7 @@
       ],
       "uploadStatus": "200",
       "runStatus": "200",
-      "seconds": 0.4832,
+      "seconds": 0.4952,
       "memoryMb": 0.0,
       "warningCount": 2,
       "bestMae": 6.0,
@@ -454,7 +454,7 @@
           }
         }
       ],
-      "experimentId": "exp_aedeecd72e21",
+      "experimentId": "exp_67348d1abb4c",
       "error": null,
       "passed": true,
       "assertions": [
@@ -554,7 +554,7 @@
       ],
       "uploadStatus": "200",
       "runStatus": "200",
-      "seconds": 0.4897,
+      "seconds": 0.5011,
       "memoryMb": 0.0,
       "warningCount": 3,
       "bestMae": 8.0,
@@ -577,7 +577,7 @@
           }
         }
       ],
-      "experimentId": "exp_b325b448403b",
+      "experimentId": "exp_b27d71043a08",
       "error": null,
       "passed": true,
       "assertions": [
@@ -679,7 +679,7 @@
       ],
       "uploadStatus": "200",
       "runStatus": "200",
-      "seconds": 0.4934,
+      "seconds": 0.4936,
       "memoryMb": 0.0,
       "warningCount": 2,
       "bestMae": 0.5,
@@ -702,7 +702,7 @@
           }
         }
       ],
-      "experimentId": "exp_2a223a623d52",
+      "experimentId": "exp_0298113ce652",
       "error": null,
       "passed": true,
       "assertions": [
@@ -803,7 +803,7 @@
       ],
       "uploadStatus": "200",
       "runStatus": "200",
-      "seconds": 1.4503,
+      "seconds": 1.4854,
       "memoryMb": 0.0,
       "warningCount": 0,
       "bestMae": null,
@@ -960,8 +960,8 @@
           "experimentName",
           "createdAt"
         ],
-        "firstExperimentId": "exp_44dd5b94e207",
-        "secondExperimentId": "exp_3e6efc74bdb5"
+        "firstExperimentId": "exp_67576372766f",
+        "secondExperimentId": "exp_23dc7f1fb11c"
       },
       "agentRoutingResult": null
     },
@@ -983,7 +983,7 @@
       ],
       "uploadStatus": "200",
       "runStatus": "200",
-      "seconds": 3.2261,
+      "seconds": 3.4142,
       "memoryMb": 0.0,
       "warningCount": 0,
       "bestMae": null,
@@ -1059,7 +1059,7 @@
       "selectedModels": [],
       "uploadStatus": "skipped",
       "runStatus": "200",
-      "seconds": 0.0125,
+      "seconds": 0.0163,
       "memoryMb": 0.0,
       "warningCount": 0,
       "bestMae": null,

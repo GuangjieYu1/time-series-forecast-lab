@@ -1,5 +1,11 @@
 import type {
   AddWorkspaceMemberRequest,
+  AgentArtifact,
+  AgentHistoryItem,
+  AgentRunDetail,
+  AgentRunEventsResponse,
+  AgentRunRequest,
+  AgentRunResponse,
   AuthSessionResponse,
   BootstrapRequest,
   CreateUserRequest,
@@ -284,6 +290,48 @@ export async function fetchExperimentFeatureFactory(experimentId: string): Promi
 
 export async function fetchExperimentExplainability(experimentId: string): Promise<ExperimentExplainabilityResponse> {
   return parseResponse<ExperimentExplainabilityResponse>(await fetch(buildWorkspaceUrl(`/api/experiments/${encodeURIComponent(experimentId)}/explainability`), buildInit()));
+}
+
+export async function createExperimentAgentRun(experimentId: string, request: AgentRunRequest): Promise<AgentRunResponse> {
+  return parseResponse<AgentRunResponse>(
+    await fetch(buildWorkspaceUrl(`/api/experiments/${encodeURIComponent(experimentId)}/agent/runs`), buildInit({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request)
+    }))
+  );
+}
+
+export async function fetchExperimentAgentRun(experimentId: string, runId: string): Promise<AgentRunDetail> {
+  return parseResponse<AgentRunDetail>(
+    await fetch(buildWorkspaceUrl(`/api/experiments/${encodeURIComponent(experimentId)}/agent/runs/${encodeURIComponent(runId)}`), buildInit())
+  );
+}
+
+export async function fetchExperimentAgentRunEvents(experimentId: string, runId: string): Promise<AgentRunEventsResponse> {
+  return parseResponse<AgentRunEventsResponse>(
+    await fetch(buildWorkspaceUrl(`/api/experiments/${encodeURIComponent(experimentId)}/agent/runs/${encodeURIComponent(runId)}/events`), buildInit())
+  );
+}
+
+export async function cancelExperimentAgentRun(experimentId: string, runId: string): Promise<void> {
+  await parseResponse<{ ok: boolean }>(
+    await fetch(buildWorkspaceUrl(`/api/experiments/${encodeURIComponent(experimentId)}/agent/runs/${encodeURIComponent(runId)}/cancel`), buildInit({
+      method: "POST"
+    }))
+  );
+}
+
+export async function fetchExperimentAgentHistory(experimentId: string): Promise<AgentHistoryItem[]> {
+  return parseResponse<AgentHistoryItem[]>(
+    await fetch(buildWorkspaceUrl(`/api/experiments/${encodeURIComponent(experimentId)}/agent/history`), buildInit())
+  );
+}
+
+export async function fetchExperimentAgentArtifact(experimentId: string, artifactId: string): Promise<AgentArtifact> {
+  return parseResponse<AgentArtifact>(
+    await fetch(buildWorkspaceUrl(`/api/experiments/${encodeURIComponent(experimentId)}/agent/artifacts/${encodeURIComponent(artifactId)}`), buildInit())
+  );
 }
 
 export async function fetchExperimentManifest(experimentId: string): Promise<ExperimentManifest> {

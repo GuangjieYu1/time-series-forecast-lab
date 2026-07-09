@@ -8,6 +8,7 @@ import { Badge, controls, PageHeader, SectionCard, StatCard, Stepper, surface, T
 import { zhCN } from "../../shared/i18n/zhCN";
 import type { CleaningConfig, CovariateConfig, DeviceInfo, FeatureConfig, ForecastProgress, ForecastRunRequest, ForecastRunResponse, HolidayCalendarCatalog, HolidayConfig, ModelCapability, RuntimeEstimateItem, RuntimeRunDetail, SheetPreview, UploadPreviewResponse } from "../../shared/types/api";
 import { useLabStore } from "../../app/store";
+import { AttributionAgentDrawer, type AgentLaunchRequest } from "../attribution/AttributionAgentDrawer";
 import {
   AbsoluteErrorTimelineChart,
   ActualVsPredictedChart,
@@ -825,7 +826,9 @@ function ResultsDashboard({
   chartModelIds,
   setChartModelIds,
   metric,
-  setMetric
+  setMetric,
+  tab,
+  setTab
 }: {
   result: ForecastRunResponse;
   finalForecast: ReturnType<typeof useLabStore.getState>["finalForecast"];
@@ -836,8 +839,9 @@ function ResultsDashboard({
   setChartModelIds: Dispatch<SetStateAction<string[]>>;
   metric: "mae" | "mse" | "rmse" | "wape";
   setMetric: (metric: "mae" | "mse" | "rmse" | "wape") => void;
+  tab: ResultTab;
+  setTab: (tab: ResultTab) => void;
 }) {
-  const [tab, setTab] = useState<ResultTab>("dataHealth");
   const best = result.rankedModels.find((model) => model.rank === 1 && model.metrics);
   const successfulModels = result.rankedModels.filter((model) => model.status === "success");
   const chartableModelIds = successfulModels.filter((model) => result.backtest.predictions[model.modelId]).map((model) => model.modelId);
@@ -1066,6 +1070,7 @@ export function ForecastPage() {
   const [parameterStrategy, setParameterStrategy] = useState<ForecastRunRequest["parameterStrategy"]>("default");
   const [randomSeed] = useState(42);
   const [metric, setMetric] = useState<"mae" | "mse" | "rmse" | "wape">("mae");
+  const [resultTab, setResultTab] = useState<ResultTab>("dataHealth");
   const [finalModelId, setFinalModelId] = useState("");
   const [chartModelIds, setChartModelIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
@@ -1078,6 +1083,8 @@ export function ForecastPage() {
   const [leakageDialogColumn, setLeakageDialogColumn] = useState<string | null>(null);
   const [leakageDialogRemember, setLeakageDialogRemember] = useState(false);
   const [suppressLeakageWarning, setSuppressLeakageWarning] = useState(false);
+  const [agentOpen, setAgentOpen] = useState(false);
+  const [agentLaunchRequest, setAgentLaunchRequest] = useState<AgentLaunchRequest | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1503,6 +1510,16 @@ export function ForecastPage() {
     }
   }
 
+  function openAgentWithPrompt(prompt?: string) {
+    setAgentOpen(true);
+    if (prompt?.trim()) {
+      setAgentLaunchRequest({
+        prompt: prompt.trim(),
+        nonce: `${Date.now()}_${Math.random().toString(16).slice(2)}`
+      });
+    }
+  }
+
   if (!upload || !selectedSheet) {
     return <EmptyState title="还没有可用数据" detail="请先上传文件并选择 Sheet，然后再配置预测实验。" />;
   }
@@ -1514,9 +1531,21 @@ export function ForecastPage() {
         title={forecastResult ? "分析驾驶舱" : "配置字段、模型和 Holdout 回测"}
         description={`文件：${upload.fileName} / Sheet：${selectedSheet.sheetName} / 计算设备：${device}`}
         action={
-          <Link className={controls.secondaryButton} to="/upload">
-            更换数据
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            <Link className={controls.secondaryButton} to="/upload">
+              更换数据
+            </Link>
+            {forecastResult ? (
+              <>
+                <Link className={controls.secondaryButton} to={`/experiments/${forecastResult.experimentId}/attribution`}>
+                  Attribution Lab
+                </Link>
+                <button type="button" className={controls.primaryButton} onClick={() => setAgentOpen(true)}>
+                  归因 Agent
+                </button>
+              </>
+            ) : null}
+          </div>
         }
       />
 
@@ -1977,8 +2006,22 @@ export function ForecastPage() {
           setChartModelIds={setChartModelIds}
           metric={metric}
           setMetric={setMetric}
+          tab={resultTab}
+          setTab={setResultTab}
         />
       )}
+
+      {forecastResult ? (
+        <AttributionAgentDrawer
+          open={agentOpen}
+          onClose={() => setAgentOpen(false)}
+          experimentId={forecastResult.experimentId}
+          currentPage="/forecast"
+          currentTab={resultTab}
+          selectedModelId={finalModelId || forecastResult.recommendedModelId}
+          launchRequest={agentLaunchRequest}
+        />
+      ) : null}
 
       {leakageDialogColumn ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center px-4">

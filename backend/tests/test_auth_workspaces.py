@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +14,7 @@ from sqlalchemy.orm import sessionmaker
 from app.db.models import Base, ExperimentRecord, ReportRecord, UserRecord, WorkspaceMembershipRecord, WorkspaceRecord
 from app.db.session import get_db
 from app.main import app
+from app.services.agent import orchestrator as agent_orchestrator_module
 
 
 @dataclass
@@ -105,6 +107,249 @@ def _insert_report(session, *, report_id: str, experiment_id: str, workspace_id:
             created_at=datetime.now(timezone.utc),
         )
     )
+
+
+def _insert_agent_ready_experiment(session, *, workspace_id: str, user_id: str, experiment_id: str, name: str) -> None:
+    history = [
+        {"time": f"2024-01-{day:02d}", "value": float(120 + day * 3), "route": "intl" if day % 3 == 0 else "domestic", "price": float(500 + day * 2)}
+        for day in range(1, 29)
+    ]
+    backtest_rows = [
+        {
+            "time": f"2024-01-{day:02d}",
+            "predicted": float(170 + day),
+            "actual": float(168 + day * 1.5),
+            "residual": round(float((168 + day * 1.5) - (170 + day)), 3),
+            "absoluteError": round(abs(float((168 + day * 1.5) - (170 + day))), 3),
+            "squaredError": round(float(((168 + day * 1.5) - (170 + day)) ** 2), 3),
+        }
+        for day in range(22, 29)
+    ]
+    created_at = datetime.now(timezone.utc)
+    explainability = {
+        "modelId": "xgboost",
+        "modelName": "XGBoost",
+        "targetColumn": "value",
+        "supported": True,
+        "warning": None,
+        "featureImportance": [
+            {"feature": "lag_7", "importance": 0.42, "rank": 1},
+            {"feature": "price", "importance": 0.27, "rank": 2},
+            {"feature": "promo_flag", "importance": 0.18, "rank": 3},
+        ],
+        "shapSupported": True,
+        "shapWarning": None,
+        "shapTopFeatures": [
+            {"feature": "lag_7", "meanAbsShap": 9.2, "rank": 1, "direction": "positive"},
+            {"feature": "price", "meanAbsShap": 6.4, "rank": 2, "direction": "negative"},
+            {"feature": "promo_flag", "meanAbsShap": 3.1, "rank": 3, "direction": "positive"},
+        ],
+        "singlePoint": {
+            "time": backtest_rows[-1]["time"],
+            "actual": backtest_rows[-1]["actual"],
+            "predicted": backtest_rows[-1]["predicted"],
+            "residual": backtest_rows[-1]["residual"],
+            "absoluteError": backtest_rows[-1]["absoluteError"],
+            "contributions": [
+                {"feature": "lag_7", "value": 181.0, "shapValue": 4.2, "direction": "positive"},
+                {"feature": "price", "value": 556.0, "shapValue": -2.8, "direction": "negative"},
+            ],
+        },
+    }
+    session.add(
+        ExperimentRecord(
+            id=experiment_id,
+            workspace_id=workspace_id,
+            created_by_user_id=user_id,
+            name=name,
+            file_name="agent_demo.csv",
+            sheet_name="CSV",
+            target_column="value",
+            recommended_model_id="xgboost",
+            best_mae="2.1",
+            model_count="2",
+            config_json=json.dumps(
+                {
+                    "selectedModels": ["xgboost", "naive"],
+                    "featureConfig": {
+                        "lagFeatures": True,
+                        "rollingFeatures": True,
+                        "calendarFeatures": True,
+                        "holidayFeatures": False,
+                        "covariates": True,
+                    },
+                    "parameterStrategy": "auto",
+                }
+            ),
+            data_profile_json=json.dumps(
+                {
+                    "targets": [
+                        {
+                            "targetColumn": "value",
+                            "detectedFrequency": "D",
+                            "availableColumns": ["date", "value", "route", "price", "promo_flag", "holiday"],
+                            "history": history,
+                            "covariateColumns": ["price", "promo_flag", "holiday"],
+                            "covariates": [
+                                {
+                                    "name": "price",
+                                    "type": "static",
+                                    "backtestStrategy": "repeat_last_known",
+                                    "forecastStrategy": "repeat_last_known",
+                                    "leakageRisk": False,
+                                    "note": "Price is treated as static in v0.4+.",
+                                },
+                                {
+                                    "name": "promo_flag",
+                                    "type": "static",
+                                    "backtestStrategy": "use_test_values",
+                                    "forecastStrategy": "repeat_last_known",
+                                    "leakageRisk": True,
+                                    "note": "Backtest uses observed promo flag and may be optimistic.",
+                                },
+                                {
+                                    "name": "holiday",
+                                    "type": "known_future",
+                                    "backtestStrategy": "use_test_timeline",
+                                    "forecastStrategy": "calendar",
+                                    "leakageRisk": False,
+                                    "note": "Calendar-derived future-known covariate.",
+                                },
+                            ],
+                            "warnings": ["covariate strategy demo"],
+                        }
+                    ]
+                }
+            ),
+            metrics_json=json.dumps(
+                [
+                    {
+                        "modelId": "xgboost",
+                        "modelName": "XGBoost",
+                        "rank": 1,
+                        "metrics": {"mae": 2.1, "rmse": 2.8, "wape": 0.042},
+                        "runtime": {"fitSeconds": 1.8, "predictSeconds": 0.2},
+                        "status": "success",
+                        "warnings": [],
+                    },
+                    {
+                        "modelId": "naive",
+                        "modelName": "Naive",
+                        "rank": 2,
+                        "metrics": {"mae": 2.8, "rmse": 3.4, "wape": 0.051},
+                        "runtime": {"fitSeconds": 0.01, "predictSeconds": 0.01},
+                        "status": "success",
+                        "warnings": ["baseline"],
+                    },
+                ]
+            ),
+            backtest_json=json.dumps(
+                {
+                    "actual": [{"time": row["time"], "value": row["actual"]} for row in backtest_rows],
+                    "predictions": {
+                        "xgboost": backtest_rows,
+                        "naive": [
+                            {
+                                **row,
+                                "predicted": round(float(row["predicted"]) + 0.9, 3),
+                                "residual": round(float(row["actual"]) - (float(row["predicted"]) + 0.9), 3),
+                            }
+                            for row in backtest_rows
+                        ],
+                    },
+                }
+            ),
+            diagnostics_json=json.dumps(
+                {
+                    "originalRowCount": 28,
+                    "validRowCount": 28,
+                    "droppedRowCount": 0,
+                    "duplicateTimeCount": 0,
+                    "missingTimeCount": 0,
+                    "invalidTimeCount": 0,
+                    "outlierCount": 2,
+                    "outlierAdjustedCount": 0,
+                    "warnings": ["diagnostic snapshot available"],
+                }
+            ),
+            series_json=json.dumps(history),
+            final_forecast_json=json.dumps(
+                {
+                    "experimentId": experiment_id,
+                    "finalModelId": "xgboost",
+                    "history": history[-14:],
+                    "forecast": [
+                        {"time": "2024-01-29", "predicted": 205.0},
+                        {"time": "2024-01-30", "predicted": 208.0},
+                        {"time": "2024-01-31", "predicted": 211.0},
+                    ],
+                }
+            ),
+            model_logs_json=json.dumps(
+                [
+                    {
+                        "modelId": "xgboost",
+                        "modelName": "XGBoost",
+                        "targetColumn": "value",
+                        "status": "success",
+                        "metrics": {"mae": 2.1, "rmse": 2.8},
+                        "runtime": {"fitSeconds": 1.8, "predictSeconds": 0.2},
+                        "warnings": [],
+                        "tuning": {
+                            "bestMetric": 2.1,
+                            "tuningSeconds": 3.2,
+                            "selectedParams": {"max_depth": 6, "learning_rate": 0.05},
+                        },
+                        "explainability": explainability,
+                    },
+                    {
+                        "modelId": "naive",
+                        "modelName": "Naive",
+                        "targetColumn": "value",
+                        "status": "success",
+                        "metrics": {"mae": 2.8, "rmse": 3.4},
+                        "runtime": {"fitSeconds": 0.01, "predictSeconds": 0.01},
+                        "warnings": ["baseline"],
+                        "tuning": None,
+                    },
+                ]
+            ),
+            runtime_json=None,
+            manifest_json=json.dumps(
+                {
+                    "schemaVersion": "0.5.5",
+                    "experimentId": experiment_id,
+                    "configHash": "agent-demo-hash",
+                    "environment": {"appVersion": "test", "platform": "pytest", "device": "cpu"},
+                    "data": {
+                        "fileName": "agent_demo.csv",
+                        "sheetName": "CSV",
+                        "columns": ["date", "value", "route", "price", "promo_flag", "holiday"],
+                        "timeColumn": "date",
+                        "targetColumns": ["value"],
+                    },
+                }
+            ),
+            config_hash="agent-demo-hash",
+            source_file_sha256="sha-agent-demo",
+            app_version="test",
+            git_commit=None,
+            created_at=created_at,
+        )
+    )
+
+
+def _wait_for_agent_status(client: TestClient, *, experiment_id: str, run_id: str, timeout_seconds: float = 5.0) -> dict:
+    deadline = time.time() + timeout_seconds
+    latest = None
+    while time.time() < deadline:
+        response = client.get(f"/api/experiments/{experiment_id}/agent/runs/{run_id}")
+        assert response.status_code == 200, response.text
+        latest = response.json()
+        if latest["status"] in {"completed", "failed", "cancelled"}:
+            return latest
+        time.sleep(0.1)
+    raise AssertionError(f"Agent run {run_id} did not finish in time. Last payload: {latest}")
 
 
 def _login(client: TestClient, *, username: str, password: str, workspace_id: str | None = None):
@@ -427,3 +672,182 @@ def test_workspace_scoping_upload_ownership_and_example_read_only(isolated_auth_
             files={"file": (fixture.name, handle, "text/csv")},
         )
     assert read_only_upload.status_code == 403
+
+
+def test_agent_run_plan_history_and_artifact_replay(isolated_auth_env):
+    admin_client = isolated_auth_env.make_client()
+    admin_session = _bootstrap_admin(admin_client)
+    personal_workspace_id = admin_session["defaultWorkspaceId"]
+
+    db = isolated_auth_env.session_local()
+    try:
+        _insert_agent_ready_experiment(
+            db,
+            workspace_id=personal_workspace_id,
+            user_id=admin_session["user"]["userId"],
+            experiment_id="exp_agent_plan_1",
+            name="Agent Planning Demo",
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    admin_client.headers.update({"X-Workspace-Id": personal_workspace_id})
+    response = admin_client.post(
+        "/api/experiments/exp_agent_plan_1/agent/runs",
+        json={
+            "prompt": "解释这次下降原因，并生成一张管理层可看的瀑布图，再写进报告。",
+            "currentPage": "/experiments/exp_agent_plan_1/attribution",
+            "currentTab": "attribution",
+            "selectedModelId": "xgboost",
+            "autoExecute": False,
+        },
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["status"] == "planned"
+    skill_ids = [step["skillId"] for step in payload["plan"]]
+    assert "read_attribution_snapshot" in skill_ids
+    assert "driver_ranking" in skill_ids
+    assert "generate_waterfall_chart" in skill_ids
+    assert "generate_report_section" in skill_ids
+
+    run_id = payload["runId"]
+    detail = admin_client.get(f"/api/experiments/exp_agent_plan_1/agent/runs/{run_id}")
+    assert detail.status_code == 200, detail.text
+    detail_payload = detail.json()
+    assert detail_payload["context"]["experimentId"] == "exp_agent_plan_1"
+    assert detail_payload["context"]["workspaceId"] == personal_workspace_id
+    assert detail_payload["request"]["prompt"].startswith("解释这次下降原因")
+    assert detail_payload["events"][0]["type"] == "plan"
+    assert detail_payload["messages"][0]["role"] == "user"
+    assert detail_payload["availableSkills"]
+
+    history = admin_client.get("/api/experiments/exp_agent_plan_1/agent/history")
+    assert history.status_code == 200, history.text
+    history_payload = history.json()
+    assert len(history_payload) == 1
+    assert history_payload[0]["runId"] == run_id
+    assert history_payload[0]["requestPreview"].startswith("解释这次下降原因")
+
+    events = admin_client.get(f"/api/experiments/exp_agent_plan_1/agent/runs/{run_id}/events")
+    assert events.status_code == 200, events.text
+    assert events.json()["events"][0]["title"] == "Plan created"
+
+
+def test_agent_auto_execute_generates_artifacts_and_report_record(isolated_auth_env, monkeypatch):
+    monkeypatch.setattr(agent_orchestrator_module, "SessionLocal", isolated_auth_env.session_local)
+    admin_client = isolated_auth_env.make_client()
+    admin_session = _bootstrap_admin(admin_client)
+    personal_workspace_id = admin_session["defaultWorkspaceId"]
+
+    db = isolated_auth_env.session_local()
+    try:
+        _insert_agent_ready_experiment(
+            db,
+            workspace_id=personal_workspace_id,
+            user_id=admin_session["user"]["userId"],
+            experiment_id="exp_agent_exec_1",
+            name="Agent Execution Demo",
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    admin_client.headers.update({"X-Workspace-Id": personal_workspace_id})
+    response = admin_client.post(
+        "/api/experiments/exp_agent_exec_1/agent/runs",
+        json={
+            "prompt": "这次最主要的下降原因是什么？生成一张管理层可看的瀑布图，并给我一份完整报告。",
+            "currentPage": "/experiments/exp_agent_exec_1",
+            "currentTab": "attribution",
+            "selectedModelId": "xgboost",
+            "autoExecute": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+    run_id = response.json()["runId"]
+
+    detail_payload = _wait_for_agent_status(admin_client, experiment_id="exp_agent_exec_1", run_id=run_id)
+    assert detail_payload["status"] == "completed"
+    assert any(artifact["kind"] == "chart" for artifact in detail_payload["artifacts"])
+    assert any(artifact["kind"] == "report" for artifact in detail_payload["artifacts"])
+    assert any(message["role"] == "assistant" for message in detail_payload["messages"])
+
+    chart_artifact = next(artifact for artifact in detail_payload["artifacts"] if artifact["kind"] == "chart")
+    artifact_response = admin_client.get(f"/api/experiments/exp_agent_exec_1/agent/artifacts/{chart_artifact['artifactId']}")
+    assert artifact_response.status_code == 200, artifact_response.text
+    assert artifact_response.json()["artifactId"] == chart_artifact["artifactId"]
+
+    db = isolated_auth_env.session_local()
+    try:
+        report_count = db.scalar(
+            select(func.count())
+            .select_from(ReportRecord)
+            .where(
+                ReportRecord.experiment_id == "exp_agent_exec_1",
+                ReportRecord.workspace_id == personal_workspace_id,
+                ReportRecord.model == "attribution-agent-v0.5.5",
+            )
+        )
+    finally:
+        db.close()
+    assert report_count == 1
+
+
+def test_agent_cancel_guardrails_and_workspace_scope(isolated_auth_env, monkeypatch):
+    monkeypatch.setattr(agent_orchestrator_module, "SessionLocal", isolated_auth_env.session_local)
+    admin_client = isolated_auth_env.make_client()
+    admin_session = _bootstrap_admin(admin_client)
+    personal_workspace_id = admin_session["defaultWorkspaceId"]
+    example_workspace_id = next(workspace["workspaceId"] for workspace in admin_session["workspaces"] if workspace["kind"] == "example")
+
+    other_user = _create_user(admin_client, username="agent_member", display_name="Agent Member")
+
+    db = isolated_auth_env.session_local()
+    try:
+        _insert_agent_ready_experiment(
+            db,
+            workspace_id=personal_workspace_id,
+            user_id=admin_session["user"]["userId"],
+            experiment_id="exp_agent_cancel_1",
+            name="Agent Cancel Demo",
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    admin_client.headers.update({"X-Workspace-Id": personal_workspace_id})
+    create_response = admin_client.post(
+        "/api/experiments/exp_agent_cancel_1/agent/runs",
+        json={
+            "prompt": "解释下降原因、协变量泄漏、runtime阶段、feature工厂、异常、同比、季节性、树shap、回归、敏感性、弹性、benchmark对比、分层、瀑布图、热力图、气泡图、图片、scenario、monte carlo、重跑模型、完整报告。",
+            "currentPage": "/forecast",
+            "currentTab": "results",
+            "selectedModelId": "xgboost",
+            "autoExecute": True,
+        },
+    )
+    assert create_response.status_code == 200, create_response.text
+    run_id = create_response.json()["runId"]
+
+    cancel_response = admin_client.post(f"/api/experiments/exp_agent_cancel_1/agent/runs/{run_id}/cancel")
+    assert cancel_response.status_code == 200, cancel_response.text
+    cancelled = _wait_for_agent_status(admin_client, experiment_id="exp_agent_cancel_1", run_id=run_id)
+    assert cancelled["status"] == "cancelled"
+    assert any("停止" in message["content"] for message in cancelled["messages"] if message["role"] == "assistant")
+
+    example_client = isolated_auth_env.make_client()
+    _login(example_client, username="admin", password="password123", workspace_id=example_workspace_id)
+    example_experiment_id = example_client.get("/api/experiments").json()[0]["experimentId"]
+    read_only_response = example_client.post(
+        f"/api/experiments/{example_experiment_id}/agent/runs",
+        json={"prompt": "帮我解释一下这个示例实验。", "currentPage": "/experiments/demo", "autoExecute": False},
+    )
+    assert read_only_response.status_code == 403
+
+    member_client = isolated_auth_env.make_client()
+    member_session = _login(member_client, username="agent_member", password="password123")
+    member_client.headers.update({"X-Workspace-Id": member_session["defaultWorkspaceId"]})
+    forbidden = member_client.get(f"/api/experiments/exp_agent_cancel_1/agent/runs/{run_id}")
+    assert forbidden.status_code == 403

@@ -47,6 +47,7 @@ from app.services.forecast_runner import run_final_forecast
 from app.services.model_registry import MODEL_CAPABILITIES, MODEL_FACTORIES
 from app.services.progress_tracker import progress_tracker
 from app.services.reproducibility import build_manifest
+from app.services.attribution_snapshot import build_attribution_snapshot
 from app.services.runtime_estimator import estimate_runtime
 from app.services.runtime_history import build_feature_pipeline_target
 from app.services.runtime_state_machine import stage_from_phase
@@ -603,6 +604,7 @@ def run_forecast(request: ForecastRunRequest, context: WorkspaceContext = Depend
             experiment_id=experiment_id,
         )
         record.runtime_json = _dump(runtime_snapshot) if runtime_snapshot is not None else None
+        record.attribution_json = _dump(build_attribution_snapshot(record))
         db.commit()
         progress_tracker.finish(run_id, "completed", "实验完成，结果已保存。")
         logger.info(

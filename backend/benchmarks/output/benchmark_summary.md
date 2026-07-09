@@ -9,21 +9,21 @@
 - failed API runs: `0`
 - failed assertions: `0`
 - warning assertions: `0`
-- generated at: `2026-07-08T13:28:10.667954+00:00`
+- generated at: `2026-07-09T10:38:49.793142+00:00`
 
 | case | suite | category | passed | rows | best_mae | run | seconds | assertions |
 | --- | --- | --- | --- | ---: | ---: | --- | ---: | ---: |
-| daily_clean | stability | clean | True | 90 | 0 | 200 | 1.743 | 1 |
-| daily_dirty | stability | dirty | True | 80 | 14.259 | 200 | 0.8519 | 1 |
-| daily_edge_short | stability | edge | True | 12 | 2 | 200 | 0.6494 | 1 |
-| large_hourly | stability | large | True | 120000 | 6.68869 | 200 | 7.8308 | 1 |
-| etth1_smoke | stability | clean | True | 17420 | 0.860065 | 200 | 2.9638 | 1 |
-| raw_detail_sum | aggregation_correctness | aggregation | True | 10 | 6 | 200 | 0.4832 | 2 |
-| raw_detail_mean | aggregation_correctness | aggregation | True | 10 | 8 | 200 | 0.4897 | 2 |
-| raw_detail_count | aggregation_correctness | aggregation | True | 10 | 0.5 | 200 | 0.4934 | 2 |
-| repro_daily_clean | reproducibility | reproducibility | True | - | - | 200 | 1.4503 | 16 |
-| feature_lift_covariate_effect | feature_lift | feature | True | - | - | 200 | 3.2261 | 4 |
-| workbench_agent_golden_routes | agent_routing | agent | True | - | - | 200 | 0.0125 | 4 |
+| daily_clean | stability | clean | True | 90 | 0 | 200 | 1.6375 | 1 |
+| daily_dirty | stability | dirty | True | 80 | 14.259 | 200 | 0.8584 | 1 |
+| daily_edge_short | stability | edge | True | 12 | 2 | 200 | 0.6214 | 1 |
+| large_hourly | stability | large | True | 120000 | 6.68869 | 200 | 7.8905 | 1 |
+| etth1_smoke | stability | clean | True | 17420 | 0.860065 | 200 | 2.692 | 1 |
+| raw_detail_sum | aggregation_correctness | aggregation | True | 10 | 6 | 200 | 0.4952 | 2 |
+| raw_detail_mean | aggregation_correctness | aggregation | True | 10 | 8 | 200 | 0.5011 | 2 |
+| raw_detail_count | aggregation_correctness | aggregation | True | 10 | 0.5 | 200 | 0.4936 | 2 |
+| repro_daily_clean | reproducibility | reproducibility | True | - | - | 200 | 1.4854 | 16 |
+| feature_lift_covariate_effect | feature_lift | feature | True | - | - | 200 | 3.4142 | 4 |
+| workbench_agent_golden_routes | agent_routing | agent | True | - | - | 200 | 0.0163 | 4 |
 
 ## daily_clean
 

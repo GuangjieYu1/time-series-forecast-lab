@@ -6,6 +6,8 @@ import { DataTable } from "../../shared/components/Table";
 import { EmptyState, ErrorBanner, LoadingBlock } from "../../shared/components/Status";
 import { Badge, controls, PageHeader, SectionCard, StatCard, surface, Tabs } from "../../shared/components/Ui";
 import type { ExperimentDetail, ForecastRunResponse } from "../../shared/types/api";
+import { AttributionAgentDrawer, type AgentLaunchRequest } from "../attribution/AttributionAgentDrawer";
+import { AttributionSnapshotPanel } from "../attribution/AttributionSnapshotPanel";
 import {
   AbsoluteErrorTimelineChart,
   ActualVsPredictedChart,
@@ -24,7 +26,7 @@ import { FeatureFactoryPanel } from "../runtime/FeatureFactoryPanel";
 import { RuntimeModelConsoleDrawer } from "../runtime/RuntimeModelConsoleDrawer";
 import { RuntimeInspectorPanel } from "../runtime/RuntimeInspectorPanel";
 
-type DetailTab = "runtime" | "featureFactory" | "explainability" | "dataHealth" | "overview" | "residual" | "metrics" | "distribution" | "final" | "report";
+type DetailTab = "runtime" | "featureFactory" | "explainability" | "attribution" | "dataHealth" | "overview" | "residual" | "metrics" | "distribution" | "final" | "report";
 
 function asForecastResult(experiment: ExperimentDetail): ForecastRunResponse {
   return {
@@ -79,6 +81,8 @@ export function ExperimentDetailPage() {
   const [tab, setTab] = useState<DetailTab>("runtime");
   const [copyState, setCopyState] = useState<"idle" | "done" | "failed">("idle");
   const [selectedRuntimeModelKey, setSelectedRuntimeModelKey] = useState("");
+  const [agentOpen, setAgentOpen] = useState(false);
+  const [launchRequest, setLaunchRequest] = useState<AgentLaunchRequest | null>(null);
   const selectedWorkspace = workspaces.find((item) => item.workspaceId === selectedWorkspaceId) ?? null;
 
   useEffect(() => {
@@ -131,6 +135,14 @@ export function ExperimentDetailPage() {
     }
   }
 
+  function askAgent(prompt: string) {
+    setAgentOpen(true);
+    setLaunchRequest({
+      prompt,
+      nonce: `${Date.now()}_${Math.random().toString(16).slice(2)}`
+    });
+  }
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -138,9 +150,17 @@ export function ExperimentDetailPage() {
         title={experiment.experimentName}
         description={`${experiment.fileName} / ${experiment.sheetName} / 目标列：${experiment.targetColumn}`}
         action={
-          <Link className={controls.secondaryButton} to="/experiments">
-            返回历史
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            <Link className={controls.secondaryButton} to="/experiments">
+              返回历史
+            </Link>
+            <Link className={controls.secondaryButton} to={`/experiments/${experiment.experimentId}/attribution`}>
+              Attribution Lab
+            </Link>
+            <button type="button" className={controls.primaryButton} onClick={() => setAgentOpen(true)}>
+              归因 Agent
+            </button>
+          </div>
         }
       />
       <ErrorBanner message={actionError} />
@@ -161,6 +181,7 @@ export function ExperimentDetailPage() {
               { id: "runtime", label: "透明引擎" },
               { id: "featureFactory", label: "Feature Factory" },
               { id: "explainability", label: "特征解释" },
+              { id: "attribution", label: "归因实验室" },
               { id: "dataHealth", label: "数据健康" },
               { id: "overview", label: "预测对比" },
               { id: "residual", label: "残差诊断" },
@@ -235,6 +256,15 @@ export function ExperimentDetailPage() {
                 experimentId={experiment.experimentId}
                 recommendedModelId={experiment.recommendedModelId}
                 initialPayload={experiment.explainability}
+              />
+            ) : null}
+
+            {tab === "attribution" ? (
+              <AttributionSnapshotPanel
+                attribution={experiment.attribution}
+                onAskAgent={askAgent}
+                heading="Attribution Lab"
+                description="这里把当前实验的归因证据整理成 5 个主区块，每个区块都可以继续交给右侧 Agent 深挖。"
               />
             ) : null}
 
@@ -362,6 +392,20 @@ export function ExperimentDetailPage() {
           ))}
         </div>
       </SectionCard>
+
+      <AttributionAgentDrawer
+        open={agentOpen}
+        onClose={() => setAgentOpen(false)}
+        experimentId={experiment.experimentId}
+        experiment={experiment}
+        currentPage="/experiments/:id"
+        currentTab={tab}
+        selectedModelId={selectedRuntimeModelKey ? selectedRuntimeModelKey.split(":")[1] ?? null : experiment.recommendedModelId}
+        historySummary={experiment.agentHistorySummary}
+        availableSkills={experiment.availableAgentSkills}
+        attribution={experiment.attribution}
+        launchRequest={launchRequest}
+      />
     </div>
   );
 }

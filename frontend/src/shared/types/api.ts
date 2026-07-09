@@ -888,6 +888,177 @@ export interface WorkbenchIdeaAnalyzeResponse {
   nextApiCalls: string[];
 }
 
+export type AgentSkillCategory = "read" | "analysis" | "action";
+export type AgentRunStatus = "planned" | "running" | "completed" | "failed" | "cancelled";
+export type AgentPlanStepStatus = "pending" | "running" | "completed" | "failed" | "cancelled" | "skipped";
+export type AgentArtifactKind = "summary" | "markdown" | "chart" | "diagnosis" | "report" | "table" | "warning" | "run_request";
+export type AgentEventType = "status" | "plan" | "skill" | "artifact" | "message" | "warning" | "error";
+
+export interface AgentSkillDefinition {
+  skillId: string;
+  category: AgentSkillCategory;
+  requiredInputs: string[];
+  sideEffects: string[];
+  costLevel: "low" | "medium" | "high";
+  expectedDuration: string;
+  workspaceScope: "experiment" | "workspace";
+  supportsStreaming: boolean;
+  producesArtifacts: boolean;
+  description: string;
+}
+
+export interface AgentPlanStep {
+  stepId: string;
+  title: string;
+  detail: string;
+  skillId: string;
+  status: AgentPlanStepStatus;
+  reads: string[];
+  runsModel: boolean;
+  generatesChart: boolean;
+  writesReport: boolean;
+  estimatedDuration: string | null;
+  risks: string[];
+}
+
+export interface AgentSkillInvocation {
+  invocationId: string;
+  skillId: string;
+  status: AgentPlanStepStatus;
+  startedAt: string | null;
+  finishedAt: string | null;
+  inputSummary: string;
+  outputSummary: string;
+  warning: string | null;
+  error: string | null;
+}
+
+export interface AgentArtifact {
+  artifactId: string;
+  kind: AgentArtifactKind;
+  title: string;
+  summary: string;
+  createdAt: string;
+  sourceSkillId: string | null;
+  payload: Record<string, unknown>;
+  linksToReport: boolean;
+}
+
+export interface AgentContextSnapshot {
+  experimentId: string;
+  experimentName: string;
+  workspaceId: string;
+  workspaceName: string | null;
+  targetColumn: string | null;
+  recommendedModelId: string | null;
+  currentPage: string | null;
+  currentTab: string | null;
+  selectedModelId: string | null;
+  selectedFeatureId: string | null;
+  selectedArtifactId: string | null;
+  selectedVisualId: string | null;
+  selectedAnomalyTime: string | null;
+  availableColumns: string[];
+  covariates: RuntimeCovariateDescriptor[];
+  warnings: string[];
+  availableReports: Array<{ reportId: string; title: string }>;
+}
+
+export interface AgentMessage {
+  role: "user" | "assistant" | "system";
+  content: string;
+  createdAt: string;
+}
+
+export interface AgentRunEvent {
+  eventId: string;
+  type: AgentEventType;
+  title: string;
+  detail: string;
+  timestamp: string;
+  stepId: string | null;
+  skillId: string | null;
+  artifactId: string | null;
+  status: string | null;
+}
+
+export interface AgentRunRequest {
+  prompt: string;
+  currentPage?: string | null;
+  currentTab?: string | null;
+  selectedModelId?: string | null;
+  selectedFeatureId?: string | null;
+  selectedArtifactId?: string | null;
+  selectedVisualId?: string | null;
+  selectedAnomalyTime?: string | null;
+  autoExecute?: boolean;
+}
+
+export interface AgentRunResponse {
+  runId: string;
+  experimentId: string;
+  status: AgentRunStatus;
+  plan: AgentPlanStep[];
+  currentMessage: string | null;
+  availableSkills: AgentSkillDefinition[];
+}
+
+export interface AgentHistoryItem {
+  runId: string;
+  requestPreview: string;
+  status: AgentRunStatus;
+  createdAt: string;
+  updatedAt: string;
+  artifactCount: number;
+  skillIds: string[];
+  lastAssistantMessage: string | null;
+}
+
+export interface AgentRunDetail {
+  runId: string;
+  experimentId: string;
+  workspaceId: string;
+  createdByUserId: string;
+  status: AgentRunStatus;
+  request: AgentRunRequest;
+  context: AgentContextSnapshot;
+  plan: AgentPlanStep[];
+  events: AgentRunEvent[];
+  messages: AgentMessage[];
+  skillInvocations: AgentSkillInvocation[];
+  artifacts: AgentArtifact[];
+  availableSkills: AgentSkillDefinition[];
+  estimatedDuration: string | null;
+  risks: string[];
+  summary: string | null;
+  canCancel: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentRunEventsResponse {
+  runId: string;
+  events: AgentRunEvent[];
+}
+
+export interface AttributionSnapshotSection {
+  title: string;
+  summary: string[];
+  highlights: Array<Record<string, unknown>>;
+  askAgentPrompts: string[];
+}
+
+export interface AttributionSnapshot {
+  experimentId: string;
+  updatedAt: string | null;
+  overview: AttributionSnapshotSection;
+  quickDiagnosis: AttributionSnapshotSection;
+  anomalyResidualLab: AttributionSnapshotSection;
+  deepAttribution: AttributionSnapshotSection;
+  scenarioExecutiveOutput: AttributionSnapshotSection;
+  warnings: string[];
+}
+
 export interface ExperimentListItem {
   experimentId: string;
   experimentName: string;
@@ -916,12 +1087,15 @@ export interface ExperimentDetail extends ExperimentListItem {
   modelLogs: unknown[];
   explainability: ExperimentExplainabilityResponse | null;
   runtime: RuntimeRunDetail | null;
+  attribution: AttributionSnapshot | null;
   manifest: ExperimentManifest | null;
   configHash: string | null;
   sourceFileSha256: string | null;
   appVersion: string | null;
   gitCommit: string | null;
   reports: ReportResponse[];
+  agentHistorySummary: AgentHistoryItem[];
+  availableAgentSkills: AgentSkillDefinition[];
 }
 
 export interface ExperimentManifest {

@@ -991,6 +991,186 @@ class ExperimentExplainabilityResponse(BaseModel):
     models: list[ExplainabilityModelSummary] = Field(default_factory=list)
 
 
+AgentSkillCategory = Literal["read", "analysis", "action"]
+AgentRunStatus = Literal["planned", "running", "completed", "failed", "cancelled"]
+AgentPlanStepStatus = Literal["pending", "running", "completed", "failed", "cancelled", "skipped"]
+AgentArtifactKind = Literal["summary", "markdown", "chart", "diagnosis", "report", "table", "warning", "run_request"]
+AgentEventType = Literal["status", "plan", "skill", "artifact", "message", "warning", "error"]
+
+
+class AgentSkillDefinition(BaseModel):
+    skillId: str
+    category: AgentSkillCategory
+    label: str
+    description: str
+    requiredInputs: list[str] = Field(default_factory=list)
+    sideEffects: list[str] = Field(default_factory=list)
+    costLevel: Literal["low", "medium", "high"] = "low"
+    expectedDuration: str = "<5s"
+    workspaceScope: str = "current_experiment"
+    supportsStreaming: bool = False
+    producesArtifacts: bool = False
+
+
+class AgentPlanStep(BaseModel):
+    stepId: str
+    title: str
+    skillId: str
+    status: AgentPlanStepStatus = "pending"
+    description: str = ""
+    reads: list[str] = Field(default_factory=list)
+    runs: list[str] = Field(default_factory=list)
+    generates: list[str] = Field(default_factory=list)
+    sideEffects: list[str] = Field(default_factory=list)
+    inputSummary: str | None = None
+    outputSummary: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    error: str | None = None
+    startedAt: str | None = None
+    finishedAt: str | None = None
+
+
+class AgentSkillInvocation(BaseModel):
+    invocationId: str
+    skillId: str
+    status: AgentPlanStepStatus = "pending"
+    inputSummary: str | None = None
+    outputSummary: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    error: str | None = None
+    artifactIds: list[str] = Field(default_factory=list)
+    startedAt: str | None = None
+    finishedAt: str | None = None
+
+
+class AgentArtifact(BaseModel):
+    artifactId: str
+    kind: AgentArtifactKind = "summary"
+    title: str
+    summary: str = ""
+    sourceSkillId: str
+    createdAt: str
+    markdown: str | None = None
+    reportCompatible: bool = False
+    downloadable: bool = False
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentContextSnapshot(BaseModel):
+    experimentId: str
+    experimentName: str
+    workspaceId: str
+    workspaceName: str | None = None
+    currentPage: str | None = None
+    currentTab: str | None = None
+    targetColumn: str | None = None
+    recommendedModelId: str | None = None
+    selectedModelId: str | None = None
+    selectedFeatureId: str | None = None
+    selectedArtifactId: str | None = None
+    selectedVisualId: str | None = None
+    selectedAnomalyTime: str | None = None
+    availableColumns: list[str] = Field(default_factory=list)
+    covariates: list[RuntimeCovariateDescriptor] = Field(default_factory=list)
+    reports: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class AgentMessage(BaseModel):
+    role: Literal["user", "assistant", "system"] = "assistant"
+    content: str
+    createdAt: str
+
+
+class AgentRunEvent(BaseModel):
+    eventId: str
+    type: AgentEventType
+    title: str
+    detail: str
+    timestamp: str
+    stepId: str | None = None
+    skillId: str | None = None
+    artifactId: str | None = None
+    status: str | None = None
+
+
+class AgentRunRequest(BaseModel):
+    prompt: str = Field(min_length=1)
+    currentPage: str | None = None
+    currentTab: str | None = None
+    selectedModelId: str | None = None
+    selectedFeatureId: str | None = None
+    selectedArtifactId: str | None = None
+    selectedVisualId: str | None = None
+    selectedAnomalyTime: str | None = None
+    autoExecute: bool = True
+
+
+class AgentRunResponse(BaseModel):
+    runId: str
+    experimentId: str
+    status: AgentRunStatus
+    plan: list[AgentPlanStep] = Field(default_factory=list)
+    currentMessage: str | None = None
+    availableSkills: list[AgentSkillDefinition] = Field(default_factory=list)
+
+
+class AgentHistoryItem(BaseModel):
+    runId: str
+    requestPreview: str
+    status: AgentRunStatus
+    createdAt: str
+    updatedAt: str
+    artifactCount: int = 0
+    skillIds: list[str] = Field(default_factory=list)
+    lastAssistantMessage: str | None = None
+
+
+class AgentRunDetail(BaseModel):
+    runId: str
+    experimentId: str
+    workspaceId: str
+    createdByUserId: str
+    status: AgentRunStatus
+    request: AgentRunRequest
+    context: AgentContextSnapshot
+    plan: list[AgentPlanStep] = Field(default_factory=list)
+    events: list[AgentRunEvent] = Field(default_factory=list)
+    messages: list[AgentMessage] = Field(default_factory=list)
+    skillInvocations: list[AgentSkillInvocation] = Field(default_factory=list)
+    artifacts: list[AgentArtifact] = Field(default_factory=list)
+    availableSkills: list[AgentSkillDefinition] = Field(default_factory=list)
+    estimatedDuration: str | None = None
+    risks: list[str] = Field(default_factory=list)
+    summary: str | None = None
+    canCancel: bool = False
+    createdAt: str
+    updatedAt: str
+
+
+class AgentRunEventsResponse(BaseModel):
+    runId: str
+    events: list[AgentRunEvent] = Field(default_factory=list)
+
+
+class AttributionSnapshotSection(BaseModel):
+    title: str
+    summary: list[str] = Field(default_factory=list)
+    highlights: list[dict[str, Any]] = Field(default_factory=list)
+    askAgentPrompts: list[str] = Field(default_factory=list)
+
+
+class AttributionSnapshot(BaseModel):
+    experimentId: str
+    updatedAt: str | None = None
+    overview: AttributionSnapshotSection
+    quickDiagnosis: AttributionSnapshotSection
+    anomalyResidualLab: AttributionSnapshotSection
+    deepAttribution: AttributionSnapshotSection
+    scenarioExecutiveOutput: AttributionSnapshotSection
+    warnings: list[str] = Field(default_factory=list)
+
+
 class RuntimeEstimateItem(BaseModel):
     id: str
     name: str
@@ -1045,12 +1225,15 @@ class ExperimentDetail(BaseModel):
     modelLogs: list[dict[str, Any]]
     explainability: ExperimentExplainabilityResponse | None = None
     runtime: RuntimeRunDetail | None = None
+    attribution: AttributionSnapshot | None = None
     manifest: dict[str, Any] | None = None
     configHash: str | None = None
     sourceFileSha256: str | None = None
     appVersion: str | None = None
     gitCommit: str | None = None
     reports: list[dict[str, Any]] = Field(default_factory=list)
+    agentHistorySummary: list[AgentHistoryItem] = Field(default_factory=list)
+    availableAgentSkills: list[AgentSkillDefinition] = Field(default_factory=list)
 
 
 class ManifestEnvironment(BaseModel):

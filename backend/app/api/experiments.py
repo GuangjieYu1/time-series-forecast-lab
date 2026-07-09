@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import WorkspaceContext, get_workspace_context, get_workspace_experiment, require_workspace_write_access
 from app.core.errors import AppError, as_http_error
 from app.core.storage import assert_upload_ownership, read_upload_metadata
-from app.db.models import ExperimentRecord, ReportRecord, UserRecord, WorkspaceRecord
+from app.db.models import AgentRunRecord, ExperimentRecord, ReportRecord, UserRecord, WorkspaceRecord
 from app.db.session import get_db
 from app.schemas import (
     ExperimentExplainabilityResponse,
@@ -24,6 +24,9 @@ from app.schemas import (
     FeatureFactoryResponse,
 )
 from app.services.explainability import load_experiment_explainability
+from app.services.agent import list_agent_skills
+from app.services.agent.run_store import list_agent_runs, to_agent_history_item
+from app.services.attribution_snapshot import load_attribution_snapshot
 from app.services.data_health import build_data_health_report, extract_detected_frequency
 from app.services.runtime_history import load_runtime_from_record
 
@@ -135,6 +138,16 @@ def get_experiment(experiment_id: str, context: WorkspaceContext = Depends(get_w
         manifest = _loads(record.manifest_json, None)
         diagnostics = _loads(record.diagnostics_json, {})
         model_logs = _loads(record.model_logs_json, [])
+        agent_runs = list_agent_runs(db, experiment_id=record.id, workspace_id=context.workspace.id, limit=20)
+        report_user_ids = [report.created_by_user_id for report in reports if report.created_by_user_id]
+        report_users = (
+            {
+                user.id: user.username
+                for user in db.scalars(select(UserRecord).where(UserRecord.id.in_(report_user_ids))).all()
+            }
+            if report_user_ids
+            else {}
+        )
         data_health = build_data_health_report(
             diagnostics,
             detected_frequency=extract_detected_frequency(data_profile=data_profile, manifest=manifest),
@@ -169,6 +182,7 @@ def get_experiment(experiment_id: str, context: WorkspaceContext = Depends(get_w
                 model_logs=model_logs,
             ),
             runtime=load_runtime_from_record(record),
+            attribution=load_attribution_snapshot(record),
             manifest=manifest,
             configHash=record.config_hash,
             sourceFileSha256=record.source_file_sha256,
@@ -184,10 +198,12 @@ def get_experiment(experiment_id: str, context: WorkspaceContext = Depends(get_w
                     "workspaceId": report.workspace_id,
                     "workspaceName": context.workspace.name,
                     "createdByUserId": report.created_by_user_id,
-                    "createdByUsername": (db.get(UserRecord, report.created_by_user_id).username if db.get(UserRecord, report.created_by_user_id) else None),
+                    "createdByUsername": report_users.get(report.created_by_user_id),
                 }
                 for report in reports
             ],
+            agentHistorySummary=[to_agent_history_item(run) for run in agent_runs],
+            availableAgentSkills=list_agent_skills(),
         )
     except AppError as exc:
         raise as_http_error(exc) from exc
@@ -251,6 +267,10 @@ def download_experiment_manifest(experiment_id: str, context: WorkspaceContext =
 def delete_experiment(experiment_id: str, context: WorkspaceContext = Depends(require_workspace_write_access), db: Session = Depends(get_db)):
     try:
         record = get_workspace_experiment(db, experiment_id, context)
+        for run in db.scalars(
+            select(AgentRunRecord).where(AgentRunRecord.experiment_id == experiment_id, AgentRunRecord.workspace_id == context.workspace.id)
+        ).all():
+            db.delete(run)
         for report in db.scalars(select(ReportRecord).where(ReportRecord.experiment_id == experiment_id, ReportRecord.workspace_id == context.workspace.id)).all():
             db.delete(report)
         db.delete(record)

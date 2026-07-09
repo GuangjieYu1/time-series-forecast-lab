@@ -1,5 +1,6 @@
 import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { AttributionLabPage } from "../features/attribution/AttributionLabPage";
 import { ExperimentDetailPage } from "../features/experiments/ExperimentDetailPage";
 import { ExperimentsPage } from "../features/experiments/ExperimentsPage";
 import { FeedbackPage } from "../features/feedback/FeedbackPage";
@@ -795,6 +796,7 @@ export function App() {
             <Route path="/models" element={<ModelsPage />} />
             <Route path="/experiments" element={<ExperimentsPage />} />
             <Route path="/experiments/:id" element={<ExperimentDetailPage />} />
+            <Route path="/experiments/:id/attribution" element={<AttributionLabPage />} />
             <Route path="/feedback" element={<FeedbackPage />} />
             <Route path="/settings" element={<ApiSettingsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
