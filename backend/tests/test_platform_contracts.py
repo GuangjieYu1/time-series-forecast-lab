@@ -1,7 +1,5 @@
 from datetime import datetime, timezone
 
-from fastapi.testclient import TestClient
-
 from app.main import app
 from app.schemas import ExperimentManifest, ModelProgress, RuntimeEvent
 from app.services.runtime_tracker import RuntimeTracker, runtime_tracker
@@ -104,13 +102,15 @@ def test_runtime_tracker_emits_ordered_canonical_events():
     assert any(event.eventType == "model" for event in detail.events)
     assert detail.events[-1].eventType == "terminal"
 
-def test_runtime_event_sse_supports_replay_after_sequence():
+def test_runtime_event_sse_supports_replay_after_sequence(authed_client):
     run_id = "run_sse_feature_contract"
     runtime_tracker.start(
         run_id,
         kind="backtest",
         model_rows=[ModelProgress(modelId="naive", modelName="Naive", targetColumn="value")],
         message="Starting",
+        user_id=authed_client.user_id,
+        workspace_id=authed_client.workspace_id,
     )
     runtime_tracker.set_overall(
         run_id,
@@ -121,7 +121,7 @@ def test_runtime_event_sse_supports_replay_after_sequence():
     )
     runtime_tracker.finalize(run_id, status="completed", message="Finished")
 
-    response = TestClient(app).get(f"/api/runtime/{run_id}/events/stream?afterSequence=1")
+    response = authed_client.client.get(f"/api/runtime/{run_id}/events/stream?afterSequence=1")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
     assert "event: runtime" in response.text

@@ -3,8 +3,8 @@
   "profile": "fast",
   "suite": "all",
   "agentMode": "offline",
-  "generatedAt": "2026-07-07T17:10:26.066124+00:00",
-  "seconds": 37.0857,
+  "generatedAt": "2026-07-09T10:38:49.793142+00:00",
+  "seconds": 20.1207,
   "totalCases": 11,
   "successfulRuns": 11,
   "failedRuns": 0,
@@ -31,10 +31,10 @@
       ],
       "uploadStatus": "200",
       "runStatus": "200",
-      "seconds": 3.7075,
-      "memoryMb": 569.58,
+      "seconds": 1.6375,
+      "memoryMb": 302.35,
       "warningCount": 1,
-      "bestMae": 4.06024420434343e-14,
+      "bestMae": 0.0,
       "dataHealthScore": 0.0,
       "modelStatuses": {
         "ets": "success",
@@ -49,10 +49,10 @@
           "warnings": [],
           "error": null,
           "metrics": {
-            "mae": 4.06024420434343e-14,
-            "mse": 2.1925825388542866e-27,
-            "rmse": 4.6825020436239924e-14,
-            "wape": 2.724996110297604e-16
+            "mae": 0.0,
+            "mse": 0.0,
+            "rmse": 0.0,
+            "wape": 0.0
           }
         },
         {
@@ -82,7 +82,7 @@
           }
         }
       ],
-      "experimentId": "exp_884519b5d3e3",
+      "experimentId": "exp_2c5ffa1867dd",
       "error": null,
       "passed": true,
       "assertions": [
@@ -120,10 +120,10 @@
       ],
       "uploadStatus": "200",
       "runStatus": "200",
-      "seconds": 1.0017,
-      "memoryMb": 40.83,
+      "seconds": 0.8584,
+      "memoryMb": 41.09,
       "warningCount": 4,
-      "bestMae": 14.259063078395815,
+      "bestMae": 14.258965216233491,
       "dataHealthScore": 0.0,
       "modelStatuses": {
         "arima": "success",
@@ -138,10 +138,10 @@
           "warnings": [],
           "error": null,
           "metrics": {
-            "mae": 14.259063078395815,
-            "mse": 495.8667210305054,
-            "rmse": 22.26806504909004,
-            "wape": 0.08543476979266516
+            "mae": 14.258965216233491,
+            "mse": 495.8640516002829,
+            "rmse": 22.268005110478192,
+            "wape": 0.08543418344058414
           }
         },
         {
@@ -171,7 +171,7 @@
           }
         }
       ],
-      "experimentId": "exp_851134776fe8",
+      "experimentId": "exp_aac31eb43de2",
       "error": null,
       "passed": true,
       "assertions": [
@@ -208,8 +208,8 @@
       ],
       "uploadStatus": "200",
       "runStatus": "200",
-      "seconds": 0.616,
-      "memoryMb": 7.67,
+      "seconds": 0.6214,
+      "memoryMb": 15.31,
       "warningCount": 2,
       "bestMae": 2.0,
       "dataHealthScore": 80.0,
@@ -245,7 +245,7 @@
           }
         }
       ],
-      "experimentId": "exp_9bd58fff0b19",
+      "experimentId": "exp_88e566de1a67",
       "error": null,
       "passed": true,
       "assertions": [
@@ -282,8 +282,8 @@
       ],
       "uploadStatus": "200",
       "runStatus": "200",
-      "seconds": 17.6386,
-      "memoryMb": 274.44,
+      "seconds": 7.8905,
+      "memoryMb": 313.19,
       "warningCount": 0,
       "bestMae": 6.688691071428489,
       "dataHealthScore": 100.0,
@@ -319,7 +319,7 @@
           }
         }
       ],
-      "experimentId": "exp_5a6c3ecaf0a7",
+      "experimentId": "exp_48da0e65a56e",
       "error": null,
       "passed": true,
       "assertions": [
@@ -356,10 +356,10 @@
       ],
       "uploadStatus": "200",
       "runStatus": "200",
-      "seconds": 5.5847,
+      "seconds": 2.692,
       "memoryMb": 0.0,
       "warningCount": 2,
-      "bestMae": 0.8600701093673712,
+      "bestMae": 0.8600645462671922,
       "dataHealthScore": 95.0,
       "modelStatuses": {
         "xgboost": "success",
@@ -375,10 +375,10 @@
           ],
           "error": null,
           "metrics": {
-            "mae": 0.8600701093673712,
-            "mse": 0.8548363802527784,
-            "rmse": 0.9245736207856995,
-            "wape": 0.08883759905232887
+            "mae": 0.8600645462671922,
+            "mse": 0.8548260521686578,
+            "rmse": 0.9245680354460983,
+            "wape": 0.08883702443351836
           }
         },
         {
@@ -395,7 +395,7 @@
           }
         }
       ],
-      "experimentId": "exp_7ae7bdcc0627",
+      "experimentId": "exp_8e52ddfa4719",
       "error": null,
       "passed": true,
       "assertions": [
@@ -431,7 +431,7 @@
       ],
       "uploadStatus": "200",
       "runStatus": "200",
-      "seconds": 0.6953,
+      "seconds": 0.4952,
       "memoryMb": 0.0,
       "warningCount": 2,
       "bestMae": 6.0,
@@ -454,7 +454,7 @@
           }
         }
       ],
-      "experimentId": "exp_9dc75d6acc56",
+      "experimentId": "exp_67348d1abb4c",
       "error": null,
       "passed": true,
       "assertions": [
@@ -554,7 +554,7 @@
       ],
       "uploadStatus": "200",
       "runStatus": "200",
-      "seconds": 1.2576,
+      "seconds": 0.5011,
       "memoryMb": 0.0,
       "warningCount": 3,
       "bestMae": 8.0,
@@ -577,7 +577,7 @@
           }
         }
       ],
-      "experimentId": "exp_96fa50e2ad8f",
+      "experimentId": "exp_b27d71043a08",
       "error": null,
       "passed": true,
       "assertions": [
@@ -679,7 +679,7 @@
       ],
       "uploadStatus": "200",
       "runStatus": "200",
-      "seconds": 0.5221,
+      "seconds": 0.4936,
       "memoryMb": 0.0,
       "warningCount": 2,
       "bestMae": 0.5,
@@ -702,7 +702,7 @@
           }
         }
       ],
-      "experimentId": "exp_ce2cfe052e8d",
+      "experimentId": "exp_0298113ce652",
       "error": null,
       "passed": true,
       "assertions": [
@@ -803,7 +803,7 @@
       ],
       "uploadStatus": "200",
       "runStatus": "200",
-      "seconds": 1.2822,
+      "seconds": 1.4854,
       "memoryMb": 0.0,
       "warningCount": 0,
       "bestMae": null,
@@ -960,8 +960,8 @@
           "experimentName",
           "createdAt"
         ],
-        "firstExperimentId": "exp_feeed827591d",
-        "secondExperimentId": "exp_2ba18536a9fb"
+        "firstExperimentId": "exp_67576372766f",
+        "secondExperimentId": "exp_23dc7f1fb11c"
       },
       "agentRoutingResult": null
     },
@@ -983,7 +983,7 @@
       ],
       "uploadStatus": "200",
       "runStatus": "200",
-      "seconds": 4.7181,
+      "seconds": 3.4142,
       "memoryMb": 0.0,
       "warningCount": 0,
       "bestMae": null,
@@ -1022,9 +1022,9 @@
           "tolerance": null
         },
         {
-          "name": "unknown_future_analysis_only_documented",
+          "name": "static_use_test_values_documented",
           "status": "passed",
-          "message": "unknown_future analysis_only 必须进入说明但不得作为可用未来真实值。",
+          "message": "static use_test_values 必须只体现在回测策略说明中，最终预测仍保持 repeat_last_known。",
           "expected": true,
           "actual": true,
           "tolerance": null
@@ -1059,7 +1059,7 @@
       "selectedModels": [],
       "uploadStatus": "skipped",
       "runStatus": "200",
-      "seconds": 0.0363,
+      "seconds": 0.0163,
       "memoryMb": 0.0,
       "warningCount": 0,
       "bestMae": null,

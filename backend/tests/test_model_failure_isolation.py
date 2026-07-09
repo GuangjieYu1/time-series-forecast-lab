@@ -108,6 +108,7 @@ def test_isolated_model_success_is_scored(monkeypatch):
             warnings=["isolated"],
             fit_seconds=0.1,
             predict_seconds=0.2,
+            prediction_features=[],
         )
 
     monkeypatch.setattr(backtest_runner, "should_isolate_model", lambda model_id: model_id == "xgboost")

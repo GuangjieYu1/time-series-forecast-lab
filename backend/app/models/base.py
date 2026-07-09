@@ -12,6 +12,7 @@ class ForecastOutput(BaseModel):
     lower: list[float | None] = Field(default_factory=list)
     upper: list[float | None] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    predictionFeatures: list[dict[str, float]] = Field(default_factory=list)
 
 
 class ForecastModel(Protocol):

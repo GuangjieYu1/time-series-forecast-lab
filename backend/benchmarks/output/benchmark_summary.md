@@ -9,21 +9,21 @@
 - failed API runs: `0`
 - failed assertions: `0`
 - warning assertions: `0`
-- generated at: `2026-07-07T17:10:26.066124+00:00`
+- generated at: `2026-07-09T10:38:49.793142+00:00`
 
 | case | suite | category | passed | rows | best_mae | run | seconds | assertions |
 | --- | --- | --- | --- | ---: | ---: | --- | ---: | ---: |
-| daily_clean | stability | clean | True | 90 | 4.06024e-14 | 200 | 3.7075 | 1 |
-| daily_dirty | stability | dirty | True | 80 | 14.2591 | 200 | 1.0017 | 1 |
-| daily_edge_short | stability | edge | True | 12 | 2 | 200 | 0.616 | 1 |
-| large_hourly | stability | large | True | 120000 | 6.68869 | 200 | 17.6386 | 1 |
-| etth1_smoke | stability | clean | True | 17420 | 0.86007 | 200 | 5.5847 | 1 |
-| raw_detail_sum | aggregation_correctness | aggregation | True | 10 | 6 | 200 | 0.6953 | 2 |
-| raw_detail_mean | aggregation_correctness | aggregation | True | 10 | 8 | 200 | 1.2576 | 2 |
-| raw_detail_count | aggregation_correctness | aggregation | True | 10 | 0.5 | 200 | 0.5221 | 2 |
-| repro_daily_clean | reproducibility | reproducibility | True | - | - | 200 | 1.2822 | 16 |
-| feature_lift_covariate_effect | feature_lift | feature | True | - | - | 200 | 4.7181 | 4 |
-| workbench_agent_golden_routes | agent_routing | agent | True | - | - | 200 | 0.0363 | 4 |
+| daily_clean | stability | clean | True | 90 | 0 | 200 | 1.6375 | 1 |
+| daily_dirty | stability | dirty | True | 80 | 14.259 | 200 | 0.8584 | 1 |
+| daily_edge_short | stability | edge | True | 12 | 2 | 200 | 0.6214 | 1 |
+| large_hourly | stability | large | True | 120000 | 6.68869 | 200 | 7.8905 | 1 |
+| etth1_smoke | stability | clean | True | 17420 | 0.860065 | 200 | 2.692 | 1 |
+| raw_detail_sum | aggregation_correctness | aggregation | True | 10 | 6 | 200 | 0.4952 | 2 |
+| raw_detail_mean | aggregation_correctness | aggregation | True | 10 | 8 | 200 | 0.5011 | 2 |
+| raw_detail_count | aggregation_correctness | aggregation | True | 10 | 0.5 | 200 | 0.4936 | 2 |
+| repro_daily_clean | reproducibility | reproducibility | True | - | - | 200 | 1.4854 | 16 |
+| feature_lift_covariate_effect | feature_lift | feature | True | - | - | 200 | 3.4142 | 4 |
+| workbench_agent_golden_routes | agent_routing | agent | True | - | - | 200 | 0.0163 | 4 |
 
 ## daily_clean
 
@@ -42,7 +42,7 @@
 
 | model | status | MAE | RMSE | WAPE | warnings | error |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| ETS | success | 4.06024e-14 | 4.6825e-14 | 2.725e-16 | 0 | - |
+| ETS | success | 0 | 0 | 0 | 0 | - |
 | Naive | success | 15 | 17.0294 | 0.100671 | 0 | - |
 | Moving Average | success | 21 | 22.4944 | 0.14094 | 0 | - |
 
@@ -63,7 +63,7 @@
 
 | model | status | MAE | RMSE | WAPE | warnings | error |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| ARIMA | success | 14.2591 | 22.2681 | 0.0854348 | 0 | - |
+| ARIMA | success | 14.259 | 22.268 | 0.0854342 | 0 | - |
 | Naive | success | 20.9 | 28.2259 | 0.125225 | 0 | - |
 | Moving Average | success | 25.7571 | 32.2301 | 0.154327 | 0 | - |
 
@@ -124,7 +124,7 @@
 
 | model | status | MAE | RMSE | WAPE | warnings | error |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| XGBoost | success | 0.86007 | 0.924574 | 0.0888376 | 1 | - |
+| XGBoost | success | 0.860065 | 0.924568 | 0.088837 | 1 | - |
 | Naive | success | 0.940958 | 1.00719 | 0.0971926 | 0 | - |
 
 ## raw_detail_sum
@@ -229,7 +229,7 @@
 | positive_feature_run_success | passed | 启用/禁用协变量的正例实验都必须运行成功。 |
 | positive_feature_lift | passed | 正例中协变量参入后 MAE 至少改善 15%。 |
 | noise_covariate_not_overclaimed | passed | 噪声协变量不应造成超过 10% 的性能退化。 |
-| unknown_future_analysis_only_documented | passed | unknown_future analysis_only 必须进入说明但不得作为可用未来真实值。 |
+| static_use_test_values_documented | passed | static use_test_values 必须只体现在回测策略说明中，最终预测仍保持 repeat_last_known。 |
 
 ## workbench_agent_golden_routes
 

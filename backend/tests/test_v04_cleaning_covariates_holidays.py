@@ -67,17 +67,26 @@ def test_known_future_rows_are_retained_without_target_values():
     assert result.series.futureCovariateRows == [{"promo": 1.0}, {"promo": 0.0}]
 
 
-def test_unknown_future_analysis_is_dropped_and_forecast_does_not_read_observed_future():
-    config = CovariateConfig(column="market", type="unknown_future", unknownFutureAction="forecast", forecastMode="manual", manualModelId="naive")
-    assert active_model_covariate_columns(["market", "region"], [CovariateConfig(column="market", type="unknown_future", unknownFutureAction="analysis_only"), CovariateConfig(column="region", type="static")]) == ["region"]
+def test_static_covariates_respect_backtest_strategy_and_forecast_never_reads_test_values():
+    market_config = CovariateConfig(column="market", type="static", backtestStrategy="use_test_values")
+    region_config = CovariateConfig(column="region", type="static", backtestStrategy="historical_mean")
+    assert active_model_covariate_columns(["market", "region"], [market_config, region_config]) == ["market", "region"]
     history_times = [datetime(2026, 1, 1) + timedelta(days=index) for index in range(6)]
-    rows = build_future_covariate_rows(
-        covariate_columns=["market"], history_rows=[{"market": float(index)} for index in range(6)],
-        observed_future_rows=[{"market": 999.0}, {"market": 999.0}],
+    history_rows = [{"market": float(index), "region": float(10 + index)} for index in range(6)]
+    forecast_rows = build_future_covariate_rows(
+        covariate_columns=["market", "region"], history_rows=history_rows,
+        observed_future_rows=[{"market": 999.0, "region": 999.0}, {"market": 998.0, "region": 998.0}],
         future_times=[history_times[-1] + timedelta(days=1), history_times[-1] + timedelta(days=2)],
-        history_times=history_times, covariate_configs=[config], frequency="D", primary_model_id="naive",
+        history_times=history_times, covariate_configs=[market_config, region_config], frequency="D", primary_model_id="naive", purpose="forecast",
     )
-    assert rows == [{"market": 5.0}, {"market": 5.0}]
+    backtest_rows = build_future_covariate_rows(
+        covariate_columns=["market", "region"], history_rows=history_rows,
+        observed_future_rows=[{"market": 999.0, "region": 999.0}, {"market": 998.0, "region": 998.0}],
+        future_times=[history_times[-1] + timedelta(days=1), history_times[-1] + timedelta(days=2)],
+        history_times=history_times, covariate_configs=[market_config, region_config], frequency="D", primary_model_id="naive", purpose="backtest",
+    )
+    assert forecast_rows == [{"market": 5.0, "region": 15.0}, {"market": 5.0, "region": 15.0}]
+    assert backtest_rows == [{"market": 999.0, "region": 12.5}, {"market": 998.0, "region": 12.5}]
 
 
 def test_holiday_features_cover_daily_and_monthly_periods():

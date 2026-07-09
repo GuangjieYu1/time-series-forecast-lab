@@ -57,6 +57,7 @@ def test_load_runtime_from_record_reconstructs_history_without_runtime_json():
                     "targetColumn": "OT",
                     "status": "success",
                     "metrics": {"mae": 154.87},
+                    "warnings": ["uses_feature_importance"],
                     "runtime": {"fitSeconds": 6.4, "predictSeconds": 0.1},
                     "tuning": {
                         "enabled": True,
@@ -85,6 +86,35 @@ def test_load_runtime_from_record_reconstructs_history_without_runtime_json():
                                 "selected": True,
                             },
                         ],
+                    },
+                    "explainability": {
+                        "modelId": "lightgbm",
+                        "modelName": "LightGBM",
+                        "targetColumn": "OT",
+                        "supported": True,
+                        "warning": None,
+                        "featureImportance": [
+                            {"feature": "temp", "importance": 0.184, "rank": 1},
+                            {"feature": "holiday", "importance": 0.091, "rank": 2},
+                        ],
+                        "shapSupported": True,
+                        "shapWarning": None,
+                        "shapTopFeatures": [
+                            {"feature": "temp", "meanAbsShap": 9.2, "direction": "positive", "rank": 1},
+                            {"feature": "holiday", "meanAbsShap": 4.1, "direction": "mixed", "rank": 2},
+                        ],
+                        "singlePoint": {
+                            "time": "2026-01-02T00:00:00",
+                            "actual": 150.0,
+                            "predicted": 140.0,
+                            "residual": 10.0,
+                            "absoluteError": 10.0,
+                            "contributions": [
+                                {"feature": "temp", "value": 24.0, "shapValue": 5.2, "direction": "positive"},
+                                {"feature": "holiday", "value": 1.0, "shapValue": -1.2, "direction": "negative"},
+                            ],
+                            "warnings": [],
+                        },
                     },
                 },
                 {
@@ -157,6 +187,11 @@ def test_load_runtime_from_record_reconstructs_history_without_runtime_json():
     assert runtime.resources is not None
     assert runtime.resources.device == "mps"
     assert runtime.resources.gpuLabel == "Apple Silicon GPU"
+    assert runtime.models[0].metricLabel == "MAE"
+    assert runtime.models[0].currentMetric == 154.87
+    assert runtime.models[0].bestMetric == 106.2
+    assert runtime.models[0].selectedParams["nEstimators"] == 120
+    assert runtime.models[0].warnings == ["uses_feature_importance"]
     assert runtime.featurePipeline[0].families[-1].id == "covariates"
     assert runtime.featurePipeline[0].families[-1].generatedCount == 2
     assert runtime.featurePipeline[0].summary is not None
@@ -174,6 +209,13 @@ def test_load_runtime_from_record_reconstructs_history_without_runtime_json():
     assert "holiday" in runtime.featurePipeline[0].machines[-1].generatedFeatures
     assert "temp" in runtime.featurePipeline[0].machines[-1].generatedFeatures
     assert runtime.featurePipeline[0].selection.generatedCount >= runtime.featurePipeline[0].selection.selectedCount
+    temp_node = next(node for node in runtime.featurePipeline[0].lineage if node.name == "temp")
+    holiday_node = next(node for node in runtime.featurePipeline[0].lineage if node.name == "holiday")
+    assert temp_node.importance == 0.184
+    assert temp_node.shap == 9.2
+    assert temp_node.important is True
+    assert holiday_node.importance == 0.091
+    assert holiday_node.shap == 4.1
     assert runtime.optimization[0].strategyLabel == "Optuna Optimization Engine"
     assert runtime.optimization[1].strategyLabel == "Foundation Model Context Search"
     assert runtime.optimization[1].trials[1].selected is True

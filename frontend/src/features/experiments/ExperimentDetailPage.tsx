@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { fetchExperiment, prepareExperimentRerun } from "../../shared/api/client";
+import { fetchExperiment, manifestDownloadUrl, prepareExperimentRerun } from "../../shared/api/client";
 import { useLabStore } from "../../app/store";
 import { DataTable } from "../../shared/components/Table";
 import { EmptyState, ErrorBanner, LoadingBlock } from "../../shared/components/Status";
 import { Badge, controls, PageHeader, SectionCard, StatCard, surface, Tabs } from "../../shared/components/Ui";
 import type { ExperimentDetail, ForecastRunResponse } from "../../shared/types/api";
+import { AttributionAgentDrawer, type AgentLaunchRequest } from "../attribution/AttributionAgentDrawer";
+import { AttributionSnapshotPanel } from "../attribution/AttributionSnapshotPanel";
 import {
   AbsoluteErrorTimelineChart,
   ActualVsPredictedChart,
@@ -19,10 +21,12 @@ import {
 import { ReportPanel } from "../reports/ReportPanel";
 import { DataHealthPanel } from "../forecast/DataHealthPanel";
 import { ModelLeaderboard } from "../forecast/ModelLeaderboard";
+import { ExplainabilityPanel } from "../runtime/ExplainabilityPanel";
 import { FeatureFactoryPanel } from "../runtime/FeatureFactoryPanel";
+import { RuntimeModelConsoleDrawer } from "../runtime/RuntimeModelConsoleDrawer";
 import { RuntimeInspectorPanel } from "../runtime/RuntimeInspectorPanel";
 
-type DetailTab = "runtime" | "featureFactory" | "dataHealth" | "overview" | "residual" | "metrics" | "distribution" | "final" | "report";
+type DetailTab = "runtime" | "featureFactory" | "explainability" | "attribution" | "dataHealth" | "overview" | "residual" | "metrics" | "distribution" | "final" | "report";
 
 function asForecastResult(experiment: ExperimentDetail): ForecastRunResponse {
   return {
@@ -69,13 +73,17 @@ function asForecastResult(experiment: ExperimentDetail): ForecastRunResponse {
 export function ExperimentDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { beginRerunDraft } = useLabStore();
+  const { beginRerunDraft, selectedWorkspaceId, workspaces } = useLabStore();
   const [experiment, setExperiment] = useState<ExperimentDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [tab, setTab] = useState<DetailTab>("runtime");
   const [copyState, setCopyState] = useState<"idle" | "done" | "failed">("idle");
+  const [selectedRuntimeModelKey, setSelectedRuntimeModelKey] = useState("");
+  const [agentOpen, setAgentOpen] = useState(false);
+  const [launchRequest, setLaunchRequest] = useState<AgentLaunchRequest | null>(null);
+  const selectedWorkspace = workspaces.find((item) => item.workspaceId === selectedWorkspaceId) ?? null;
 
   useEffect(() => {
     if (!id) return;
@@ -93,7 +101,7 @@ export function ExperimentDetailPage() {
       }
     }
     void load();
-  }, [id]);
+  }, [id, selectedWorkspaceId]);
 
   if (loading) return <LoadingBlock label="正在加载实验详情..." />;
   if (error) return <ErrorBanner message={error} />;
@@ -127,6 +135,14 @@ export function ExperimentDetailPage() {
     }
   }
 
+  function askAgent(prompt: string) {
+    setAgentOpen(true);
+    setLaunchRequest({
+      prompt,
+      nonce: `${Date.now()}_${Math.random().toString(16).slice(2)}`
+    });
+  }
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -134,9 +150,17 @@ export function ExperimentDetailPage() {
         title={experiment.experimentName}
         description={`${experiment.fileName} / ${experiment.sheetName} / 目标列：${experiment.targetColumn}`}
         action={
-          <Link className={controls.secondaryButton} to="/experiments">
-            返回历史
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            <Link className={controls.secondaryButton} to="/experiments">
+              返回历史
+            </Link>
+            <Link className={controls.secondaryButton} to={`/experiments/${experiment.experimentId}/attribution`}>
+              Attribution Lab
+            </Link>
+            <button type="button" className={controls.primaryButton} onClick={() => setAgentOpen(true)}>
+              归因 Agent
+            </button>
+          </div>
         }
       />
       <ErrorBanner message={actionError} />
@@ -156,6 +180,8 @@ export function ExperimentDetailPage() {
             items={[
               { id: "runtime", label: "透明引擎" },
               { id: "featureFactory", label: "Feature Factory" },
+              { id: "explainability", label: "特征解释" },
+              { id: "attribution", label: "归因实验室" },
               { id: "dataHealth", label: "数据健康" },
               { id: "overview", label: "预测对比" },
               { id: "residual", label: "残差诊断" },
@@ -168,17 +194,77 @@ export function ExperimentDetailPage() {
 
           <div className="mt-5">
             {tab === "runtime" ? (
-              <RuntimeInspectorPanel
-                runtime={experiment.runtime}
-                title="Transparent Experiment Engine Replay"
-                description="这里回放的是实验落库后的 runtime 快照：状态机、特征管线、优化过程和日志都可以直接追溯。"
-              />
+              <div className="space-y-4">
+                {experiment.runtime?.models.length ? (
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    {experiment.runtime.models.map((model) => {
+                      const key = `${model.targetColumn}:${model.modelId}`;
+                      const active = selectedRuntimeModelKey === key;
+                      return (
+                        <button
+                          key={key}
+                          type="button"
+                          onClick={() => setSelectedRuntimeModelKey((current) => (current === key ? "" : key))}
+                          className={`rounded-2xl border p-4 text-left transition ${
+                            active
+                              ? "border-cyan-300 bg-cyan-50 dark:border-cyan-400/30 dark:bg-cyan-400/10"
+                              : "border-slate-200 bg-white hover:border-slate-300 dark:border-white/10 dark:bg-[#151b2e]"
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="font-semibold text-slate-950 dark:text-white">{model.modelName}</div>
+                              <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">{model.targetColumn}</div>
+                            </div>
+                            <Badge tone={model.status === "success" ? "good" : model.status === "failed" ? "bad" : "info"}>
+                              {model.progressPercent}%
+                            </Badge>
+                          </div>
+                          <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-white/10">
+                            <div className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-cyan-400" style={{ width: `${model.progressPercent}%` }} />
+                          </div>
+                          <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">{active ? "点击收起右侧 Drawer" : "点击打开右侧 Drawer"}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+
+                <RuntimeInspectorPanel
+                  runtime={experiment.runtime}
+                  title="Transparent Experiment Engine Replay"
+                  description="这里回放的是实验落库后的 runtime 快照：状态机、特征管线、优化过程和日志都可以直接追溯。"
+                />
+                <RuntimeModelConsoleDrawer
+                  runtime={experiment.runtime}
+                  selectedModelKey={selectedRuntimeModelKey}
+                  open={Boolean(selectedRuntimeModelKey)}
+                  onClose={() => setSelectedRuntimeModelKey("")}
+                />
+              </div>
             ) : null}
 
             {tab === "featureFactory" ? (
               <FeatureFactoryPanel
                 experimentId={experiment.experimentId}
                 initialTargets={experiment.runtime?.featurePipeline ?? []}
+              />
+            ) : null}
+
+            {tab === "explainability" ? (
+              <ExplainabilityPanel
+                experimentId={experiment.experimentId}
+                recommendedModelId={experiment.recommendedModelId}
+                initialPayload={experiment.explainability}
+              />
+            ) : null}
+
+            {tab === "attribution" ? (
+              <AttributionSnapshotPanel
+                attribution={experiment.attribution}
+                onAskAgent={askAgent}
+                heading="Attribution Lab"
+                description="这里把当前实验的归因证据整理成 5 个主区块，每个区块都可以继续交给右侧 Agent 深挖。"
               />
             ) : null}
 
@@ -270,14 +356,19 @@ export function ExperimentDetailPage() {
         description="配置 hash、源文件 hash 和运行环境都会跟随实验一起保存。"
         action={
           <div className="flex flex-wrap gap-2">
-            <button className={controls.secondaryButton} onClick={() => window.open(`/api/experiments/${experiment.experimentId}/manifest/download`, "_blank")}>
+            <button className={controls.secondaryButton} onClick={() => window.open(manifestDownloadUrl(experiment.experimentId), "_blank")}>
               下载 Manifest
             </button>
             <button className={controls.secondaryButton} onClick={() => void handleCopyHash()}>
               {copyState === "done" ? "已复制 Hash" : copyState === "failed" ? "复制失败" : "复制 Hash"}
             </button>
-            <button className={controls.primaryButton} onClick={() => void handleRerun()}>
-              重新运行实验
+            <button
+              className={controls.primaryButton}
+              disabled={selectedWorkspace?.isReadOnly}
+              title={selectedWorkspace?.isReadOnly ? "Example 工作区是只读空间，不能重新运行实验。" : undefined}
+              onClick={() => void handleRerun()}
+            >
+              {selectedWorkspace?.isReadOnly ? "Example 只读" : "重新运行实验"}
             </button>
           </div>
         }
@@ -301,6 +392,20 @@ export function ExperimentDetailPage() {
           ))}
         </div>
       </SectionCard>
+
+      <AttributionAgentDrawer
+        open={agentOpen}
+        onClose={() => setAgentOpen(false)}
+        experimentId={experiment.experimentId}
+        experiment={experiment}
+        currentPage="/experiments/:id"
+        currentTab={tab}
+        selectedModelId={selectedRuntimeModelKey ? selectedRuntimeModelKey.split(":")[1] ?? null : experiment.recommendedModelId}
+        historySummary={experiment.agentHistorySummary}
+        availableSkills={experiment.availableAgentSkills}
+        attribution={experiment.attribution}
+        launchRequest={launchRequest}
+      />
     </div>
   );
 }

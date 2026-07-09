@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
+import { useLabStore } from "../../app/store";
 import { fetchDevice, fetchExperiments, fetchHealth, fetchModels } from "../../shared/api/client";
 import { loadDeepSeekSettings } from "../../shared/api/deepseekSettings";
 import { Badge, controls, SectionCard, StatCard, surface } from "../../shared/components/Ui";
@@ -14,17 +15,19 @@ const capabilities = [
 ];
 
 export function OverviewPage() {
+  const { selectedWorkspaceId, workspaces } = useLabStore();
   const [experiments, setExperiments] = useState<ExperimentListItem[]>([]);
   const [models, setModels] = useState<ModelCapability[]>([]);
   const [backendOk, setBackendOk] = useState<boolean | null>(null);
   const [device, setDevice] = useState("检测中");
+  const selectedWorkspace = workspaces.find((item) => item.workspaceId === selectedWorkspaceId) ?? null;
 
   useEffect(() => {
     void fetchExperiments().then(setExperiments).catch(() => setExperiments([]));
     void fetchModels().then(setModels).catch(() => setModels([]));
     void fetchHealth().then((health) => setBackendOk(health.ok)).catch(() => setBackendOk(false));
     void fetchDevice().then(setDevice).catch(() => setDevice("未知"));
-  }, []);
+  }, [selectedWorkspaceId]);
 
   const availableModels = models.filter((model) => model.installStatus === "available").length;
   const timesfm = models.find((model) => model.id === "timesfm");
@@ -44,9 +47,15 @@ export function OverviewPage() {
           </h1>
           <p className="mt-5 max-w-2xl text-base leading-8 text-slate-600 dark:text-slate-300">{zhCN.productTagline}</p>
           <div className="mt-8 flex flex-wrap gap-3">
-            <Link className={controls.primaryButton} to="/upload">
-              开始新实验
-            </Link>
+            {selectedWorkspace?.isReadOnly ? (
+              <button className={controls.primaryButton} disabled title="Example 工作区是只读空间，不能新建实验。">
+                Example 只读
+              </button>
+            ) : (
+              <Link className={controls.primaryButton} to="/upload">
+                开始新实验
+              </Link>
+            )}
             <Link className={controls.secondaryButton} to="/experiments">
               查看历史实验
             </Link>

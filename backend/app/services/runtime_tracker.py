@@ -33,6 +33,7 @@ class RuntimeTracker:
         self._lock = Lock()
         self._runs: dict[str, RuntimeRunDetail] = {}
         self._experiment_aliases: dict[str, str] = {}
+        self._scopes: dict[str, dict[str, str]] = {}
 
     def start(
         self,
@@ -46,6 +47,8 @@ class RuntimeTracker:
         estimated_model_seconds: dict[tuple[str, str], float] | None = None,
         compute_targets: dict[str, str] | None = None,
         parameter_strategy: str = "default",
+        user_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> RuntimeRunDetail:
         now = utc_now()
         models: list[RuntimeModelConsole] = []
@@ -69,6 +72,11 @@ class RuntimeTracker:
                     fitSeconds=row.fitSeconds,
                     predictSeconds=row.predictSeconds,
                     tuningSeconds=None,
+                    metricLabel="MAE",
+                    currentMetric=None,
+                    bestMetric=None,
+                    selectedParams={},
+                    warnings=[],
                     computeTarget="gpu" if str(compute_target).lower() == "gpu" else "cpu",
                     resource=build_resource_snapshot(device),
                     optimization=self._initial_optimization_state(
@@ -116,6 +124,8 @@ class RuntimeTracker:
         with self._lock:
             self._cleanup_locked(now)
             self._runs[run_id] = detail
+            if user_id and workspace_id:
+                self._scopes[run_id] = {"userId": user_id, "workspaceId": workspace_id}
             return detail.model_copy(deep=True)
 
     def set_overall(
@@ -258,6 +268,8 @@ class RuntimeTracker:
         metric_label: str | None = None,
         metric_value: float | None = None,
         params: dict[str, Any] | None = None,
+        best_metric: float | None = None,
+        warnings: list[str] | None = None,
     ) -> RuntimeRunDetail | None:
         with self._lock:
             detail = self._runs.get(run_id)
@@ -274,6 +286,11 @@ class RuntimeTracker:
                     model.fitSeconds = fit_seconds if fit_seconds is not None else model.fitSeconds
                     model.predictSeconds = predict_seconds if predict_seconds is not None else model.predictSeconds
                     model.tuningSeconds = tuning_seconds if tuning_seconds is not None else model.tuningSeconds
+                    model.metricLabel = metric_label if metric_label is not None else model.metricLabel
+                    model.currentMetric = metric_value if metric_value is not None else model.currentMetric
+                    model.bestMetric = best_metric if best_metric is not None else model.bestMetric
+                    model.selectedParams = dict(params or model.selectedParams)
+                    model.warnings = list(warnings or model.warnings)
                     model.error = error
                     model.resource = build_resource_snapshot(detail.resources.device if detail.resources else "cpu")
                     model.elapsedSeconds = round(
@@ -379,6 +396,10 @@ class RuntimeTracker:
                 model.optimization = optimization
                 model.tuningSeconds = tuning_seconds if tuning_seconds is not None else model.tuningSeconds
                 model.currentStage = "auto_tuning"
+                model.metricLabel = optimization.metricLabel
+                model.currentMetric = current_metric
+                model.bestMetric = best_metric if best_metric is not None else model.bestMetric
+                model.selectedParams = dict(optimization.selectedParams or {})
                 models[index] = model
                 optimization_level = "warn" if trial_status in {"failed", "pruned"} else "success" if trial_status == "success" else "info"
                 self._append_log_locked(
@@ -442,6 +463,8 @@ class RuntimeTracker:
             if experiment_id:
                 detail.experimentId = experiment_id
                 self._experiment_aliases[experiment_id] = run_id
+                if run_id in self._scopes:
+                    self._scopes[experiment_id] = dict(self._scopes[run_id])
             self._append_timeline_locked(
                 detail,
                 stage=detail.currentStage,
@@ -464,6 +487,8 @@ class RuntimeTracker:
                 return None
             detail.experimentId = experiment_id
             self._experiment_aliases[experiment_id] = run_id
+            if run_id in self._scopes:
+                self._scopes[experiment_id] = dict(self._scopes[run_id])
             return detail.model_copy(deep=True)
 
     def get(self, runtime_id: str) -> RuntimeRunDetail | None:
@@ -471,6 +496,16 @@ class RuntimeTracker:
             run_id = self._resolve_runtime_id_locked(runtime_id)
             detail = self._runs.get(run_id)
             return detail.model_copy(deep=True) if detail else None
+
+    def get_scope(self, runtime_id: str) -> dict[str, str] | None:
+        with self._lock:
+            run_id = self._resolve_runtime_id_locked(runtime_id)
+            scope = self._scopes.get(runtime_id) or self._scopes.get(run_id)
+            return dict(scope) if scope else None
+
+    def resolve_runtime_id(self, runtime_id: str) -> str:
+        with self._lock:
+            return self._resolve_runtime_id_locked(runtime_id)
 
     def get_logs(self, runtime_id: str):
         detail = self.get(runtime_id)
@@ -671,7 +706,9 @@ class RuntimeTracker:
             experiment_aliases = [experiment_id for experiment_id, alias_run_id in self._experiment_aliases.items() if alias_run_id == run_id]
             for experiment_id in experiment_aliases:
                 self._experiment_aliases.pop(experiment_id, None)
+                self._scopes.pop(experiment_id, None)
             self._runs.pop(run_id, None)
+            self._scopes.pop(run_id, None)
 
 
 runtime_tracker = RuntimeTracker()

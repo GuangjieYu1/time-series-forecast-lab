@@ -4,12 +4,10 @@ import uuid
 from datetime import datetime, timezone
 from io import BytesIO
 
-from fastapi.testclient import TestClient
 from pypdf import PdfReader
 
 from app.db.models import ExperimentRecord, ReportRecord
 from app.db.session import SessionLocal
-from app.main import app
 
 
 SMALL_PNG_DATA_URL = (
@@ -18,7 +16,7 @@ SMALL_PNG_DATA_URL = (
 )
 
 
-def test_report_pdf_export_returns_searchable_text_pdf():
+def test_report_pdf_export_returns_searchable_text_pdf(authed_client):
     experiment_id = f"exp_pdf_{uuid.uuid4().hex[:8]}"
     report_id = f"report_{uuid.uuid4().hex[:8]}"
 
@@ -27,6 +25,8 @@ def test_report_pdf_export_returns_searchable_text_pdf():
         db.add(
             ExperimentRecord(
                 id=experiment_id,
+                workspace_id=authed_client.workspace_id,
+                created_by_user_id=authed_client.user_id,
                 name="PDF Test",
                 file_name="demo.csv",
                 sheet_name="CSV",
@@ -51,6 +51,8 @@ def test_report_pdf_export_returns_searchable_text_pdf():
             ReportRecord(
                 id=report_id,
                 experiment_id=experiment_id,
+                workspace_id=authed_client.workspace_id,
+                created_by_user_id=authed_client.user_id,
                 content_markdown=(
                     "# AI 预测总结报告\n\n"
                     "这是一份可复制文本的 PDF 报告。\n\n"
@@ -67,8 +69,7 @@ def test_report_pdf_export_returns_searchable_text_pdf():
     finally:
         db.close()
 
-    client = TestClient(app)
-    response = client.post(
+    response = authed_client.client.post(
         f"/api/reports/{report_id}/pdf",
         json={
             "title": "实验报告 PDF",

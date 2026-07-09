@@ -1,3 +1,4 @@
+import { manifestDownloadUrl } from "../../shared/api/client";
 import { controls, SectionCard, surface } from "../../shared/components/Ui";
 import type { ExperimentManifest } from "../../shared/types/api";
 
@@ -25,7 +26,7 @@ export function ReproducibilityPanel({ experimentId, manifest }: { experimentId:
       title="实验复现"
       description="配置哈希、源文件哈希、运行环境和目标列快照都会跟随实验一起保存。"
       action={
-        <button className={controls.secondaryButton} onClick={() => window.open(`/api/experiments/${experimentId}/manifest/download`, "_blank")}>
+        <button className={controls.secondaryButton} onClick={() => window.open(manifestDownloadUrl(experimentId), "_blank")}>
           下载 Manifest
         </button>
       }

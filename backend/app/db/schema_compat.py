@@ -4,13 +4,13 @@ from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
 
-EXPERIMENT_COLUMN_DEFINITIONS = {
-    "runtime_json": "TEXT",
+EXPERIMENT_COMPAT_COLUMNS: dict[str, str] = {
     "manifest_json": "TEXT",
-    "config_hash": "VARCHAR(128)",
-    "source_file_sha256": "VARCHAR(128)",
-    "app_version": "VARCHAR(32)",
-    "git_commit": "VARCHAR(64)",
+    "attribution_json": "TEXT",
+    "config_hash": "TEXT",
+    "source_file_sha256": "TEXT",
+    "app_version": "TEXT",
+    "git_commit": "TEXT",
 }
 
 
@@ -20,14 +20,10 @@ def ensure_schema_compatibility(engine: Engine) -> None:
         return
 
     existing_columns = {column["name"] for column in inspector.get_columns("experiments")}
-    missing = {
-        name: definition
-        for name, definition in EXPERIMENT_COLUMN_DEFINITIONS.items()
-        if name not in existing_columns
-    }
+    missing = [(name, ddl) for name, ddl in EXPERIMENT_COMPAT_COLUMNS.items() if name not in existing_columns]
     if not missing:
         return
 
     with engine.begin() as connection:
-        for column_name, column_type in missing.items():
+        for column_name, column_type in missing:
             connection.execute(text(f"ALTER TABLE experiments ADD COLUMN {column_name} {column_type}"))

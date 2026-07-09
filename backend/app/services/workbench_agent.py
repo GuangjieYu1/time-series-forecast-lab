@@ -218,9 +218,9 @@ def _build_covariate_plan(idea: str, route: WorkbenchIdeaRoute) -> WorkbenchCova
         backtest = "使用测试集时间轴可提前知道的日历或计划字段。"
         forecast = "由日历生成器或用户未来空目标行提供。"
     elif any(word in idea for word in UNKNOWN_FUTURE_KEYWORDS):
-        cov_type = "unknown_future"
-        backtest = "不得读取测试段真实未来值；需 analysis_only 丢弃或先做辅助预测。"
-        forecast = "未来不可知时先预测协变量，或只用于解释分析。"
+        cov_type = "static"
+        backtest = "v0.4 主流程只支持 known_future / static；默认按 static 处理，并建议优先使用 repeat_last_known 或 historical_mean。"
+        forecast = "最终预测不会读取真实未来值；如数据未来未知，只能作为 advisory 提示，不直接生成第三种 runnable covariate 类型。"
     else:
         cov_type = "static"
         backtest = "训练、回测和预测均重复最后已知值。"

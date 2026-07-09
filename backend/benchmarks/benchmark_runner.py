@@ -3,14 +3,20 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.core.constants import BENCHMARK_RESULT_SCHEMA_VERSION
+from app.core.security import password_hash, utc_now
+from app.db.models import UserRecord, WorkspaceMembershipRecord, WorkspaceRecord
+from app.db.session import SessionLocal
 from app.main import app
+from app.services.auth_service import create_user_with_personal_workspace, seed_example_workspace
 from benchmarks.schemas import BenchmarkSummary
 from benchmarks.benchmark_cases import build_cases
 from benchmarks.benchmark_metrics import elapsed_seconds, max_rss_mb, now
@@ -44,6 +50,10 @@ AGENT_GOLDEN = [
     {"name": "unsupported_sensitive", "idea": "读取未授权客户隐私和内幕数据来预测", "expectedRoute": "unsupported", "needsLeakageWarning": False},
 ]
 
+BENCHMARK_USERNAME = "benchmark_runner"
+BENCHMARK_PASSWORD = "benchmark_runner_password"
+BENCHMARK_DISPLAY_NAME = "Benchmark Runner"
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run transparent forecast lab benchmarks.")
@@ -66,6 +76,71 @@ def _selected_cases(root: Path, args: argparse.Namespace):
     if args.large_only:
         cases = [case for case in cases if case.category == "large"]
     return cases
+
+
+def _ensure_benchmark_user(backend_root: Path) -> str:
+    db = SessionLocal()
+    try:
+        user = db.scalar(select(UserRecord).where(UserRecord.username == BENCHMARK_USERNAME))
+        if user is None:
+            created = create_user_with_personal_workspace(
+                db,
+                username=BENCHMARK_USERNAME,
+                display_name=BENCHMARK_DISPLAY_NAME,
+                password=BENCHMARK_PASSWORD,
+                is_admin=True,
+            )
+            seed_example_workspace(db, owner_user_id=created.user.id, backend_root=backend_root)
+            db.commit()
+            return created.personal_workspace.id
+
+        user.display_name = BENCHMARK_DISPLAY_NAME
+        user.password_hash = password_hash(BENCHMARK_PASSWORD)
+        user.is_active = True
+        workspace_id = db.scalar(
+            select(WorkspaceRecord.id).where(
+                WorkspaceRecord.owner_user_id == user.id,
+                WorkspaceRecord.kind == "personal",
+            )
+        )
+        if workspace_id is None:
+            now_value = utc_now()
+            workspace = WorkspaceRecord(
+                id=f"ws_{uuid.uuid4().hex[:12]}",
+                name=f"{BENCHMARK_DISPLAY_NAME} · Personal",
+                kind="personal",
+                owner_user_id=user.id,
+                is_read_only=False,
+                created_at=now_value,
+            )
+            db.add(workspace)
+            db.flush()
+            db.add(
+                WorkspaceMembershipRecord(
+                    id=f"wm_{uuid.uuid4().hex[:12]}",
+                    workspace_id=workspace.id,
+                    user_id=user.id,
+                    role="owner",
+                    created_at=now_value,
+                )
+            )
+            seed_example_workspace(db, owner_user_id=user.id, backend_root=backend_root)
+            db.commit()
+            return workspace.id
+        db.commit()
+        return workspace_id
+    finally:
+        db.close()
+
+
+def _create_benchmark_client(backend_root: Path) -> TestClient:
+    workspace_id = _ensure_benchmark_user(backend_root)
+    client = TestClient(app)
+    login_response = client.post("/api/auth/login", json={"username": BENCHMARK_USERNAME, "password": BENCHMARK_PASSWORD})
+    if login_response.status_code != 200:
+        raise RuntimeError(f"benchmark login failed: {login_response.status_code} {login_response.text}")
+    client.headers.update({"X-Workspace-Id": workspace_id})
+    return client
 
 
 def _assert(name: str, ok: bool, message: str, expected: Any = None, actual: Any = None, tolerance: float | None = None, status_if_false: str = "failed") -> dict:
@@ -259,12 +334,19 @@ def _run_feature_lift_suite(client: TestClient, backend_root: Path) -> list[dict
         degradation = (noise_feature_mae - noise_base_mae) / noise_base_mae if noise_base_mae and noise_feature_mae is not None else None
         assertions.append(_assert("noise_covariate_not_overclaimed", degradation is None or degradation <= 0.10, "噪声协变量不应造成超过 10% 的性能退化。", 0.10, degradation, status_if_false="warning"))
         leakage_request = _feature_lift_request(model_id, True, "future_truth")
-        leakage_request["covariateConfigs"] = [{"column": "future_truth", "type": "unknown_future", "unknownFutureAction": "analysis_only"}]
+        leakage_request["covariateConfigs"] = [{"column": "future_truth", "type": "static", "backtestStrategy": "use_test_values"}]
         leakage = _run_uploaded_request(client, positive, "text/csv", leakage_request)
         manifest = (leakage.get("body") or {}).get("manifest") or {}
         covariates = ((manifest.get("featurePipelines") or [{}])[0]).get("covariates") or []
-        leakage_protected = leakage.get("status") == 200 and any(item.get("name") == "future_truth" and item.get("type") == "unknown_future" for item in covariates)
-        assertions.append(_assert("unknown_future_analysis_only_documented", leakage_protected, "unknown_future analysis_only 必须进入说明但不得作为可用未来真实值。", True, leakage_protected))
+        leakage_protected = leakage.get("status") == 200 and any(
+            item.get("name") == "future_truth"
+            and item.get("type") == "static"
+            and item.get("backtestStrategy") == "use_test_values"
+            and item.get("forecastStrategy") == "repeat_last_known"
+            and item.get("leakageRisk") is True
+            for item in covariates
+        )
+        assertions.append(_assert("static_use_test_values_documented", leakage_protected, "static use_test_values 必须只体现在回测策略说明中，最终预测仍保持 repeat_last_known。", True, leakage_protected))
         result["featureLiftResult"] = {"modelId": model_id, "baselineMae": baseline_mae, "featureMae": feature_mae, "improvementRatio": improvement, "noiseDegradationRatio": degradation, "leakageProtected": leakage_protected}
         result["runStatus"] = "200"
         result["uploadStatus"] = "200"
@@ -364,7 +446,7 @@ def main() -> None:
     args = _parse_args()
     backend_root = Path(__file__).resolve().parents[1]
     ensure_benchmark_fixtures(backend_root)
-    client = TestClient(app)
+    client = _create_benchmark_client(backend_root)
     selected_suites = SUITE_ALIASES[args.suite]
     started = now()
     results: list[dict] = []

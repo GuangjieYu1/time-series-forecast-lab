@@ -17,10 +17,133 @@ export interface SheetPreview {
 
 export interface UploadPreviewResponse {
   uploadId: string;
+  workspaceId: string | null;
   fileName: string;
   fileSize: number;
   fileSha256: string;
   sheets: SheetPreview[];
+}
+
+export interface AuthUser {
+  userId: string;
+  username: string;
+  displayName: string;
+  isAdmin: boolean;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface WorkspaceSummary {
+  workspaceId: string;
+  name: string;
+  kind: "personal" | "shared" | "example";
+  role: "owner" | "member";
+  isReadOnly: boolean;
+  ownerUserId: string;
+  isPersonal: boolean;
+  isOwner: boolean;
+  createdAt: string;
+}
+
+export interface AuthSessionResponse {
+  authenticated: boolean;
+  bootstrapRequired: boolean;
+  user: AuthUser | null;
+  workspaces: WorkspaceSummary[];
+  defaultWorkspaceId: string | null;
+}
+
+export interface UsernameAvailabilityResponse {
+  available: boolean;
+  normalizedUsername: string;
+  reason: "available" | "taken" | "invalid";
+  message: string | null;
+}
+
+export interface BootstrapRequest {
+  username: string;
+  displayName: string;
+  password: string;
+}
+
+export interface LoginRequest {
+  username: string;
+  password: string;
+}
+
+export interface RegisterRequest {
+  username: string;
+  displayName: string;
+  password: string;
+}
+
+export interface CreateUserRequest {
+  username: string;
+  displayName: string;
+  password: string;
+  isAdmin: boolean;
+}
+
+export interface UpdateUserRequest {
+  displayName?: string;
+  isActive?: boolean;
+}
+
+export interface UpdateUserPasswordRequest {
+  password: string;
+}
+
+export interface UserGroupRef {
+  groupId: string;
+  name: string;
+}
+
+export interface UserSummary {
+  userId: string;
+  username: string;
+  displayName: string;
+  isAdmin: boolean;
+  isActive: boolean;
+  createdAt: string;
+  groups: UserGroupRef[];
+}
+
+export interface UserGroupSummary {
+  groupId: string;
+  name: string;
+  description: string | null;
+  memberCount: number;
+  createdAt: string;
+}
+
+export interface CreateUserGroupRequest {
+  name: string;
+  description?: string;
+}
+
+export interface UpdateUserGroupsRequest {
+  groupIds: string[];
+}
+
+export interface CreateWorkspaceRequest {
+  name: string;
+}
+
+export interface UpdateWorkspaceRequest {
+  name: string;
+}
+
+export interface WorkspaceMemberResponse {
+  userId: string;
+  username: string;
+  displayName: string;
+  role: "owner" | "member";
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface AddWorkspaceMemberRequest {
+  userId: string;
 }
 
 export interface ModelCapability {
@@ -239,10 +362,8 @@ export interface HolidayConfig {
 
 export interface CovariateConfig {
   column: string;
-  type: "known_future" | "static" | "unknown_future";
-  unknownFutureAction: "analysis_only" | "forecast";
-  forecastMode: "auto" | "manual" | "per_primary_model";
-  manualModelId: "naive" | "seasonal_naive" | "arima" | "ets" | null;
+  type: "known_future" | "static";
+  backtestStrategy: "repeat_last_known" | "historical_mean" | "use_test_values";
   missingValueStrategy: MissingValueStrategy;
 }
 
@@ -458,12 +579,12 @@ export interface RuntimeFeatureNode {
   importance: number | null;
   shap: number | null;
   modelIds: string[];
-  featureType: "generated" | "known_future_covariate" | "static_covariate" | "unknown_future_covariate";
+  featureType: "generated" | "known_future_covariate" | "static_covariate";
   generator: string;
   machineId: string | null;
   machineLabel: string | null;
-  forecastStrategy: "generated" | "calendar" | "use_future_rows" | "repeat_last_known" | "use_test_timeline" | "forecast_auxiliary" | "drop_for_leakage";
-  backtestStrategy: "generated" | "calendar" | "use_future_rows" | "repeat_last_known" | "use_test_timeline" | "forecast_auxiliary" | "drop_for_leakage";
+  forecastStrategy: "generated" | "calendar" | "use_future_rows" | "repeat_last_known";
+  backtestStrategy: "generated" | "calendar" | "use_future_rows" | "repeat_last_known" | "historical_mean" | "use_test_timeline" | "use_test_values";
   usedDuring: Array<"training" | "backtest" | "forecast">;
   droppedReason: string | null;
   lifecycleTrail: string[];
@@ -494,13 +615,12 @@ export interface RuntimeFeatureMachine {
 
 export interface RuntimeCovariateDescriptor {
   name: string;
-  type: "known_future" | "static" | "unknown_future";
+  type: "known_future" | "static";
   generator: string;
-  forecastStrategy: "calendar" | "use_future_rows" | "repeat_last_known" | "forecast_auxiliary" | "drop_for_leakage";
-  backtestStrategy: "use_test_timeline" | "repeat_last_known" | "forecast_auxiliary" | "drop_for_leakage";
+  forecastStrategy: "calendar" | "use_future_rows" | "repeat_last_known";
+  backtestStrategy: "use_test_timeline" | "repeat_last_known" | "historical_mean" | "use_test_values";
   usedDuring: Array<"training" | "backtest" | "forecast">;
-  forecastMode: "auto" | "manual" | "per_primary_model" | null;
-  forecastModelId: string | null;
+  leakageRisk: boolean;
   note: string | null;
 }
 
@@ -635,6 +755,11 @@ export interface RuntimeModelConsole {
   fitSeconds: number | null;
   predictSeconds: number | null;
   tuningSeconds: number | null;
+  metricLabel: string | null;
+  currentMetric: number | null;
+  bestMetric: number | null;
+  selectedParams: Record<string, number | string | boolean | null>;
+  warnings: string[];
   computeTarget: "cpu" | "gpu";
   resource: RuntimeResourceSnapshot | null;
   optimization: RuntimeOptimizationState | null;
@@ -677,6 +802,263 @@ export interface FeatureFactoryResponse {
   targets: RuntimeFeaturePipelineTarget[];
 }
 
+export interface ExplainabilityFeatureItem {
+  feature: string;
+  importance: number | null;
+  rank: number | null;
+  meanAbsShap: number | null;
+  direction: "positive" | "negative" | "mixed" | "neutral" | null;
+}
+
+export interface ExplainabilitySinglePointContribution {
+  feature: string;
+  value: number | null;
+  shapValue: number | null;
+  direction: "positive" | "negative" | "neutral";
+}
+
+export interface ExplainabilitySinglePoint {
+  time: string | null;
+  actual: number | null;
+  predicted: number | null;
+  residual: number | null;
+  absoluteError: number | null;
+  contributions: ExplainabilitySinglePointContribution[];
+  warnings: string[];
+}
+
+export interface ExplainabilityModelSummary {
+  modelId: string;
+  modelName: string;
+  targetColumn: string;
+  supported: boolean;
+  warning: string | null;
+  featureImportance: ExplainabilityFeatureItem[];
+  shapSupported: boolean;
+  shapWarning: string | null;
+  shapTopFeatures: ExplainabilityFeatureItem[];
+  singlePoint: ExplainabilitySinglePoint | null;
+}
+
+export interface ExperimentExplainabilityResponse {
+  experimentId: string;
+  recommendedModelId: string | null;
+  models: ExplainabilityModelSummary[];
+}
+
+export interface WorkbenchIdeaAnalyzeRequest {
+  idea: string;
+  context: {
+    targetColumn?: string | null;
+    frequency?: string | null;
+    availableColumns?: string[];
+    horizon?: number | null;
+    domain?: string | null;
+  };
+  mode?: "offline" | "online" | "dual";
+}
+
+export interface WorkbenchDataSourceCandidate {
+  id: string;
+  name: string;
+  category: "built_in" | "user_upload" | "external_registry" | "connector_placeholder";
+  description: string;
+  frequencySupport: string[];
+  futureAvailability: "known_future" | "static" | "unknown_future" | "not_applicable";
+  implementationStatus: "available" | "placeholder" | "unsupported";
+  warnings: string[];
+}
+
+export interface WorkbenchCovariatePlan {
+  suggestedColumns: string[];
+  covariateType: "known_future" | "static" | "unknown_future" | "mixed" | "none";
+  backtestPolicy: string;
+  forecastPolicy: string;
+  leakagePolicy: string;
+}
+
+export interface WorkbenchIdeaAnalyzeResponse {
+  route: "feature_engineering_data" | "custom_model" | "hybrid" | "clarify" | "unsupported";
+  confidence: number;
+  rationale: string;
+  requiredInputs: string[];
+  candidateDataSources: WorkbenchDataSourceCandidate[];
+  covariatePlan: WorkbenchCovariatePlan | null;
+  leakageWarnings: string[];
+  nextApiCalls: string[];
+}
+
+export type AgentSkillCategory = "read" | "analysis" | "action";
+export type AgentRunStatus = "planned" | "running" | "completed" | "failed" | "cancelled";
+export type AgentPlanStepStatus = "pending" | "running" | "completed" | "failed" | "cancelled" | "skipped";
+export type AgentArtifactKind = "summary" | "markdown" | "chart" | "diagnosis" | "report" | "table" | "warning" | "run_request";
+export type AgentEventType = "status" | "plan" | "skill" | "artifact" | "message" | "warning" | "error";
+
+export interface AgentSkillDefinition {
+  skillId: string;
+  category: AgentSkillCategory;
+  requiredInputs: string[];
+  sideEffects: string[];
+  costLevel: "low" | "medium" | "high";
+  expectedDuration: string;
+  workspaceScope: "experiment" | "workspace";
+  supportsStreaming: boolean;
+  producesArtifacts: boolean;
+  description: string;
+}
+
+export interface AgentPlanStep {
+  stepId: string;
+  title: string;
+  detail: string;
+  skillId: string;
+  status: AgentPlanStepStatus;
+  reads: string[];
+  runsModel: boolean;
+  generatesChart: boolean;
+  writesReport: boolean;
+  estimatedDuration: string | null;
+  risks: string[];
+}
+
+export interface AgentSkillInvocation {
+  invocationId: string;
+  skillId: string;
+  status: AgentPlanStepStatus;
+  startedAt: string | null;
+  finishedAt: string | null;
+  inputSummary: string;
+  outputSummary: string;
+  warning: string | null;
+  error: string | null;
+}
+
+export interface AgentArtifact {
+  artifactId: string;
+  kind: AgentArtifactKind;
+  title: string;
+  summary: string;
+  createdAt: string;
+  sourceSkillId: string | null;
+  payload: Record<string, unknown>;
+  linksToReport: boolean;
+}
+
+export interface AgentContextSnapshot {
+  experimentId: string;
+  experimentName: string;
+  workspaceId: string;
+  workspaceName: string | null;
+  targetColumn: string | null;
+  recommendedModelId: string | null;
+  currentPage: string | null;
+  currentTab: string | null;
+  selectedModelId: string | null;
+  selectedFeatureId: string | null;
+  selectedArtifactId: string | null;
+  selectedVisualId: string | null;
+  selectedAnomalyTime: string | null;
+  availableColumns: string[];
+  covariates: RuntimeCovariateDescriptor[];
+  warnings: string[];
+  availableReports: Array<{ reportId: string; title: string }>;
+}
+
+export interface AgentMessage {
+  role: "user" | "assistant" | "system";
+  content: string;
+  createdAt: string;
+}
+
+export interface AgentRunEvent {
+  eventId: string;
+  type: AgentEventType;
+  title: string;
+  detail: string;
+  timestamp: string;
+  stepId: string | null;
+  skillId: string | null;
+  artifactId: string | null;
+  status: string | null;
+}
+
+export interface AgentRunRequest {
+  prompt: string;
+  currentPage?: string | null;
+  currentTab?: string | null;
+  selectedModelId?: string | null;
+  selectedFeatureId?: string | null;
+  selectedArtifactId?: string | null;
+  selectedVisualId?: string | null;
+  selectedAnomalyTime?: string | null;
+  autoExecute?: boolean;
+}
+
+export interface AgentRunResponse {
+  runId: string;
+  experimentId: string;
+  status: AgentRunStatus;
+  plan: AgentPlanStep[];
+  currentMessage: string | null;
+  availableSkills: AgentSkillDefinition[];
+}
+
+export interface AgentHistoryItem {
+  runId: string;
+  requestPreview: string;
+  status: AgentRunStatus;
+  createdAt: string;
+  updatedAt: string;
+  artifactCount: number;
+  skillIds: string[];
+  lastAssistantMessage: string | null;
+}
+
+export interface AgentRunDetail {
+  runId: string;
+  experimentId: string;
+  workspaceId: string;
+  createdByUserId: string;
+  status: AgentRunStatus;
+  request: AgentRunRequest;
+  context: AgentContextSnapshot;
+  plan: AgentPlanStep[];
+  events: AgentRunEvent[];
+  messages: AgentMessage[];
+  skillInvocations: AgentSkillInvocation[];
+  artifacts: AgentArtifact[];
+  availableSkills: AgentSkillDefinition[];
+  estimatedDuration: string | null;
+  risks: string[];
+  summary: string | null;
+  canCancel: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentRunEventsResponse {
+  runId: string;
+  events: AgentRunEvent[];
+}
+
+export interface AttributionSnapshotSection {
+  title: string;
+  summary: string[];
+  highlights: Array<Record<string, unknown>>;
+  askAgentPrompts: string[];
+}
+
+export interface AttributionSnapshot {
+  experimentId: string;
+  updatedAt: string | null;
+  overview: AttributionSnapshotSection;
+  quickDiagnosis: AttributionSnapshotSection;
+  anomalyResidualLab: AttributionSnapshotSection;
+  deepAttribution: AttributionSnapshotSection;
+  scenarioExecutiveOutput: AttributionSnapshotSection;
+  warnings: string[];
+}
+
 export interface ExperimentListItem {
   experimentId: string;
   experimentName: string;
@@ -687,6 +1069,10 @@ export interface ExperimentListItem {
   recommendedModelId: string | null;
   bestMae: number | null;
   createdAt: string;
+  workspaceId: string | null;
+  workspaceName: string | null;
+  createdByUserId: string | null;
+  createdByUsername: string | null;
 }
 
 export interface ExperimentDetail extends ExperimentListItem {
@@ -699,13 +1085,17 @@ export interface ExperimentDetail extends ExperimentListItem {
   series: { time: string; value: number }[];
   finalForecast: FinalForecastResponse | null;
   modelLogs: unknown[];
+  explainability: ExperimentExplainabilityResponse | null;
   runtime: RuntimeRunDetail | null;
+  attribution: AttributionSnapshot | null;
   manifest: ExperimentManifest | null;
   configHash: string | null;
   sourceFileSha256: string | null;
   appVersion: string | null;
   gitCommit: string | null;
   reports: ReportResponse[];
+  agentHistorySummary: AgentHistoryItem[];
+  availableAgentSkills: AgentSkillDefinition[];
 }
 
 export interface ExperimentManifest {
@@ -822,6 +1212,10 @@ export interface ReportResponse {
   contentMarkdown: string;
   createdAt: string;
   model: string;
+  workspaceId: string | null;
+  workspaceName: string | null;
+  createdByUserId: string | null;
+  createdByUsername: string | null;
 }
 
 export interface ReportPdfArtifact {

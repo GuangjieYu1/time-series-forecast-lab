@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 
@@ -11,10 +11,18 @@ from app.services.holiday_features import HOLIDAY_FEATURE_NAMES, holiday_row
 
 
 _KNOWN_FUTURE_ALIAS_MAP: dict[str, str] = {
-    "weekday": "weekday", "dayofweek": "weekday", "dayweek": "weekday",
-    "month": "month", "quarter": "quarter", "weekend": "weekend",
-    "isweekend": "weekend", "workday": "workday", "isworkday": "workday",
-    "businessday": "workday", "holiday": "holiday", "isholiday": "holiday",
+    "weekday": "weekday",
+    "dayofweek": "weekday",
+    "dayweek": "weekday",
+    "month": "month",
+    "quarter": "quarter",
+    "weekend": "weekend",
+    "isweekend": "weekend",
+    "workday": "workday",
+    "isworkday": "workday",
+    "businessday": "workday",
+    "holiday": "holiday",
+    "isholiday": "holiday",
 }
 
 
@@ -41,23 +49,27 @@ def resolve_covariate_configs(columns: list[str], configs: list[CovariateConfig]
 def classify_covariate(name: str, config: CovariateConfig | None = None) -> dict[str, Any]:
     config = config or CovariateConfig(column=name, type="known_future" if canonical_covariate_name(name) else "static")
     canonical = canonical_covariate_name(name)
-    if config.type == "static":
-        forecast_strategy = backtest_strategy = "repeat_last_known"
-        used_during = ["training", "backtest", "forecast"]
-        note = f"{name} 按静态协变量（Static Covariate）处理，回测与预测均重复最后一个已知值。"
-    elif config.type == "unknown_future" and config.unknownFutureAction == "analysis_only":
-        forecast_strategy = backtest_strategy = "drop_for_leakage"
-        used_during = ["training"]
-        note = f"{name} 的未来值未知，仅用于分析并在模型矩阵前丢弃，避免数据泄漏。"
-    elif config.type == "unknown_future":
-        forecast_strategy = backtest_strategy = "forecast_auxiliary"
-        used_during = ["training", "backtest", "forecast"]
-        note = f"{name} 将先按 {config.forecastMode} 策略预测，再送入主模型。"
-    else:
+    if config.type == "known_future":
         forecast_strategy = "calendar" if canonical else "use_future_rows"
         backtest_strategy = "use_test_timeline"
+        leakage_risk = False
         used_during = ["training", "backtest", "forecast"]
-        note = f"{name} 按未来已知协变量（Known Future Covariate）处理。" + ("最终预测读取同一 Sheet 的未来空目标行。" if not canonical else "由日历确定性生成。")
+        note = (
+            f"{name} 按未来已知协变量（Known Future Covariate）处理，回测使用测试时间轴，最终预测使用未来时间轴。"
+            if canonical
+            else f"{name} 按未来已知协变量（Known Future Covariate）处理，回测与最终预测都读取用户提供的未来行。"
+        )
+    else:
+        forecast_strategy = "repeat_last_known"
+        backtest_strategy = config.backtestStrategy
+        leakage_risk = backtest_strategy == "use_test_values"
+        used_during = ["training", "backtest", "forecast"]
+        if backtest_strategy == "historical_mean":
+            note = f"{name} 按静态协变量处理：训练与预测重复最后一个已知值，回测阶段用训练段历史均值展开整个 horizon。"
+        elif backtest_strategy == "use_test_values":
+            note = f"{name} 按静态协变量处理：最终预测仍重复最后一个已知值；当前回测会读取测试段真实协变量值，存在未来信息泄漏风险。"
+        else:
+            note = f"{name} 按静态协变量（Static Covariate）处理，训练、回测与预测默认重复最后一个已知值。"
     return {
         "name": name,
         "type": config.type,
@@ -65,8 +77,7 @@ def classify_covariate(name: str, config: CovariateConfig | None = None) -> dict
         "forecastStrategy": forecast_strategy,
         "backtestStrategy": backtest_strategy,
         "usedDuring": used_during,
-        "forecastMode": config.forecastMode if config.type == "unknown_future" and config.unknownFutureAction == "forecast" else None,
-        "forecastModelId": config.manualModelId,
+        "leakageRisk": leakage_risk,
         "note": note,
     }
 
@@ -78,10 +89,7 @@ def describe_covariates(columns: list[str], configs: list[CovariateConfig] | Non
 
 def active_model_covariate_columns(columns: list[str], configs: list[CovariateConfig] | None = None) -> list[str]:
     resolved = {item.column: item for item in resolve_covariate_configs(columns, configs)}
-    return [
-        column for column in columns
-        if not (resolved[column].type == "unknown_future" and resolved[column].unknownFutureAction == "analysis_only")
-    ]
+    return [column for column in columns if resolved[column].type in {"known_future", "static"}]
 
 
 def build_future_covariate_rows(
@@ -96,28 +104,16 @@ def build_future_covariate_rows(
     primary_model_id: str | None = None,
     primary_model_parameters: dict[str, Any] | None = None,
     holiday_config: HolidayConfig | None = None,
+    purpose: Literal["backtest", "forecast"] = "forecast",
 ) -> list[dict[str, float]] | None:
+    del history_times, primary_model_id, primary_model_parameters
     if not covariate_columns:
         return None
     history_rows = history_rows or []
     observed_future_rows = observed_future_rows or []
     resolved = {item.column: item for item in resolve_covariate_configs(covariate_columns, covariate_configs)}
     fallback_row = history_rows[-1] if history_rows else {}
-    predicted: dict[str, list[float]] = {}
-
-    for column in covariate_columns:
-        config = resolved[column]
-        if config.type != "unknown_future" or config.unknownFutureAction != "forecast":
-            continue
-        values = [_safe_float(row.get(column)) for row in history_rows]
-        numeric_values = [float(value) for value in values if value is not None and np.isfinite(value)]
-        if len(numeric_values) < 3:
-            raise AppError(f"未来未知协变量 {column} 的有效历史值少于 3 个，无法预测。", code="COVARIATE_FORECAST_TOO_SHORT")
-        times = list(history_times or [])
-        if len(times) != len(values):
-            times = future_times[:0]
-        model_id = _resolve_forecast_model(config, primary_model_id, times, numeric_values, frequency)
-        predicted[column] = _forecast_values(model_id, times, numeric_values, frequency, len(future_times), primary_model_parameters if config.forecastMode == "per_primary_model" else None)
+    historical_means = {column: _historical_mean(history_rows, column) for column in covariate_columns}
 
     rows: list[dict[str, float]] = []
     holiday_config = holiday_config or HolidayConfig()
@@ -140,10 +136,15 @@ def build_future_covariate_rows(
                             code="KNOWN_FUTURE_VALUES_MISSING",
                             details={"column": column, "step": index + 1},
                         )
-            elif config.type == "unknown_future" and config.unknownFutureAction == "forecast":
-                value = predicted[column][index]
             else:
-                value = _safe_float(fallback_row.get(column))
+                value = _static_covariate_value(
+                    column=column,
+                    config=config,
+                    purpose=purpose,
+                    fallback_row=fallback_row,
+                    observed_row=observed_row,
+                    historical_mean=historical_means.get(column),
+                )
             if value is None:
                 value = 0.0
             next_row[column] = float(value)
@@ -155,59 +156,47 @@ def covariate_strategy_warnings(columns: list[str], configs: list[CovariateConfi
     return [item["note"] for item in describe_covariates(columns, configs) if item.get("note")]
 
 
-def _resolve_forecast_model(config: CovariateConfig, primary_model_id: str | None, times: list[datetime], values: list[float], frequency: str) -> str:
-    if config.forecastMode == "manual":
-        if not config.manualModelId:
-            raise AppError(f"协变量 {config.column} 选择了手动预测，但没有指定模型。", code="COVARIATE_MODEL_REQUIRED")
-        return config.manualModelId
-    if config.forecastMode == "per_primary_model":
-        if not primary_model_id:
-            raise AppError("逐主模型协变量预测缺少主模型 ID。", code="PRIMARY_MODEL_REQUIRED")
-        return primary_model_id
-    candidates = ["naive", "seasonal_naive", "ets"]
-    if len(values) < 10 or len(times) != len(values):
-        return "naive"
-    holdout = min(7, max(1, len(values) // 5))
-    best_model = "naive"
-    best_mae = float("inf")
-    for model_id in candidates:
-        try:
-            predictions = _forecast_values(model_id, times[:-holdout], values[:-holdout], frequency, holdout, None)
-            mae = float(np.mean(np.abs(np.asarray(values[-holdout:]) - np.asarray(predictions))))
-            if mae < best_mae:
-                best_mae, best_model = mae, model_id
-        except Exception:
-            continue
-    return best_model
+def _static_covariate_value(
+    *,
+    column: str,
+    config: CovariateConfig,
+    purpose: Literal["backtest", "forecast"],
+    fallback_row: dict[str, float],
+    observed_row: dict[str, float],
+    historical_mean: float | None,
+) -> float | None:
+    if purpose == "backtest":
+        if config.backtestStrategy == "use_test_values":
+            candidate = _safe_float(observed_row.get(column))
+            if candidate is not None:
+                return candidate
+        if config.backtestStrategy == "historical_mean" and historical_mean is not None:
+            return historical_mean
+    return _safe_float(fallback_row.get(column))
 
 
-def _forecast_values(model_id: str, times: list[datetime], values: list[float], frequency: str, horizon: int, parameters: dict[str, Any] | None) -> list[float]:
-    from app.services.model_executor import fit_model_instance, predict_model_instance
-    from app.services.model_registry import create_model
-
-    if len(times) != len(values):
-        base = datetime(2000, 1, 1)
-        times = [base.replace(day=1) for _ in values]
-        if len(values) > 1:
-            import pandas as pd
-            times = [item.to_pydatetime() for item in pd.date_range(base, periods=len(values), freq="D")]
-    model = create_model(model_id, parameters)
-    fit_model_instance(model_id, model, times, values, frequency, feature_config={"lagFeatures": True, "rollingFeatures": True, "calendarFeatures": True, "holidayFeatures": False, "covariates": False})
-    output = predict_model_instance(model_id, model, horizon)
-    result = [float(value) for value in output.predictions[:horizon]]
-    if len(result) != horizon or any(not np.isfinite(value) for value in result):
-        raise RuntimeError(f"{model_id} 未返回完整且有效的协变量预测。")
-    return result
+def _historical_mean(rows: list[dict[str, float]], column: str) -> float | None:
+    values = [_safe_float(row.get(column)) for row in rows]
+    numeric_values = [float(value) for value in values if value is not None and np.isfinite(value)]
+    if not numeric_values:
+        return None
+    return float(np.mean(np.asarray(numeric_values, dtype=float)))
 
 
 def _generate_known_future_value(column: str, value_time: datetime) -> float | None:
     canonical = canonical_covariate_name(column)
-    if canonical == "weekday": return float(value_time.weekday())
-    if canonical == "month": return float(value_time.month)
-    if canonical == "quarter": return float(((value_time.month - 1) // 3) + 1)
-    if canonical == "weekend": return 1.0 if value_time.weekday() >= 5 else 0.0
-    if canonical == "workday": return 1.0 if value_time.weekday() < 5 else 0.0
-    if canonical == "holiday": return 1.0 if value_time.weekday() >= 5 else 0.0
+    if canonical == "weekday":
+        return float(value_time.weekday())
+    if canonical == "month":
+        return float(value_time.month)
+    if canonical == "quarter":
+        return float(((value_time.month - 1) // 3) + 1)
+    if canonical == "weekend":
+        return 1.0 if value_time.weekday() >= 5 else 0.0
+    if canonical == "workday":
+        return 1.0 if value_time.weekday() < 5 else 0.0
+    if canonical == "holiday":
+        return 1.0 if value_time.weekday() >= 5 else 0.0
     return None
 
 

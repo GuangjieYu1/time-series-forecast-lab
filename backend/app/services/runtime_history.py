@@ -22,6 +22,7 @@ from app.schemas import (
     RuntimeRunDetail,
 )
 from app.services.covariate_flow import describe_covariates
+from app.services.explainability import attribution_index, normalize_feature_key
 from app.services.model_registry import MODEL_CAPABILITIES
 from app.services.holiday_features import HOLIDAY_FEATURE_NAMES
 from app.services.runtime_events import make_log_entry, make_runtime_event
@@ -82,16 +83,17 @@ def _with_runtime_events(detail: RuntimeRunDetail) -> RuntimeRunDetail:
     return detail
 
 def load_runtime_from_record(record: ExperimentRecord) -> RuntimeRunDetail | None:
+    model_logs = _loads(record.model_logs_json, [])
     if record.runtime_json:
         try:
-            return _with_runtime_events(RuntimeRunDetail.model_validate(_loads(record.runtime_json, {})))
+            restored = RuntimeRunDetail.model_validate(_loads(record.runtime_json, {}))
+            return _with_runtime_events(_apply_model_log_artifacts(restored, model_logs))
         except Exception:
             pass
 
     try:
         config = _loads(record.config_json, {})
         data_profile = _loads(record.data_profile_json, {})
-        model_logs = _loads(record.model_logs_json, [])
         manifest = _loads(record.manifest_json, {})
     except Exception:
         return None
@@ -136,6 +138,11 @@ def load_runtime_from_record(record: ExperimentRecord) -> RuntimeRunDetail | Non
             fitSeconds=fit_seconds or None,
             predictSeconds=predict_seconds or None,
             tuningSeconds=tuning_seconds or None,
+            metricLabel="MAE" if _metric_value(row.get("metrics"), "mae") is not None or _safe_float(tuning.get("bestMetric")) is not None else None,
+            currentMetric=_metric_value(row.get("metrics"), "mae"),
+            bestMetric=_safe_float(tuning.get("bestMetric")) if _safe_float(tuning.get("bestMetric")) is not None else _metric_value(row.get("metrics"), "mae"),
+            selectedParams=tuning.get("selectedParams") or {},
+            warnings=[str(item) for item in row.get("warnings") or [] if item],
             computeTarget=compute_target,
             resource=_resource_from_manifest(manifest, compute_target),
             optimization=build_optimization_state_from_log(
@@ -183,6 +190,7 @@ def load_runtime_from_record(record: ExperimentRecord) -> RuntimeRunDetail | Non
         for target_profile in targets
         if isinstance(target_profile, dict)
     ]
+    feature_pipeline = _apply_explainability_to_feature_pipeline(feature_pipeline, model_logs)
 
     state_machine = transition_state_machine(
         build_state_machine(started_at),
@@ -191,7 +199,7 @@ def load_runtime_from_record(record: ExperimentRecord) -> RuntimeRunDetail | Non
         terminal_status="completed",
     )
 
-    return _with_runtime_events(RuntimeRunDetail(
+    return _with_runtime_events(_apply_model_log_artifacts(RuntimeRunDetail(
         runId=record.id,
         experimentId=record.id,
         kind="backtest",
@@ -214,7 +222,7 @@ def load_runtime_from_record(record: ExperimentRecord) -> RuntimeRunDetail | Non
         featurePipeline=feature_pipeline,
         optimization=optimization,
         error=None,
-    ))
+    ), model_logs))
 
 
 def build_feature_pipeline_target(
@@ -431,6 +439,101 @@ def build_optimization_state_from_log(
     )
 
 
+def _apply_model_log_artifacts(detail: RuntimeRunDetail, model_logs: list[dict[str, Any]]) -> RuntimeRunDetail:
+    if not model_logs:
+        return detail
+    log_index = {
+        (str(row.get("targetColumn") or detail.currentTarget or ""), str(row.get("modelId") or "")): row
+        for row in model_logs
+        if isinstance(row, dict)
+    }
+    for model in detail.models:
+        row = log_index.get((model.targetColumn, model.modelId))
+        if not row:
+            continue
+        runtime = row.get("runtime") or {}
+        tuning = row.get("tuning") or {}
+        current_metric = _metric_value(row.get("metrics"), "mae")
+        best_metric = _safe_float(tuning.get("bestMetric"))
+        model.metricLabel = "MAE" if current_metric is not None or best_metric is not None else model.metricLabel
+        model.currentMetric = current_metric if current_metric is not None else model.currentMetric
+        model.bestMetric = best_metric if best_metric is not None else model.bestMetric
+        model.selectedParams = tuning.get("selectedParams") or model.selectedParams
+        model.warnings = [str(item) for item in row.get("warnings") or model.warnings if item]
+        model.fitSeconds = float(runtime.get("fitSeconds") or model.fitSeconds or 0.0) or model.fitSeconds
+        model.predictSeconds = float(runtime.get("predictSeconds") or model.predictSeconds or 0.0) or model.predictSeconds
+        model.tuningSeconds = float((tuning or {}).get("tuningSeconds") or model.tuningSeconds or 0.0) or model.tuningSeconds
+        if model.optimization is not None:
+            model.optimization.selectedParams = tuning.get("selectedParams") or model.optimization.selectedParams
+            model.optimization.bestMetric = best_metric if best_metric is not None else model.optimization.bestMetric
+            model.optimization.currentMetric = current_metric if current_metric is not None else model.optimization.currentMetric
+            model.optimization.warnings = [str(item) for item in tuning.get("warnings") or model.optimization.warnings if item]
+    detail.featurePipeline = _apply_explainability_to_feature_pipeline(detail.featurePipeline, model_logs)
+    detail.optimization = [model.optimization for model in detail.models if model.optimization is not None]
+    return detail
+
+
+def _apply_explainability_to_feature_pipeline(
+    targets: list[RuntimeFeaturePipelineTarget],
+    model_logs: list[dict[str, Any]],
+) -> list[RuntimeFeaturePipelineTarget]:
+    index = attribution_index(model_logs)
+    if not index:
+        return targets
+    for target in targets:
+        important_count = 0
+        shap_count = 0
+        for node in target.lineage:
+            metrics = index.get((target.targetColumn, normalize_feature_key(node.name)))
+            if not metrics:
+                continue
+            if metrics.get("importance") is not None:
+                node.importance = float(metrics["importance"])
+            if metrics.get("shap") is not None:
+                node.shap = float(metrics["shap"])
+            if node.importance is not None or node.shap is not None:
+                node.important = True
+                important_count += 1
+                if node.shap is not None:
+                    shap_count += 1
+                if node.selected and node.lifecycle in {"selected", "used"}:
+                    node.lifecycle = "important"
+                trail = list(node.lifecycleTrail or [])
+                if "Important" not in trail:
+                    trail.append("Important")
+                if node.shap is not None and "Explained" not in trail:
+                    trail.append("Explained")
+                node.lifecycleTrail = trail
+        if target.summary is not None:
+            target.summary.importantFeatureCount = important_count
+            target.summary.shapSupportedFeatureCount = shap_count or target.summary.shapSupportedFeatureCount
+        if target.selection is not None:
+            target.selection.selectedCount = sum(
+                1 for node in target.lineage if node.family != "target" and node.lifecycle in {"selected", "used", "important"}
+            )
+            target.selection.droppedCount = sum(
+                1 for node in target.lineage if node.family != "target" and node.lifecycle == "dropped"
+            )
+        for family in target.families:
+            family_nodes = [node for node in target.lineage if node.family == family.id]
+            family.importantCount = sum(node.important for node in family_nodes)
+            family.selectedCount = sum(1 for node in family_nodes if node.lifecycle in {"selected", "used", "important"})
+        for step in target.steps:
+            if step.label == "Feature Importance":
+                step.outputSummary = (
+                    f"已持久化 {important_count} 个特征的重要性分数。"
+                    if important_count
+                    else "当前实验未持久化特征重要性分数。"
+                )
+            elif step.label == "SHAP":
+                step.outputSummary = (
+                    f"已持久化 {shap_count} 个特征的 SHAP 均值。"
+                    if shap_count
+                    else "当前实验未持久化 SHAP 数值。"
+                )
+    return targets
+
+
 def _build_feature_lineage(
     *,
     target_column: str,
@@ -619,7 +722,7 @@ def _build_feature_lineage(
                 f"{descriptor.name}(t)",
                 "covariates",
                 source=descriptor.name,
-                feature_type=("known_future_covariate" if descriptor.type == "known_future" else "unknown_future_covariate" if descriptor.type == "unknown_future" else "static_covariate"),
+                feature_type=("known_future_covariate" if descriptor.type == "known_future" else "static_covariate"),
                 generator=descriptor.generator,
                 machine_id="covariate_loader",
                 machine_label="Covariate Loader",
@@ -628,12 +731,6 @@ def _build_feature_lineage(
                 used_during=descriptor.usedDuring,
                 dropped_reason=descriptor.note if not selected else None,
             )
-            if descriptor.forecastStrategy == "drop_for_leakage":
-                nodes[-1].lifecycle = "dropped"
-                nodes[-1].selected = False
-                nodes[-1].modelIds = []
-                nodes[-1].droppedReason = descriptor.note or "未来值不可用，已在模型训练前丢弃以避免数据泄漏。"
-                nodes[-1].lifecycleTrail = ["Generated", "Dropped", "Leakage Guard"]
     if uses_feature_models and history_point_count < 30:
         for node in nodes:
             if node.family in {"lag", "rolling", "calendar", "covariates"} and node.lifecycle == "used":

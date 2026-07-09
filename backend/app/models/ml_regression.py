@@ -220,6 +220,7 @@ class LagFeatureRegressor:
         predictions: list[float] = []
         lower: list[float | None] = []
         upper: list[float | None] = []
+        prediction_features: list[dict[str, float]] = []
         future_times = self._future_times(horizon)
         warnings = list(self.warnings)
         normalized_future_covariates = self._normalize_covariate_rows(future_covariates, initialize_columns=False)
@@ -239,6 +240,7 @@ class LagFeatureRegressor:
                 [self._features_for(history, future_time, len(history) + step, covariate_row)],
                 columns=self.feature_columns,
             )
+            prediction_features.append({column: float(features.iloc[0][column]) for column in self.feature_columns})
             predicted = float(np.asarray(self.model.predict(features), dtype=float)[0])
             if not np.isfinite(predicted):
                 raise RuntimeError("Model returned NaN or infinite predictions.")
@@ -250,7 +252,13 @@ class LagFeatureRegressor:
             else:
                 lower.append(None)
                 upper.append(None)
-        return ForecastOutput(predictions=predictions, lower=lower, upper=upper, warnings=warnings)
+        return ForecastOutput(
+            predictions=predictions,
+            lower=lower,
+            upper=upper,
+            warnings=warnings,
+            predictionFeatures=prediction_features,
+        )
 
 
 class XGBoostModel(LagFeatureRegressor):

@@ -8,6 +8,7 @@ import { Badge, controls, PageHeader, SectionCard, StatCard, Stepper, surface, T
 import { zhCN } from "../../shared/i18n/zhCN";
 import type { CleaningConfig, CovariateConfig, DeviceInfo, FeatureConfig, ForecastProgress, ForecastRunRequest, ForecastRunResponse, HolidayCalendarCatalog, HolidayConfig, ModelCapability, RuntimeEstimateItem, RuntimeRunDetail, SheetPreview, UploadPreviewResponse } from "../../shared/types/api";
 import { useLabStore } from "../../app/store";
+import { AttributionAgentDrawer, type AgentLaunchRequest } from "../attribution/AttributionAgentDrawer";
 import {
   AbsoluteErrorTimelineChart,
   ActualVsPredictedChart,
@@ -24,7 +25,10 @@ import { DataHealthPanel } from "./DataHealthPanel";
 import { getParameterHelp } from "./parameterHelp";
 import { ReproducibilityPanel } from "./ReproducibilityPanel";
 import { ModelLeaderboard } from "./ModelLeaderboard";
-import { FeatureEngineeringFlow } from "../runtime/FeatureEngineeringFlow";
+import { ExplainabilityPanel } from "../runtime/ExplainabilityPanel";
+import { FeatureFactoryPanel } from "../runtime/FeatureFactoryPanel";
+import { RuntimeModelConsoleDrawer } from "../runtime/RuntimeModelConsoleDrawer";
+import { WorkbenchIdeaPanel } from "./WorkbenchIdeaPanel";
 
 const modelDefaults = ["naive", "seasonal_naive", "moving_average", "arima", "ets", "prophet", "xgboost", "lightgbm", "random_forest"];
 const steps = ["选择数据模式", "选择字段", "选择模型", "设置回测", "运行实验"];
@@ -117,7 +121,7 @@ const modelParameterFields: Record<string, ModelParameterField[]> = {
   ]
 };
 
-type ResultTab = "dataHealth" | "overview" | "residual" | "metrics" | "distribution" | "final" | "reproducibility" | "report";
+type ResultTab = "dataHealth" | "overview" | "residual" | "metrics" | "distribution" | "featureFactory" | "explainability" | "final" | "reproducibility" | "report";
 
 function isRunnableModel(model: ModelCapability) {
   return model.enabledInMvp && model.installStatus === "available";
@@ -202,6 +206,34 @@ function formatCompactDuration(seconds: number) {
   const minutes = seconds / 60;
   if (minutes < 10) return `${minutes.toFixed(1)}m`;
   return `${Math.round(minutes)}m`;
+}
+
+function covariateDefaults(column: string): CovariateConfig {
+  return {
+    column,
+    type: /weekday|dayofweek|month|quarter|weekend|workday|holiday/i.test(column) ? "known_future" : "static",
+    backtestStrategy: "repeat_last_known",
+    missingValueStrategy: "ffill"
+  };
+}
+
+function normalizeCovariateConfig(column: string, value?: Partial<CovariateConfig> | null): CovariateConfig {
+  return {
+    ...covariateDefaults(column),
+    ...(value ?? {}),
+    column,
+    type: value?.type === "known_future" ? "known_future" : "static",
+    backtestStrategy:
+      value?.backtestStrategy === "historical_mean"
+        ? "historical_mean"
+        : value?.backtestStrategy === "use_test_values"
+          ? "use_test_values"
+          : "repeat_last_known"
+  };
+}
+
+function leakageReminderStorageKey(userId: string | null | undefined) {
+  return `tsfl_covariate_use_test_values_warning:${userId ?? "anonymous"}`;
 }
 
 const runtimeStageSequence: Array<{ id: RuntimeRunDetail["currentStage"]; label: string }> = [
@@ -413,8 +445,7 @@ function RunningProgress({
   progress: ForecastProgress | null;
   runtimeDetail?: RuntimeRunDetail | null;
 }) {
-  const [expandedModelKey, setExpandedModelKey] = useState("");
-  const autoExpandedRef = useRef(false);
+  const [drawerModelKey, setDrawerModelKey] = useState("");
   const items = finalForecastMode
     ? ["读取完整历史数据", "重新训练最终模型", "生成未来预测", "更新预测图表"]
     : parameterStrategy === "auto"
@@ -441,9 +472,30 @@ function RunningProgress({
     failed: { label: "失败", tone: "bad" }
   } as const;
   const runtimeModelMap = new Map((runtimeDetail?.models ?? []).map((model) => [`${model.targetColumn}:${model.modelId}`, model] as const));
-  const runtimeModelFallbackMap = new Map((runtimeDetail?.models ?? []).map((model) => [model.modelId, model] as const));
-  const progressRows = progress?.models.length
-    ? progress.models.map((row) => ({
+  const progressModelMap = new Map((progress?.models ?? []).map((row) => [`${row.targetColumn}:${row.modelId}`, row] as const));
+  const progressRows = runtimeDetail?.models.length
+    ? runtimeDetail.models.map((runtimeModel) => {
+        const progressRow = progressModelMap.get(`${runtimeModel.targetColumn}:${runtimeModel.modelId}`);
+        const currentStatus = progressRow?.status ?? runtimeModel.status;
+        return {
+          key: `${runtimeModel.targetColumn}:${runtimeModel.modelId}`,
+          id: runtimeModel.modelId,
+          name: progressRow?.modelName ?? runtimeModel.modelName,
+          family: modelMap.get(runtimeModel.modelId)?.modelFamily || modelMap.get(runtimeModel.modelId)?.category || "模型",
+          requiresGpu: Boolean(modelMap.get(runtimeModel.modelId)?.requiresGpu),
+          targetColumn: runtimeModel.targetColumn,
+          percent: progressRow?.percent ?? runtimeModel.progressPercent,
+          status: currentStatus,
+          message: progressRow?.message ?? runtimeModel.message,
+          fitSeconds: progressRow?.fitSeconds ?? runtimeModel.fitSeconds,
+          predictSeconds: progressRow?.predictSeconds ?? runtimeModel.predictSeconds,
+          error: progressRow?.error ?? runtimeModel.error,
+          displayStatus: statusMeta[currentStatus],
+          runtimeModel
+        };
+      })
+    : progress?.models.length
+      ? progress.models.map((row) => ({
         ...row,
         key: `${row.targetColumn}:${row.modelId}`,
         id: row.modelId,
@@ -451,9 +503,9 @@ function RunningProgress({
         family: modelMap.get(row.modelId)?.modelFamily || modelMap.get(row.modelId)?.category || "模型",
         requiresGpu: Boolean(modelMap.get(row.modelId)?.requiresGpu),
         displayStatus: statusMeta[row.status],
-        runtimeModel: runtimeModelMap.get(`${row.targetColumn}:${row.modelId}`) ?? runtimeModelFallbackMap.get(row.modelId) ?? null
+        runtimeModel: runtimeModelMap.get(`${row.targetColumn}:${row.modelId}`) ?? null
       }))
-    : runningModels.map((model) => ({
+      : runningModels.map((model) => ({
         ...model,
         key: `:${model.id}`,
         targetColumn: "",
@@ -464,11 +516,37 @@ function RunningProgress({
         predictSeconds: null,
         error: null,
         displayStatus: statusMeta.queued,
-        runtimeModel: runtimeModelFallbackMap.get(model.id) ?? null
+        runtimeModel: null
       }));
-  const overallProgress = progress?.overallPercent ?? 1;
+  const effectiveCompletedModels = progress?.completedModels ?? runtimeDetail?.models.filter((model) => model.status === "success" || model.status === "failed").length ?? 0;
+  const effectiveTotalModels = progress?.totalModels ?? runtimeDetail?.models.length ?? runningModels.length;
+  const effectiveStatus = progress?.status ?? runtimeDetail?.status ?? "running";
+  const overallProgress = progress?.overallPercent ?? runtimeDetail?.overallPercent ?? 1;
+  const effectiveMessage = progress?.message ?? runtimeDetail?.message ?? "正在初始化后端进度流。";
   const phaseIndex = (() => {
-    const phase = progress?.phase ?? "preparing";
+    const phase = progress?.phase ?? (() => {
+      switch (runtimeDetail?.currentStage) {
+        case "loading":
+          return "parsing";
+        case "cleaning":
+        case "feature_engineering":
+        case "feature_selection":
+          return "building_series";
+        case "auto_tuning":
+          return "model_tuning";
+        case "training":
+        case "forecast":
+          return "model_fitting";
+        case "residual_analysis":
+          return "ranking";
+        case "finished":
+          return "completed";
+        case "failed":
+          return "failed";
+        default:
+          return "preparing";
+      }
+    })();
     if (finalForecastMode) {
       if (phase === "fitting" || phase === "predicting") return 2;
       if (phase === "saving" || phase === "completed") return 3;
@@ -483,31 +561,11 @@ function RunningProgress({
   })();
 
   useEffect(() => {
-    autoExpandedRef.current = false;
-    setExpandedModelKey("");
-  }, [progress?.startedAt, finalForecastMode, finalModelId, modelIds.join("|")]);
-
-  useEffect(() => {
     if (!progressRows.length) return;
-    const expandedStillExists = expandedModelKey ? progressRows.some((model) => model.key === expandedModelKey) : false;
-    if (expandedModelKey && !expandedStillExists) {
-      const nextModel = progressRows.find((model) => {
-        const status = model.runtimeModel?.status ?? model.status;
-        return status !== "success" && status !== "failed";
-      }) ?? progressRows[0];
-      setExpandedModelKey(nextModel.key);
-      autoExpandedRef.current = true;
-      return;
+    if (drawerModelKey && !progressRows.some((model) => model.key === drawerModelKey)) {
+      setDrawerModelKey("");
     }
-    if (!autoExpandedRef.current && !expandedModelKey) {
-      const nextModel = progressRows.find((model) => {
-        const status = model.runtimeModel?.status ?? model.status;
-        return status !== "success" && status !== "failed";
-      }) ?? progressRows[0];
-      setExpandedModelKey(nextModel.key);
-      autoExpandedRef.current = true;
-    }
-  }, [expandedModelKey, progressRows]);
+  }, [drawerModelKey, progressRows]);
 
   return (
     <SectionCard
@@ -519,11 +577,11 @@ function RunningProgress({
         <div>
           <div className="text-2xl font-semibold text-slate-950 dark:text-white">{overallProgress}%</div>
           <div className="text-xs text-slate-500 dark:text-slate-400">
-            已运行 {formatElapsed(elapsedSeconds)} · {progress?.message ?? "正在连接后端进度流。"}
+            已运行 {formatElapsed(elapsedSeconds)} · {effectiveMessage}
           </div>
         </div>
-        <Badge tone={progress?.status === "failed" ? "bad" : progress?.status === "completed" ? "good" : "info"}>
-          {progress ? `${progress.completedModels}/${progress.totalModels} 个模型完成` : finalForecastMode ? "最终预测" : `${runningModels.length} 个模型回测`}
+        <Badge tone={effectiveStatus === "failed" ? "bad" : effectiveStatus === "completed" ? "good" : "info"}>
+          {finalForecastMode && !effectiveTotalModels ? "最终预测" : `${effectiveCompletedModels}/${effectiveTotalModels} 个模型完成`}
         </Badge>
       </div>
       <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-white/10">
@@ -546,140 +604,57 @@ function RunningProgress({
           </div>
         ))}
       </div>
-      {!finalForecastMode && runtimeDetail?.featurePipeline.length ? (
-        <div className="mt-5">
-          <FeatureEngineeringFlow targets={runtimeDetail.featurePipeline} mode="live" compact />
-        </div>
-      ) : null}
       {progressRows.length ? (
         <div className="mt-4 grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
           {progressRows.map((model) => {
             const runtimeModel = model.runtimeModel;
             return (
-            <button
-              key={model.key}
-              type="button"
-              aria-expanded={expandedModelKey === model.key}
-              onClick={() => setExpandedModelKey((current) => (current === model.key ? "" : model.key))}
-              className={`min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-3 text-left transition dark:border-white/10 dark:bg-[#151b2e] ${expandedModelKey === model.key ? "lg:col-span-2 xl:col-span-3" : ""} ${
-                expandedModelKey === model.key ? "ring-1 ring-cyan-300 dark:ring-cyan-400/40" : "hover:border-slate-300 dark:hover:border-white/20"
-              }`}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <div className="truncate text-sm font-semibold text-slate-950 dark:text-white">{model.name}</div>
-                    <span className="text-[11px] text-slate-400 dark:text-slate-500">{expandedModelKey === model.key ? "▾" : "▸"}</span>
+              <button
+                key={model.key}
+                type="button"
+                aria-expanded={drawerModelKey === model.key}
+                onClick={() => setDrawerModelKey((current) => (current === model.key ? "" : model.key))}
+                className={`min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-3 text-left transition dark:border-white/10 dark:bg-[#151b2e] ${
+                  drawerModelKey === model.key ? "ring-1 ring-cyan-300 dark:ring-cyan-400/40" : "hover:border-slate-300 dark:hover:border-white/20"
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <div className="truncate text-sm font-semibold text-slate-950 dark:text-white">{model.name}</div>
+                      <span className="text-[11px] text-slate-400 dark:text-slate-500">{drawerModelKey === model.key ? "▾" : "▸"}</span>
+                    </div>
+                    <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                      {model.family}{model.targetColumn ? ` / ${model.targetColumn}` : ""}{model.requiresGpu ? " / 建议 GPU" : ""}
+                    </div>
                   </div>
-                  <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                    {model.family}{model.targetColumn ? ` / ${model.targetColumn}` : ""}{model.requiresGpu ? " / 建议 GPU" : ""}
+                  <Badge tone={model.displayStatus.tone}>{model.displayStatus.label}</Badge>
+                </div>
+                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-white/10">
+                  <div className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-cyan-400 transition-all duration-500" style={{ width: `${model.percent}%` }} />
+                </div>
+                <div className="mt-2 flex flex-col gap-1 text-xs text-slate-500 dark:text-slate-400">
+                  <span className="min-w-0 break-words">{model.percent}% · {model.message}</span>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span>{runtimeModel ? `阶段 ${runtimeStageCompactLabel(runtimeModel.currentStage)}` : "等待后端阶段事件"}</span>
+                    <span className="shrink-0">
+                      {model.fitSeconds !== null ? `拟合 ${model.fitSeconds.toFixed(2)}s` : ""}
+                      {model.predictSeconds !== null ? ` / 预测 ${model.predictSeconds.toFixed(2)}s` : ""}
+                    </span>
                   </div>
                 </div>
-                <Badge tone={model.displayStatus.tone}>{model.displayStatus.label}</Badge>
-              </div>
-              <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-white/10">
-                <div className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-cyan-400 transition-all duration-500" style={{ width: `${model.percent}%` }} />
-              </div>
-              <div className="mt-2 flex flex-col gap-1 text-xs text-slate-500 dark:text-slate-400 sm:flex-row sm:items-center sm:justify-between">
-                <span className="min-w-0 break-words">{model.percent}% · {model.message}</span>
-                <span className="shrink-0">
-                  {model.fitSeconds !== null ? `拟合 ${model.fitSeconds.toFixed(2)}s` : ""}
-                  {model.predictSeconds !== null ? ` / 预测 ${model.predictSeconds.toFixed(2)}s` : ""}
-                </span>
-              </div>
-              {expandedModelKey === model.key && runtimeModel ? (
-                <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50/80 p-3 dark:border-white/10 dark:bg-[#0b1020]">
-                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                    <div className="min-w-0">
-                      <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 dark:text-slate-500">当前阶段</div>
-                      <div className="mt-2 flex flex-wrap items-center gap-2">
-                        <span
-                          className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold ${runtimeStepTone(
-                            runtimeStepState(runtimeModel.currentStage, runtimeModel.currentStage, runtimeModel.status)
-                          )}`}
-                        >
-                          {runtimeStageCompactLabel(runtimeModel.currentStage)}
-                        </span>
-                        <span className="text-xs leading-6 text-slate-600 dark:text-slate-300">{runtimeModel.message}</span>
-                      </div>
-                    </div>
-                    <div className="grid min-w-0 grid-cols-2 gap-2 sm:grid-cols-4 lg:min-w-[420px]">
-                      {[
-                        ["子进度", `${runtimeModel.progressPercent}%`],
-                        ["已运行", formatCompactDuration(runtimeModel.elapsedSeconds)],
-                        ["预计总时长", runtimeModel.estimatedSeconds === null ? "-" : formatCompactDuration(runtimeModel.estimatedSeconds)],
-                        ["预计剩余", runtimeModel.estimatedRemainingSeconds === null ? "-" : formatCompactDuration(runtimeModel.estimatedRemainingSeconds)]
-                      ].map(([label, value]) => (
-                        <div key={label} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs dark:border-white/10 dark:bg-[#151b2e]">
-                          <div className="text-slate-500 dark:text-slate-400">{label}</div>
-                          <div className="mt-1 font-semibold text-slate-900 dark:text-white">{value}</div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="mt-3">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 dark:text-slate-500">阶段轨迹</div>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {runtimeStageSequence.map((stage) => {
-                        const state = runtimeStepState(runtimeModel.currentStage, stage.id, runtimeModel.status);
-                        return (
-                          <span key={stage.id} className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] ${runtimeStepTone(state)}`}>
-                            <span className="font-semibold">{runtimeStageCompactLabel(stage.id)}</span>
-                            <span className="opacity-80">{runtimeStepLabel(state)}</span>
-                          </span>
-                        );
-                      })}
-                    </div>
-                  </div>
-                  {runtimeModel.optimization ? (
-                    <div className="mt-3 rounded-xl border border-cyan-200 bg-cyan-50/80 px-3 py-3 text-xs text-cyan-900 dark:border-cyan-400/20 dark:bg-cyan-400/10 dark:text-cyan-100">
-                      <div className="flex flex-wrap items-start justify-between gap-2">
-                        <div>
-                          <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-cyan-700/80 dark:text-cyan-100/80">Auto Tuning</div>
-                          <div className="mt-1 text-sm font-semibold">
-                            Trial {runtimeModel.optimization.currentTrial}/{runtimeModel.optimization.totalTrials}
-                          </div>
-                        </div>
-                        <div className="text-right text-[11px] leading-5 text-cyan-700/80 dark:text-cyan-100/80">
-                          <div>{runtimeModel.optimization.strategyLabel}</div>
-                          <div>
-                            {runtimeModel.optimization.sampler ?? "Sampler -"}
-                            {runtimeModel.optimization.pruner ? ` · ${runtimeModel.optimization.pruner}` : ""}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-cyan-200/70 dark:bg-cyan-300/20">
-                        <div
-                          className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-emerald-400"
-                          style={{
-                            width: `${runtimeModel.optimization.totalTrials ? Math.min(100, (runtimeModel.optimization.currentTrial / runtimeModel.optimization.totalTrials) * 100) : 0}%`
-                          }}
-                        />
-                      </div>
-                      <div className="mt-2 grid gap-2 sm:grid-cols-3">
-                        {[
-                          ["当前 MAE", metricText(runtimeModel.optimization.currentMetric)],
-                          ["最佳 MAE", metricText(runtimeModel.optimization.bestMetric)],
-                          ["剩余 Trial", `${Math.max(runtimeModel.optimization.totalTrials - runtimeModel.optimization.currentTrial, 0)}`]
-                        ].map(([label, value]) => (
-                          <div key={label} className="rounded-xl bg-white/80 px-3 py-2 text-cyan-900 dark:bg-[#151b2e] dark:text-cyan-100">
-                            <div className="text-[11px] text-cyan-700/80 dark:text-cyan-100/80">{label}</div>
-                            <div className="mt-1 font-medium">{value}</div>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="mt-2 rounded-xl bg-white/70 px-3 py-2 text-[11px] leading-6 text-cyan-900 dark:bg-[#151b2e] dark:text-cyan-100">
-                        最新消息：{runtimeModel.optimization.lastMessage ?? "-"}
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-              {model.error ? <div className="mt-2 text-xs text-red-600 dark:text-red-300">{model.error}</div> : null}
-            </button>
-          );})}
+                {model.error ? <div className="mt-2 text-xs text-red-600 dark:text-red-300">{model.error}</div> : null}
+              </button>
+            );
+          })}
         </div>
       ) : null}
+      <RuntimeModelConsoleDrawer
+        runtime={runtimeDetail}
+        selectedModelKey={drawerModelKey}
+        open={Boolean(drawerModelKey && runtimeDetail)}
+        onClose={() => setDrawerModelKey("")}
+      />
     </SectionCard>
   );
 }
@@ -851,7 +826,9 @@ function ResultsDashboard({
   chartModelIds,
   setChartModelIds,
   metric,
-  setMetric
+  setMetric,
+  tab,
+  setTab
 }: {
   result: ForecastRunResponse;
   finalForecast: ReturnType<typeof useLabStore.getState>["finalForecast"];
@@ -862,8 +839,9 @@ function ResultsDashboard({
   setChartModelIds: Dispatch<SetStateAction<string[]>>;
   metric: "mae" | "mse" | "rmse" | "wape";
   setMetric: (metric: "mae" | "mse" | "rmse" | "wape") => void;
+  tab: ResultTab;
+  setTab: (tab: ResultTab) => void;
 }) {
-  const [tab, setTab] = useState<ResultTab>("dataHealth");
   const best = result.rankedModels.find((model) => model.rank === 1 && model.metrics);
   const successfulModels = result.rankedModels.filter((model) => model.status === "success");
   const chartableModelIds = successfulModels.filter((model) => result.backtest.predictions[model.modelId]).map((model) => model.modelId);
@@ -978,6 +956,8 @@ function ResultsDashboard({
           { id: "residual", label: "残差诊断" },
           { id: "metrics", label: "指标排名" },
           { id: "distribution", label: "误差分布" },
+          { id: "featureFactory", label: "特征工厂" },
+          { id: "explainability", label: "特征解释" },
           { id: "final", label: "最终预测" },
           { id: "reproducibility", label: "实验复现" },
           { id: "report", label: "AI 报告" }
@@ -1028,6 +1008,10 @@ function ResultsDashboard({
         </div>
       ) : null}
 
+      {tab === "featureFactory" ? <FeatureFactoryPanel experimentId={result.experimentId} /> : null}
+
+      {tab === "explainability" ? <ExplainabilityPanel experimentId={result.experimentId} recommendedModelId={result.recommendedModelId} /> : null}
+
       {tab === "final" ? (
         <div className={surface.chartPanel}><FinalForecastChart finalForecast={finalForecast} /></div>
       ) : null}
@@ -1052,7 +1036,7 @@ function ResultsDashboard({
 }
 
 export function ForecastPage() {
-  const { upload, selectedSheet, forecastResult, finalForecast, rerunDraft, setForecastResult, setFinalForecast, setRerunDraft } = useLabStore();
+  const { currentUser, upload, selectedSheet, forecastResult, finalForecast, rerunDraft, setForecastResult, setFinalForecast, setRerunDraft } = useLabStore();
   const [persistedSelection] = useState(loadPersistedSelectedModels);
   const [models, setModels] = useState<ModelCapability[]>([]);
   const [device, setDevice] = useState("cpu");
@@ -1086,6 +1070,7 @@ export function ForecastPage() {
   const [parameterStrategy, setParameterStrategy] = useState<ForecastRunRequest["parameterStrategy"]>("default");
   const [randomSeed] = useState(42);
   const [metric, setMetric] = useState<"mae" | "mse" | "rmse" | "wape">("mae");
+  const [resultTab, setResultTab] = useState<ResultTab>("dataHealth");
   const [finalModelId, setFinalModelId] = useState("");
   const [chartModelIds, setChartModelIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
@@ -1095,6 +1080,17 @@ export function ForecastPage() {
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [runtimeDetail, setRuntimeDetail] = useState<RuntimeRunDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [leakageDialogColumn, setLeakageDialogColumn] = useState<string | null>(null);
+  const [leakageDialogRemember, setLeakageDialogRemember] = useState(false);
+  const [suppressLeakageWarning, setSuppressLeakageWarning] = useState(false);
+  const [agentOpen, setAgentOpen] = useState(false);
+  const [agentLaunchRequest, setAgentLaunchRequest] = useState<AgentLaunchRequest | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const remembered = window.localStorage.getItem(leakageReminderStorageKey(currentUser?.userId));
+    setSuppressLeakageWarning(remembered === "1");
+  }, [currentUser?.userId]);
 
   useEffect(() => {
     void fetchModels()
@@ -1143,14 +1139,7 @@ export function ForecastPage() {
       .filter((column) => (column.inferredType === "number" || column.inferredType === "boolean") && column.name !== firstTime && !nextTargetColumns.includes(column.name))
       .map((column) => column.name);
     setCovariateColumns(nextCovariates);
-    setCovariateConfigs(Object.fromEntries(nextCovariates.map((column) => [column, {
-      column,
-      type: /weekday|dayofweek|month|quarter|weekend|workday|holiday/i.test(column) ? "known_future" : "static",
-      unknownFutureAction: "analysis_only",
-      forecastMode: "auto",
-      manualModelId: null,
-      missingValueStrategy: "ffill"
-    } satisfies CovariateConfig])));
+    setCovariateConfigs(Object.fromEntries(nextCovariates.map((column) => [column, covariateDefaults(column)])));
     setFeatureConfig(defaultFeatureConfig);
     setHolidayConfig(defaultHolidayConfig);
   }, [selectedSheet]);
@@ -1182,7 +1171,7 @@ export function ForecastPage() {
     setInterpolationLimit(savedCleaning?.interpolationLimit ?? 3);
     setHampelWindow(savedCleaning?.hampelWindow ?? 7);
     setHampelSigma(savedCleaning?.hampelSigma ?? 3);
-    setCovariateConfigs(Object.fromEntries((template.covariateConfigs ?? []).map((item) => [item.column, item])));
+    setCovariateConfigs(Object.fromEntries((template.covariateConfigs ?? []).map((item) => [item.column, normalizeCovariateConfig(item.column, item)])));
     setHolidayConfig(template.holidayConfig ?? defaultHolidayConfig);
     setHorizon(template.horizon ?? 7);
     setTestSize(template.testSize ?? 7);
@@ -1212,8 +1201,8 @@ export function ForecastPage() {
       totalColumnCount: Math.max(selectedSheet.columns.length, 1),
       targetCount: Math.max(targetColumns.length, 1),
       covariateCount: covariateColumns.length,
-      unknownFutureForecastCount: covariateColumns.filter((column) => covariateConfigs[column]?.type === "unknown_future" && covariateConfigs[column]?.unknownFutureAction === "forecast").length,
-      perPrimaryModelCovariateCount: covariateColumns.filter((column) => covariateConfigs[column]?.forecastMode === "per_primary_model").length,
+      unknownFutureForecastCount: 0,
+      perPrimaryModelCovariateCount: 0,
       featureConfig,
       runProfile,
       parameterStrategy,
@@ -1405,6 +1394,28 @@ export function ForecastPage() {
     }));
   }
 
+  function persistLeakageReminder(value: boolean) {
+    if (typeof window === "undefined") return;
+    const key = leakageReminderStorageKey(currentUser?.userId);
+    if (value) {
+      window.localStorage.setItem(key, "1");
+    } else {
+      window.localStorage.removeItem(key);
+    }
+    setSuppressLeakageWarning(value);
+  }
+
+  function updateCovariateConfig(column: string, patch: Partial<CovariateConfig>) {
+    const current = normalizeCovariateConfig(column, covariateConfigs[column]);
+    const next = normalizeCovariateConfig(column, { ...current, ...patch });
+    const appliesLeakageMode = next.type === "static" && next.backtestStrategy === "use_test_values";
+    if (appliesLeakageMode && !suppressLeakageWarning) {
+      setLeakageDialogColumn(column);
+      return;
+    }
+    setCovariateConfigs((configs) => ({ ...configs, [column]: next }));
+  }
+
   async function submit() {
     if (!upload || !selectedSheet) return;
     if (runLimitMessage) {
@@ -1452,7 +1463,7 @@ export function ForecastPage() {
           hampelWindow,
           hampelSigma
         },
-        covariateConfigs: covariateColumns.map((column) => covariateConfigs[column] ?? { column, type: "static", unknownFutureAction: "analysis_only", forecastMode: "auto", manualModelId: null, missingValueStrategy: "ffill" }),
+        covariateConfigs: covariateColumns.map((column) => normalizeCovariateConfig(column, covariateConfigs[column])),
         holidayConfig,
         missingValueStrategy,
         fillMissingTimeSteps,
@@ -1499,6 +1510,16 @@ export function ForecastPage() {
     }
   }
 
+  function openAgentWithPrompt(prompt?: string) {
+    setAgentOpen(true);
+    if (prompt?.trim()) {
+      setAgentLaunchRequest({
+        prompt: prompt.trim(),
+        nonce: `${Date.now()}_${Math.random().toString(16).slice(2)}`
+      });
+    }
+  }
+
   if (!upload || !selectedSheet) {
     return <EmptyState title="还没有可用数据" detail="请先上传文件并选择 Sheet，然后再配置预测实验。" />;
   }
@@ -1510,13 +1531,32 @@ export function ForecastPage() {
         title={forecastResult ? "分析驾驶舱" : "配置字段、模型和 Holdout 回测"}
         description={`文件：${upload.fileName} / Sheet：${selectedSheet.sheetName} / 计算设备：${device}`}
         action={
-          <Link className={controls.secondaryButton} to="/upload">
-            更换数据
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            <Link className={controls.secondaryButton} to="/upload">
+              更换数据
+            </Link>
+            {forecastResult ? (
+              <>
+                <Link className={controls.secondaryButton} to={`/experiments/${forecastResult.experimentId}/attribution`}>
+                  Attribution Lab
+                </Link>
+                <button type="button" className={controls.primaryButton} onClick={() => setAgentOpen(true)}>
+                  归因 Agent
+                </button>
+              </>
+            ) : null}
+          </div>
         }
       />
 
       <ErrorBanner message={error} />
+      <WorkbenchIdeaPanel
+        disabled={!selectedSheet}
+        targetColumn={targetColumns[0] ?? null}
+        frequency={forecastResult?.detectedFrequency ?? runtimeDetail?.featurePipeline[0]?.detectedFrequency ?? null}
+        availableColumns={selectedSheet.columns.map((column) => column.name)}
+        horizon={horizon}
+      />
       {rerunDraft ? (
         <SectionCard
           title="重新运行草稿"
@@ -1649,7 +1689,7 @@ export function ForecastPage() {
                               if (event.target.checked) {
                                 setCovariateConfigs((current) => current[column.name] ? current : {
                                   ...current,
-                                  [column.name]: { column: column.name, type: "static", unknownFutureAction: "analysis_only", forecastMode: "auto", manualModelId: null, missingValueStrategy: "ffill" }
+                                  [column.name]: covariateDefaults(column.name)
                                 });
                               }
                             }}
@@ -1734,20 +1774,61 @@ export function ForecastPage() {
 
                 <div className="rounded-xl border border-slate-200 p-4 dark:border-white/10">
                   <div className="font-semibold text-slate-900 dark:text-white">协变量处理方式</div>
-                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">未来未知协变量不会读取测试集真实未来值；选择“每个主模型自行预测”会增加运行时间，并可能因模型参数不适配而单独失败。</p>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">主流程只支持 known_future / static。static 的最终预测永远使用 repeat last known；backtest 可选 repeat last known、historical mean 或 use test values。</p>
                   <div className="mt-4 grid gap-3 lg:grid-cols-2">
                     {covariateColumns.map((column) => {
-                      const config = covariateConfigs[column] ?? { column, type: "static", unknownFutureAction: "analysis_only", forecastMode: "auto", manualModelId: null, missingValueStrategy: "ffill" };
-                      const update = (patch: Partial<CovariateConfig>) => setCovariateConfigs((current) => ({ ...current, [column]: { ...config, ...patch } }));
+                      const config = normalizeCovariateConfig(column, covariateConfigs[column]);
                       return (
                         <div key={column} className="rounded-xl bg-slate-50 p-3 dark:bg-[#0b1020]">
-                          <div className="font-medium text-slate-900 dark:text-white">{column}</div>
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="font-medium text-slate-900 dark:text-white">{column}</div>
+                            <Badge tone={config.type === "known_future" ? "info" : config.backtestStrategy === "use_test_values" ? "warn" : "neutral"}>
+                              {config.type === "known_future" ? "Known Future" : "Static"}
+                            </Badge>
+                          </div>
                           <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                            <label className="space-y-1"><span className="text-xs text-slate-500">类型</span><select className={controls.input} value={config.type} onChange={(event) => update({ type: event.target.value as CovariateConfig["type"] })}><option value="static">静态</option><option value="known_future">未来已知</option><option value="unknown_future">未来未知</option></select></label>
-                            <label className="space-y-1"><span className="text-xs text-slate-500">缺失值</span><select className={controls.input} value={config.missingValueStrategy} onChange={(event) => update({ missingValueStrategy: event.target.value as CovariateConfig["missingValueStrategy"] })}><option value="ffill">前向填充</option><option value="bfill">后向填充</option><option value="interpolate">线性插值</option><option value="time">按时间插值</option><option value="median">中位数</option><option value="zero">零值</option></select></label>
-                            {config.type === "unknown_future" ? <label className="space-y-1"><span className="text-xs text-slate-500">用途</span><select className={controls.input} value={config.unknownFutureAction} onChange={(event) => update({ unknownFutureAction: event.target.value as CovariateConfig["unknownFutureAction"] })}><option value="analysis_only">仅分析，模型前丢弃</option><option value="forecast">先预测再使用</option></select></label> : null}
-                            {config.type === "unknown_future" && config.unknownFutureAction === "forecast" ? <label className="space-y-1"><span className="text-xs text-slate-500">预测方式</span><select className={controls.input} value={config.forecastMode} onChange={(event) => update({ forecastMode: event.target.value as CovariateConfig["forecastMode"] })}><option value="auto">自动轻量模型</option><option value="manual">手动指定</option><option value="per_primary_model">每个主模型自行预测</option></select></label> : null}
-                            {config.forecastMode === "manual" && config.unknownFutureAction === "forecast" ? <label className="space-y-1"><span className="text-xs text-slate-500">辅助模型</span><select className={controls.input} value={config.manualModelId ?? "naive"} onChange={(event) => update({ manualModelId: event.target.value as CovariateConfig["manualModelId"] })}><option value="naive">Naive</option><option value="seasonal_naive">Seasonal Naive</option><option value="arima">ARIMA</option><option value="ets">ETS</option></select></label> : null}
+                            <label className="space-y-1">
+                              <span className="text-xs text-slate-500">类型</span>
+                              <select className={controls.input} value={config.type} onChange={(event) => updateCovariateConfig(column, { type: event.target.value as CovariateConfig["type"] })}>
+                                <option value="static">静态</option>
+                                <option value="known_future">未来已知</option>
+                              </select>
+                            </label>
+                            <label className="space-y-1">
+                              <span className="text-xs text-slate-500">缺失值</span>
+                              <select className={controls.input} value={config.missingValueStrategy} onChange={(event) => updateCovariateConfig(column, { missingValueStrategy: event.target.value as CovariateConfig["missingValueStrategy"] })}>
+                                <option value="ffill">前向填充</option>
+                                <option value="bfill">后向填充</option>
+                                <option value="interpolate">线性插值</option>
+                                <option value="time">按时间插值</option>
+                                <option value="median">中位数</option>
+                                <option value="zero">零值</option>
+                              </select>
+                            </label>
+                            <label className="space-y-1 sm:col-span-2">
+                              <span className="text-xs text-slate-500">Backtest Strategy</span>
+                              <select
+                                className={controls.input}
+                                value={config.type === "known_future" ? "use_test_timeline" : config.backtestStrategy}
+                                onChange={(event) => updateCovariateConfig(column, { backtestStrategy: event.target.value as CovariateConfig["backtestStrategy"] })}
+                                disabled={config.type === "known_future"}
+                              >
+                                {config.type === "known_future" ? (
+                                  <option value="use_test_timeline">Use Test Timeline Values</option>
+                                ) : (
+                                  <>
+                                    <option value="repeat_last_known">Repeat Last Known</option>
+                                    <option value="historical_mean">Historical Mean</option>
+                                    <option value="use_test_values">Use Test Values（有泄漏风险）</option>
+                                  </>
+                                )}
+                              </select>
+                            </label>
+                          </div>
+                          <div className="mt-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs leading-6 text-slate-600 dark:border-white/10 dark:bg-[#151b2e] dark:text-slate-300">
+                            Forecast：{config.type === "known_future" ? "Generated by Calendar / Use Future Timeline" : "Repeat Last Known"}
+                            <br />
+                            Leakage Risk：{config.type === "known_future" ? "无" : config.backtestStrategy === "use_test_values" ? "高" : "无"}
                           </div>
                         </div>
                       );
@@ -1925,8 +2006,70 @@ export function ForecastPage() {
           setChartModelIds={setChartModelIds}
           metric={metric}
           setMetric={setMetric}
+          tab={resultTab}
+          setTab={setResultTab}
         />
       )}
+
+      {forecastResult ? (
+        <AttributionAgentDrawer
+          open={agentOpen}
+          onClose={() => setAgentOpen(false)}
+          experimentId={forecastResult.experimentId}
+          currentPage="/forecast"
+          currentTab={resultTab}
+          selectedModelId={finalModelId || forecastResult.recommendedModelId}
+          launchRequest={agentLaunchRequest}
+        />
+      ) : null}
+
+      {leakageDialogColumn ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+          <button type="button" className="absolute inset-0 bg-slate-950/60" onClick={() => { setLeakageDialogColumn(null); setLeakageDialogRemember(false); }} />
+          <div className="relative w-full max-w-2xl rounded-3xl border border-amber-200 bg-white p-6 shadow-2xl dark:border-amber-400/20 dark:bg-[#151b2e]">
+            <div className="text-lg font-semibold text-slate-950 dark:text-white">回测泄漏风险提示</div>
+            <div className="mt-3 text-sm leading-7 text-slate-600 dark:text-slate-300">
+              你正在把 <span className="font-semibold">{leakageDialogColumn}</span> 设为 <span className="font-semibold">use_test_values</span>。
+              该策略会在回归测试中使用测试集真实协变量值，可能造成未来信息泄漏，使回测指标偏乐观。仅建议用于 Academic Benchmark 或未来协变量确实已知的场景。
+            </div>
+            <label className="mt-4 flex items-center gap-2 text-sm text-slate-700 dark:text-slate-200">
+              <input type="checkbox" checked={leakageDialogRemember} onChange={(event) => setLeakageDialogRemember(event.target.checked)} />
+              不再提醒（按当前用户隔离保存）
+            </label>
+            <div className="mt-5 flex flex-wrap justify-end gap-3">
+              <button
+                type="button"
+                className={controls.secondaryButton}
+                onClick={() => {
+                  setLeakageDialogColumn(null);
+                  setLeakageDialogRemember(false);
+                }}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className={controls.primaryButton}
+                onClick={() => {
+                  if (!leakageDialogColumn) return;
+                  if (leakageDialogRemember) persistLeakageReminder(true);
+                  setCovariateConfigs((current) => ({
+                    ...current,
+                    [leakageDialogColumn]: normalizeCovariateConfig(leakageDialogColumn, {
+                      ...current[leakageDialogColumn],
+                      backtestStrategy: "use_test_values"
+                    })
+                  }));
+                  setLeakageDialogColumn(null);
+                  setLeakageDialogRemember(false);
+                }}
+              >
+                继续并启用
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

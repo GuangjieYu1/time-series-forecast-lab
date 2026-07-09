@@ -17,6 +17,7 @@ class ProgressTracker:
         self._runs: dict[str, ForecastProgress] = {}
         self._versions: dict[str, int] = {}
         self._history: dict[str, list[ForecastProgress]] = {}
+        self._scopes: dict[str, dict[str, str]] = {}
 
     def start(
         self,
@@ -24,6 +25,8 @@ class ProgressTracker:
         kind: Literal["backtest", "final"],
         model_rows: list[ModelProgress],
         message: str,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> ForecastProgress:
         now = datetime.now(timezone.utc)
         snapshot = ForecastProgress(
@@ -45,6 +48,8 @@ class ProgressTracker:
             self._runs[run_id] = snapshot
             self._versions[run_id] = 1
             self._history[run_id] = [snapshot.model_copy(deep=True)]
+            if user_id and workspace_id:
+                self._scopes[run_id] = {"userId": user_id, "workspaceId": workspace_id}
             return snapshot.model_copy(deep=True)
 
     def update(self, run_id: str, **changes) -> ForecastProgress | None:
@@ -116,6 +121,11 @@ class ProgressTracker:
                 if item.version > version
             ]
 
+    def get_scope(self, run_id: str) -> dict[str, str] | None:
+        with self._lock:
+            scope = self._scopes.get(run_id)
+            return dict(scope) if scope else None
+
     def _cleanup_locked(self, now: datetime) -> None:
         cutoff = now - timedelta(hours=2)
         expired = [
@@ -127,6 +137,7 @@ class ProgressTracker:
             self._runs.pop(run_id, None)
             self._versions.pop(run_id, None)
             self._history.pop(run_id, None)
+            self._scopes.pop(run_id, None)
 
 
 progress_tracker = ProgressTracker()
