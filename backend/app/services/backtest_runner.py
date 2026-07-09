@@ -4,9 +4,9 @@ import time
 from datetime import datetime
 import math
 import logging
-from typing import Callable, Literal, TYPE_CHECKING
+from typing import Any, Callable, Literal, TYPE_CHECKING
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.errors import AppError
 from app.schemas import (
@@ -18,6 +18,7 @@ from app.schemas import (
 )
 from app.services.auto_tuning import TuningProgressUpdate, resolve_model_parameters
 from app.services.covariate_flow import build_future_covariate_rows
+from app.services.explainability import build_tree_explainability_artifact, finalize_tree_explainability_artifact
 from app.services.metrics import calculate_metrics
 from app.services.model_registry import MODEL_CAPABILITIES, create_model, validate_horizon
 from app.services.model_executor import fit_model_instance, predict_model_instance, run_isolated_fit_predict, should_isolate_model
@@ -28,6 +29,7 @@ class BacktestResult(BaseModel):
     recommendedModelId: str | None
     rankedModels: list[RankedModel]
     backtest: BacktestData
+    explainabilityByModel: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class ModelProgressEvent(BaseModel):
@@ -48,6 +50,7 @@ class ModelProgressEvent(BaseModel):
     tuningStrategyLabel: str | None = None
     tuningSampler: str | None = None
     tuningPruner: str | None = None
+    warnings: list[str] = Field(default_factory=list)
 
 
 ProgressCallback = Callable[[ModelProgressEvent], None]
@@ -102,7 +105,9 @@ def run_holdout_backtest(
     actual = [BacktestActualPoint(time=_iso(point.time), value=point.value) for point in test]
     predictions: dict[str, list[BacktestPredictionPoint]] = {}
     ranked: list[RankedModel] = []
+    explainability_by_model: dict[str, dict[str, Any]] = {}
     parameters_by_model = model_parameters or {}
+    prepared_train = prepared_features.slice_history(len(train)) if prepared_features is not None else None
 
     for model_id in selected_models:
         capability = MODEL_CAPABILITIES[model_id]
@@ -145,6 +150,7 @@ def run_holdout_backtest(
                 primary_model_id=model_id,
                 primary_model_parameters=parameters_by_model.get(model_id),
                 holiday_config=series.holidayConfig,
+                purpose="backtest",
             )
         except Exception as exc:
             error = f"协变量准备失败：{exc}"
@@ -194,6 +200,7 @@ def run_holdout_backtest(
         )
         selected_parameters = tuning.selectedParams
         warnings.extend(tuning.warnings)
+        raw_explainability: dict[str, Any] | None = None
         try:
             logger.info(
                 "model run started target=%s model=%s frequency=%s train_points=%s test_size=%s horizon=%s isolated=%s",
@@ -220,10 +227,12 @@ def run_holdout_backtest(
                     covariates=train_covariates,
                     future_covariates=test_covariates,
                     feature_config=feature_config,
-                    prepared_features=prepared_features if model_id in {"xgboost", "lightgbm", "random_forest"} else None,
+                    prepared_features=prepared_train if model_id in {"xgboost", "lightgbm", "random_forest"} else None,
                 )
                 fit_seconds = output.fit_seconds
                 predict_seconds = output.predict_seconds
+                if output.explainability:
+                    raw_explainability = dict(output.explainability)
             else:
                 model = create_model(model_id, selected_parameters)
                 fit_start = time.perf_counter()
@@ -235,7 +244,7 @@ def run_holdout_backtest(
                     series.frequency,
                     covariates=train_covariates,
                     feature_config=feature_config,
-                    prepared_features=prepared_features if model_id in {"xgboost", "lightgbm", "random_forest"} else None,
+                    prepared_features=prepared_train if model_id in {"xgboost", "lightgbm", "random_forest"} else None,
                 )
                 fit_seconds = time.perf_counter() - fit_start
 
@@ -251,6 +260,16 @@ def run_holdout_backtest(
                     future_covariates=test_covariates,
                 )
                 predict_seconds = time.perf_counter() - predict_start
+                if model_id in {"xgboost", "lightgbm", "random_forest"} and prepared_train is not None and hasattr(model, "model"):
+                    raw_explainability = build_tree_explainability_artifact(
+                        model_id=model_id,
+                        model_name=capability.name,
+                        target_column=series.targetColumn,
+                        estimator=model.model,
+                        feature_names=list(prepared_train.featureNames),
+                        feature_matrix=prepared_train.featureValues,
+                        prediction_feature_rows=list(output.predictionFeatures or []),
+                    )
             if should_isolate_model(model_id) and progress_callback:
                 progress_callback(ModelProgressEvent(modelId=model_id, stage="predicting", fitSeconds=fit_seconds))
             warnings.extend(output.warnings)
@@ -288,6 +307,11 @@ def run_holdout_backtest(
                     )
                 )
             predictions[model_id] = model_points
+            if raw_explainability is not None:
+                raw_explainability["modelId"] = model_id
+                raw_explainability["modelName"] = capability.name
+                raw_explainability["targetColumn"] = series.targetColumn
+                explainability_by_model[model_id] = finalize_tree_explainability_artifact(raw_explainability, model_points)
             ranked.append(
                 RankedModel(
                     modelId=model_id,
@@ -313,6 +337,11 @@ def run_holdout_backtest(
                         stage="success",
                         fitSeconds=fit_seconds,
                         predictSeconds=predict_seconds,
+                        currentMetric=metrics.mae,
+                        bestMetric=tuning.bestMetric,
+                        params=selected_parameters,
+                        tuningSeconds=tuning.tuningSeconds,
+                        warnings=warnings,
                     )
                 )
         except Exception as exc:
@@ -345,6 +374,9 @@ def run_holdout_backtest(
                         fitSeconds=fit_seconds,
                         predictSeconds=predict_seconds,
                         error=str(exc),
+                        params=selected_parameters,
+                        tuningSeconds=tuning.tuningSeconds,
+                        warnings=warnings,
                     )
                 )
 
@@ -359,4 +391,5 @@ def run_holdout_backtest(
         recommendedModelId=recommended,
         rankedModels=ranked_models,
         backtest=BacktestData(actual=actual, predictions=predictions),
+        explainabilityByModel=explainability_by_model,
     )

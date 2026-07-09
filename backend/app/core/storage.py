@@ -53,7 +53,7 @@ def read_upload_metadata(upload_id: str) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-async def save_upload_file(file: UploadFile) -> dict:
+async def save_upload_file(file: UploadFile, *, user_id: str, workspace_id: str) -> dict:
     settings = get_settings()
     original_name = file.filename or "upload"
     ext = Path(original_name).suffix.lower()
@@ -80,6 +80,8 @@ async def save_upload_file(file: UploadFile) -> dict:
 
     metadata = {
         "uploadId": upload_id,
+        "userId": user_id,
+        "workspaceId": workspace_id,
         "fileName": original_name,
         "fileSize": size,
         "fileSha256": hasher.hexdigest(),
@@ -90,6 +92,11 @@ async def save_upload_file(file: UploadFile) -> dict:
     _metadata_path(upload_id).write_text(json.dumps(metadata, ensure_ascii=True), encoding="utf-8")
     logger.info("upload temp file created", extra={"upload_id": upload_id, "path": str(dest), "file_name": original_name})
     return metadata
+
+
+def assert_upload_ownership(metadata: dict, *, user_id: str, workspace_id: str) -> None:
+    if metadata.get("userId") != user_id or metadata.get("workspaceId") != workspace_id:
+        raise AppError("这个上传文件不属于当前用户或工作区，请重新上传。", 403, "UPLOAD_WORKSPACE_FORBIDDEN")
 
 
 def delete_upload(upload_id: str) -> None:

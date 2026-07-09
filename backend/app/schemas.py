@@ -25,10 +25,133 @@ class SheetPreview(BaseModel):
 
 class UploadPreviewResponse(BaseModel):
     uploadId: str
+    workspaceId: str | None = None
     fileName: str
     fileSize: int
     fileSha256: str
     sheets: list[SheetPreview]
+
+
+class AuthUser(BaseModel):
+    userId: str
+    username: str
+    displayName: str
+    isAdmin: bool
+    isActive: bool
+    createdAt: str
+
+
+class WorkspaceSummary(BaseModel):
+    workspaceId: str
+    name: str
+    kind: Literal["personal", "shared", "example"]
+    role: Literal["owner", "member"]
+    isReadOnly: bool
+    ownerUserId: str
+    isPersonal: bool
+    isOwner: bool
+    createdAt: str
+
+
+class AuthSessionResponse(BaseModel):
+    authenticated: bool
+    bootstrapRequired: bool = False
+    user: AuthUser | None = None
+    workspaces: list[WorkspaceSummary] = Field(default_factory=list)
+    defaultWorkspaceId: str | None = None
+
+
+class UsernameAvailabilityResponse(BaseModel):
+    available: bool
+    normalizedUsername: str
+    reason: Literal["available", "taken", "invalid"]
+    message: str | None = None
+
+
+class BootstrapRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=120)
+    displayName: str = Field(min_length=1, max_length=255)
+    password: str = Field(min_length=8, max_length=255)
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=120)
+    password: str = Field(min_length=1, max_length=255)
+
+
+class RegisterRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=120)
+    displayName: str = Field(min_length=1, max_length=255)
+    password: str = Field(min_length=8, max_length=255)
+
+
+class CreateUserRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=120)
+    displayName: str = Field(min_length=1, max_length=255)
+    password: str = Field(min_length=8, max_length=255)
+    isAdmin: bool = False
+
+
+class UpdateUserRequest(BaseModel):
+    displayName: str | None = Field(default=None, min_length=1, max_length=255)
+    isActive: bool | None = None
+
+
+class UpdateUserPasswordRequest(BaseModel):
+    password: str = Field(min_length=8, max_length=255)
+
+
+class UserGroupRef(BaseModel):
+    groupId: str
+    name: str
+
+
+class UserSummary(BaseModel):
+    userId: str
+    username: str
+    displayName: str
+    isAdmin: bool
+    isActive: bool
+    createdAt: str
+    groups: list[UserGroupRef] = Field(default_factory=list)
+
+
+class UserGroupSummary(BaseModel):
+    groupId: str
+    name: str
+    description: str | None = None
+    memberCount: int = 0
+    createdAt: str
+
+
+class CreateUserGroupRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=512)
+
+
+class UpdateUserGroupsRequest(BaseModel):
+    groupIds: list[str] = Field(default_factory=list)
+
+
+class CreateWorkspaceRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+
+
+class UpdateWorkspaceRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+
+
+class WorkspaceMemberResponse(BaseModel):
+    userId: str
+    username: str
+    displayName: str
+    role: Literal["owner", "member"]
+    isActive: bool
+    createdAt: str
+
+
+class AddWorkspaceMemberRequest(BaseModel):
+    userId: str
 
 
 class ParsedDateTime(BaseModel):
@@ -127,11 +250,27 @@ class HolidayConfig(BaseModel):
 
 class CovariateConfig(BaseModel):
     column: str
-    type: Literal["known_future", "static", "unknown_future"] = "static"
-    unknownFutureAction: Literal["analysis_only", "forecast"] = "analysis_only"
-    forecastMode: Literal["auto", "manual", "per_primary_model"] = "auto"
-    manualModelId: Literal["naive", "seasonal_naive", "arima", "ets"] | None = None
+    type: Literal["known_future", "static"] = "static"
+    backtestStrategy: Literal["repeat_last_known", "historical_mean", "use_test_values"] = "repeat_last_known"
     missingValueStrategy: MissingValueStrategy = "ffill"
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_covariate_contract(cls, value):
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        legacy_type = normalized.get("type")
+        if legacy_type == "unknown_future":
+            normalized["type"] = "static"
+            if normalized.get("unknownFutureAction") == "forecast":
+                normalized["backtestStrategy"] = normalized.get("backtestStrategy") or "use_test_values"
+            else:
+                normalized["backtestStrategy"] = normalized.get("backtestStrategy") or "repeat_last_known"
+        normalized.pop("unknownFutureAction", None)
+        normalized.pop("forecastMode", None)
+        normalized.pop("manualModelId", None)
+        return normalized
 
 
 class ForecastRunRequest(BaseModel):
@@ -525,15 +664,31 @@ class RuntimeFeatureNode(BaseModel):
     importance: float | None = None
     shap: float | None = None
     modelIds: list[str] = Field(default_factory=list)
-    featureType: Literal["generated", "known_future_covariate", "static_covariate", "unknown_future_covariate"] = "generated"
+    featureType: Literal["generated", "known_future_covariate", "static_covariate"] = "generated"
     generator: str = "Feature Factory"
     machineId: str | None = None
     machineLabel: str | None = None
-    forecastStrategy: Literal["generated", "calendar", "use_future_rows", "repeat_last_known", "use_test_timeline", "forecast_auxiliary", "drop_for_leakage"] = "generated"
-    backtestStrategy: Literal["generated", "calendar", "use_future_rows", "repeat_last_known", "use_test_timeline", "forecast_auxiliary", "drop_for_leakage"] = "generated"
+    forecastStrategy: Literal["generated", "calendar", "use_future_rows", "repeat_last_known"] = "generated"
+    backtestStrategy: Literal["generated", "calendar", "use_future_rows", "repeat_last_known", "historical_mean", "use_test_timeline", "use_test_values"] = "generated"
     usedDuring: list[Literal["training", "backtest", "forecast"]] = Field(default_factory=lambda: ["training"])
     droppedReason: str | None = None
     lifecycleTrail: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_feature_node(cls, value):
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        if normalized.get("featureType") == "unknown_future_covariate":
+            normalized["featureType"] = "static_covariate"
+        if normalized.get("forecastStrategy") in {"forecast_auxiliary", "drop_for_leakage"}:
+            normalized["forecastStrategy"] = "repeat_last_known"
+        if normalized.get("backtestStrategy") == "forecast_auxiliary":
+            normalized["backtestStrategy"] = "use_test_values"
+        elif normalized.get("backtestStrategy") == "drop_for_leakage":
+            normalized["backtestStrategy"] = "repeat_last_known"
+        return normalized
 
 
 class RuntimeFeatureFactorySummary(BaseModel):
@@ -561,14 +716,31 @@ class RuntimeFeatureMachine(BaseModel):
 
 class RuntimeCovariateDescriptor(BaseModel):
     name: str
-    type: Literal["known_future", "static", "unknown_future"]
+    type: Literal["known_future", "static"]
     generator: str = "Covariate Loader"
-    forecastStrategy: Literal["calendar", "use_future_rows", "repeat_last_known", "forecast_auxiliary", "drop_for_leakage"]
-    backtestStrategy: Literal["use_test_timeline", "repeat_last_known", "forecast_auxiliary", "drop_for_leakage"]
+    forecastStrategy: Literal["calendar", "use_future_rows", "repeat_last_known"]
+    backtestStrategy: Literal["use_test_timeline", "repeat_last_known", "historical_mean", "use_test_values"]
     usedDuring: list[Literal["training", "backtest", "forecast"]] = Field(default_factory=lambda: ["training", "backtest", "forecast"])
-    forecastMode: Literal["auto", "manual", "per_primary_model"] | None = None
-    forecastModelId: str | None = None
+    leakageRisk: bool = False
     note: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_runtime_covariate(cls, value):
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        if normalized.get("type") == "unknown_future":
+            normalized["type"] = "static"
+        if normalized.get("forecastStrategy") in {"forecast_auxiliary", "drop_for_leakage"}:
+            normalized["forecastStrategy"] = "repeat_last_known"
+        if normalized.get("backtestStrategy") == "forecast_auxiliary":
+            normalized["backtestStrategy"] = "use_test_values"
+        elif normalized.get("backtestStrategy") == "drop_for_leakage":
+            normalized["backtestStrategy"] = "repeat_last_known"
+        normalized.pop("forecastMode", None)
+        normalized.pop("forecastModelId", None)
+        return normalized
 
 
 class RuntimeFeatureSelectionItem(BaseModel):
@@ -708,6 +880,11 @@ class RuntimeModelConsole(BaseModel):
     fitSeconds: float | None = None
     predictSeconds: float | None = None
     tuningSeconds: float | None = None
+    metricLabel: str | None = None
+    currentMetric: float | None = None
+    bestMetric: float | None = None
+    selectedParams: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
     computeTarget: Literal["cpu", "gpu"] = "cpu"
     resource: RuntimeResourceSnapshot | None = None
     optimization: RuntimeOptimizationState | None = None
@@ -770,6 +947,50 @@ class RuntimeTimelineResponse(BaseModel):
     timeline: list[RuntimeTimelineEntry] = Field(default_factory=list)
 
 
+class ExplainabilityFeatureItem(BaseModel):
+    feature: str
+    importance: float | None = None
+    rank: int | None = None
+    meanAbsShap: float | None = None
+    direction: Literal["positive", "negative", "mixed", "neutral"] | None = None
+
+
+class ExplainabilitySinglePointContribution(BaseModel):
+    feature: str
+    value: float | None = None
+    shapValue: float | None = None
+    direction: Literal["positive", "negative", "neutral"] = "neutral"
+
+
+class ExplainabilitySinglePoint(BaseModel):
+    time: str | None = None
+    actual: float | None = None
+    predicted: float | None = None
+    residual: float | None = None
+    absoluteError: float | None = None
+    contributions: list[ExplainabilitySinglePointContribution] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ExplainabilityModelSummary(BaseModel):
+    modelId: str
+    modelName: str
+    targetColumn: str
+    supported: bool = False
+    warning: str | None = None
+    featureImportance: list[ExplainabilityFeatureItem] = Field(default_factory=list)
+    shapSupported: bool = False
+    shapWarning: str | None = None
+    shapTopFeatures: list[ExplainabilityFeatureItem] = Field(default_factory=list)
+    singlePoint: ExplainabilitySinglePoint | None = None
+
+
+class ExperimentExplainabilityResponse(BaseModel):
+    experimentId: str
+    recommendedModelId: str | None = None
+    models: list[ExplainabilityModelSummary] = Field(default_factory=list)
+
+
 class RuntimeEstimateItem(BaseModel):
     id: str
     name: str
@@ -794,6 +1015,10 @@ class ExperimentListItem(BaseModel):
     recommendedModelId: str | None
     bestMae: float | None
     createdAt: str
+    workspaceId: str | None = None
+    workspaceName: str | None = None
+    createdByUserId: str | None = None
+    createdByUsername: str | None = None
 
 
 class ExperimentDetail(BaseModel):
@@ -805,6 +1030,10 @@ class ExperimentDetail(BaseModel):
     recommendedModelId: str | None
     bestMae: float | None
     createdAt: str
+    workspaceId: str | None = None
+    workspaceName: str | None = None
+    createdByUserId: str | None = None
+    createdByUsername: str | None = None
     config: dict[str, Any]
     dataProfile: dict[str, Any]
     rankedModels: list[dict[str, Any]]
@@ -814,6 +1043,7 @@ class ExperimentDetail(BaseModel):
     series: list[dict[str, Any]]
     finalForecast: dict[str, Any] | None
     modelLogs: list[dict[str, Any]]
+    explainability: ExperimentExplainabilityResponse | None = None
     runtime: RuntimeRunDetail | None = None
     manifest: dict[str, Any] | None = None
     configHash: str | None = None
@@ -1070,6 +1300,10 @@ class ReportResponse(BaseModel):
     contentMarkdown: str
     createdAt: str
     model: str
+    workspaceId: str | None = None
+    workspaceName: str | None = None
+    createdByUserId: str | None = None
+    createdByUsername: str | None = None
 
 
 class ReportPdfArtifact(BaseModel):

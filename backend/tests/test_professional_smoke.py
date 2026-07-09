@@ -3,13 +3,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-from fastapi.testclient import TestClient
-
-from app.main import app
-
-
-def test_etth1_xgboost_forecast_smoke():
-    client = TestClient(app)
+def test_etth1_xgboost_forecast_smoke(authed_client):
+    client = authed_client.client
     fixture = Path(__file__).parent / "fixtures" / "professional" / "ETTh1.csv"
 
     with fixture.open("rb") as handle:

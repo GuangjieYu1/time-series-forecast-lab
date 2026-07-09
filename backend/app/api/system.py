@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
 
+from app.api.dependencies import require_workspace_write_access
 from app.core.config import Settings, get_settings
 from app.core.errors import AppError, as_http_error
 from app.schemas import LocalRebuildRequest, LocalRebuildResponse
@@ -24,12 +25,16 @@ def _is_allowed_local_host(request: Request, settings: Settings) -> bool:
 def schedule_local_rebuild(
     payload: LocalRebuildRequest,
     request: Request,
+    _=Depends(require_workspace_write_access),
     settings: Settings = Depends(get_settings),
 ):
     try:
         if not _is_allowed_local_host(request, settings):
             raise AppError("一键重建只允许在本机 localhost 环境触发。", 403, "LOCAL_REBUILD_FORBIDDEN")
-        if payload.password != settings.local_rebuild_password:
+        expected_password = settings.resolved_local_rebuild_password
+        if not expected_password:
+            raise AppError("本地维护密码尚未配置。请在环境变量 TSFL_LOCAL_REBUILD_PASSWORD 或 deploy/.local-rebuild-password 中设置。", 500, "LOCAL_REBUILD_PASSWORD_NOT_CONFIGURED")
+        if payload.password != expected_password:
             raise AppError("本地维护密码不正确。", 401, "LOCAL_REBUILD_AUTH_FAILED")
 
         script_path = settings.deploy_dir / "local_rebuild.py"

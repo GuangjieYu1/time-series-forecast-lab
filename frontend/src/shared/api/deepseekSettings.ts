@@ -1,6 +1,10 @@
 import type { DeepSeekSettings } from "../types/api";
+import { getCurrentAuthUserId } from "./workspaceSession";
 
-const STORAGE_KEY = "time_series_forecast_lab_deepseek";
+function storageKey() {
+  const userId = getCurrentAuthUserId();
+  return `time_series_forecast_lab_deepseek:${userId ?? "anonymous"}`;
+}
 
 export const defaultDeepSeekSettings: DeepSeekSettings = {
   apiKey: "",
@@ -11,8 +15,9 @@ export const defaultDeepSeekSettings: DeepSeekSettings = {
 
 export function loadDeepSeekSettings(): DeepSeekSettings {
   if (typeof window === "undefined") return defaultDeepSeekSettings;
-  const local = window.localStorage.getItem(STORAGE_KEY);
-  const session = window.sessionStorage.getItem(STORAGE_KEY);
+  const key = storageKey();
+  const local = window.localStorage.getItem(key);
+  const session = window.sessionStorage.getItem(key);
   const raw = local ?? session;
   if (!raw) return defaultDeepSeekSettings;
   try {
@@ -24,18 +29,20 @@ export function loadDeepSeekSettings(): DeepSeekSettings {
 
 export function saveDeepSeekSettings(settings: DeepSeekSettings): void {
   if (typeof window === "undefined") return;
+  const key = storageKey();
   const payload = JSON.stringify(settings);
   if (settings.rememberLocal) {
-    window.localStorage.setItem(STORAGE_KEY, payload);
-    window.sessionStorage.removeItem(STORAGE_KEY);
+    window.localStorage.setItem(key, payload);
+    window.sessionStorage.removeItem(key);
   } else {
-    window.sessionStorage.setItem(STORAGE_KEY, payload);
-    window.localStorage.removeItem(STORAGE_KEY);
+    window.sessionStorage.setItem(key, payload);
+    window.localStorage.removeItem(key);
   }
 }
 
 export function clearDeepSeekSettings(): void {
   if (typeof window === "undefined") return;
-  window.localStorage.removeItem(STORAGE_KEY);
-  window.sessionStorage.removeItem(STORAGE_KEY);
+  const key = storageKey();
+  window.localStorage.removeItem(key);
+  window.sessionStorage.removeItem(key);
 }

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { useLabStore } from "../../app/store";
 import { downloadReportPdf, generateReport } from "../../shared/api/client";
 import { loadDeepSeekSettings } from "../../shared/api/deepseekSettings";
 import { ErrorBanner, LoadingBlock } from "../../shared/components/Status";
@@ -251,8 +252,12 @@ function download(filename: string, content: string, type: string) {
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = filename;
+  document.body.appendChild(anchor);
   anchor.click();
-  URL.revokeObjectURL(url);
+  window.setTimeout(() => {
+    URL.revokeObjectURL(url);
+    anchor.remove();
+  }, 1000);
 }
 
 function downloadBlob(filename: string, blob: Blob) {
@@ -260,8 +265,12 @@ function downloadBlob(filename: string, blob: Blob) {
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = filename;
+  document.body.appendChild(anchor);
   anchor.click();
-  URL.revokeObjectURL(url);
+  window.setTimeout(() => {
+    URL.revokeObjectURL(url);
+    anchor.remove();
+  }, 1000);
 }
 
 function MarkdownView({ content }: { content: string }) {
@@ -304,6 +313,7 @@ export function ReportPanel({
   initialReports?: ReportResponse[];
   visualization?: ReportVisualizationInput;
 }) {
+  const { selectedWorkspaceId, workspaces } = useLabStore();
   const [reports, setReports] = useState<ReportResponse[]>(initialReports);
   const [activeReportId, setActiveReportId] = useState(initialReports[0]?.reportId ?? "");
   const [options, setOptions] = useState<ReportOptions>(defaultOptions);
@@ -315,6 +325,7 @@ export function ReportPanel({
   const [visualArtifacts, setVisualArtifacts] = useState<ReportVisualArtifact[]>([]);
   const [visualsLoading, setVisualsLoading] = useState(false);
   const [pdfLoading, setPdfLoading] = useState(false);
+  const selectedWorkspace = workspaces.find((item) => item.workspaceId === selectedWorkspaceId) ?? null;
 
   const activeReport = useMemo(() => reports.find((report) => report.reportId === activeReportId) ?? reports[0] ?? null, [activeReportId, reports]);
   const visualAppendixMarkdown = useMemo(() => buildVisualAppendixMarkdown(visualArtifacts), [visualArtifacts]);
@@ -484,8 +495,14 @@ export function ReportPanel({
             </label>
           ) : null}
           <div className="grid gap-3 sm:grid-cols-2">
-            <button className={controls.primaryButton} type="button" disabled={loading} onClick={() => void submit()}>
-              一键生成总结报告
+            <button
+              className={controls.primaryButton}
+              type="button"
+              disabled={loading || selectedWorkspace?.isReadOnly}
+              title={selectedWorkspace?.isReadOnly ? "Example 工作区是只读空间，不能生成新报告。" : undefined}
+              onClick={() => void submit()}
+            >
+              {selectedWorkspace?.isReadOnly ? "Example 只读" : "一键生成总结报告"}
             </button>
             <Link className={controls.secondaryButton} to="/settings">
               配置 API Key

@@ -2,13 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi.testclient import TestClient
-
-from app.main import app
-
-
-def test_upload_preview_returns_sha256_and_manifest_endpoints(generated_fixtures: Path):
-    client = TestClient(app)
+def test_upload_preview_returns_sha256_and_manifest_endpoints(generated_fixtures: Path, authed_client):
+    client = authed_client.client
     fixture = generated_fixtures / "daily_air_passengers.csv"
 
     with fixture.open("rb") as handle:

@@ -1,12 +1,7 @@
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
-
-from app.main import app
-
-
-def test_runtime_estimate_endpoint_returns_model_estimates():
-    client = TestClient(app)
+def test_runtime_estimate_endpoint_returns_model_estimates(authed_client):
+    client = authed_client.client
 
     response = client.post(
         "/api/runtime/estimate",
@@ -40,8 +35,8 @@ def test_runtime_estimate_endpoint_returns_model_estimates():
     assert estimates["timesfm"]["computeTarget"] in {"cpu", "gpu"}
 
 
-def test_runtime_estimate_rejects_unknown_models():
-    client = TestClient(app)
+def test_runtime_estimate_rejects_unknown_models(authed_client):
+    client = authed_client.client
     response = client.post(
         "/api/runtime/estimate",
         json={

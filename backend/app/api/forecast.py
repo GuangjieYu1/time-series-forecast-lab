@@ -12,10 +12,17 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
+from app.api.dependencies import (
+    WorkspaceContext,
+    ensure_progress_scope,
+    get_workspace_context,
+    get_workspace_experiment,
+    require_workspace_write_access,
+)
 from app.core.config import get_settings
 from app.core.errors import AppError, as_http_error
 from app.core.gpu import get_device
-from app.core.storage import delete_upload, read_upload_metadata
+from app.core.storage import assert_upload_ownership, delete_upload, read_upload_metadata
 from app.core.constants import APP_VERSION
 from app.db.models import ExperimentRecord
 from app.db.session import get_db
@@ -162,7 +169,8 @@ def _selected_model_parameters_for_final_forecast(
 
 
 @router.get("/progress/{run_id}", response_model=ForecastProgress)
-def get_forecast_progress(run_id: str):
+def get_forecast_progress(run_id: str, context: WorkspaceContext = Depends(get_workspace_context)):
+    ensure_progress_scope(run_id, context)
     progress = progress_tracker.get(run_id)
     if progress is None:
         raise AppError("Forecast progress was not found.", 404, "PROGRESS_NOT_FOUND")
@@ -170,7 +178,28 @@ def get_forecast_progress(run_id: str):
 
 
 @router.get("/progress/{run_id}/events")
-async def forecast_progress_events(run_id: str, request: Request):
+async def forecast_progress_events(run_id: str, request: Request, context: WorkspaceContext = Depends(get_workspace_context)):
+    missing_scope_checks = 0
+    while True:
+        scope = progress_tracker.get_scope(run_id)
+        if scope is not None:
+            if scope["workspaceId"] != context.workspace.id or scope["userId"] != context.user.id:
+                raise AppError("这个运行实例不属于当前工作区。", 403, "PROGRESS_WORKSPACE_FORBIDDEN")
+            break
+        if await request.is_disconnected():
+            async def empty_stream():
+                if False:
+                    yield ""
+            return StreamingResponse(
+                empty_stream(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+        missing_scope_checks += 1
+        if missing_scope_checks >= 40:
+            raise AppError("Forecast progress was not found.", 404, "PROGRESS_NOT_FOUND")
+        await asyncio.sleep(0.25)
+
     async def event_stream():
         last_version = -1
         missing_checks = 0
@@ -198,9 +227,9 @@ async def forecast_progress_events(run_id: str, request: Request):
 
 
 @router.post("/run", response_model=ForecastRunResponse)
-def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
+def run_forecast(request: ForecastRunRequest, context: WorkspaceContext = Depends(require_workspace_write_access), db: Session = Depends(get_db)):
     run_id = request.runId or f"run_{uuid.uuid4().hex}"
-    progress_tracker.start(run_id, "backtest", [], "正在校验实验配置。")
+    progress_tracker.start(run_id, "backtest", [], "正在校验实验配置。", user_id=context.user.id, workspace_id=context.workspace.id)
     runtime_tracker.start(
         run_id,
         kind="backtest",
@@ -208,6 +237,8 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
         message="正在校验实验配置。",
         device=get_device(),
         parameter_strategy=request.parameterStrategy,
+        user_id=context.user.id,
+        workspace_id=context.workspace.id,
     )
     cleanup_upload = False
     metadata = None
@@ -222,7 +253,7 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
             for target_column in request.targetColumns
             for model_id in request.selectedModels
         ]
-        progress_tracker.start(run_id, "backtest", model_rows, "正在校验实验配置。")
+        progress_tracker.start(run_id, "backtest", model_rows, "正在校验实验配置。", user_id=context.user.id, workspace_id=context.workspace.id)
         runtime_tracker.start(
             run_id,
             kind="backtest",
@@ -230,8 +261,11 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
             message="正在校验实验配置。",
             device=get_device(),
             parameter_strategy=request.parameterStrategy,
+            user_id=context.user.id,
+            workspace_id=context.workspace.id,
         )
         metadata = read_upload_metadata(request.uploadId)
+        assert_upload_ownership(metadata, user_id=context.user.id, workspace_id=context.workspace.id)
         logger.info(
             "forecast run started run_id=%s upload_id=%s file=%s sheet=%s targets=%s models=%s horizon=%s test_size=%s",
             run_id,
@@ -408,6 +442,8 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
                     metric_label="MAE" if event.currentMetric is not None else None,
                     metric_value=event.currentMetric,
                     params=dict(event.params or {}),
+                    best_metric=event.bestMetric,
+                    warnings=list(event.warnings or []),
                 )
                 if event.stage == "tuning":
                     runtime_tracker.update_optimization(
@@ -477,11 +513,13 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
                 {
                     "targetColumn": target_column,
                     "modelId": model.modelId,
+                    "modelName": model.modelName,
                     "status": model.status,
                     "warnings": model.warnings,
                     "error": model.error,
                     "runtime": model.runtime.model_dump(),
                     "tuning": model.tuning.model_dump() if model.tuning else None,
+                    "explainability": backtest.explainabilityByModel.get(model.modelId),
                 }
                 for model in backtest.rankedModels
             )
@@ -511,6 +549,8 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
         )
         record = ExperimentRecord(
             id=experiment_id,
+            workspace_id=context.workspace.id,
+            created_by_user_id=context.user.id,
             name=name,
             file_name=metadata["fileName"],
             sheet_name=request.sheetName,
@@ -606,12 +646,10 @@ def run_forecast(request: ForecastRunRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/final", response_model=FinalForecastResponse)
-def final_forecast(request: FinalForecastRequest, db: Session = Depends(get_db)):
+def final_forecast(request: FinalForecastRequest, context: WorkspaceContext = Depends(require_workspace_write_access), db: Session = Depends(get_db)):
     run_id = request.runId or f"run_{uuid.uuid4().hex}"
     try:
-        record = db.get(ExperimentRecord, request.experimentId)
-        if record is None:
-            raise AppError("Experiment was not found.", 404)
+        record = get_workspace_experiment(db, request.experimentId, context)
         data_profile = json.loads(record.data_profile_json)
         first_profile = data_profile["targets"][0]
         history = json.loads(record.series_json)
@@ -628,6 +666,8 @@ def final_forecast(request: FinalForecastRequest, db: Session = Depends(get_db))
             "final",
             [final_model_row],
             "正在读取完整历史数据。",
+            user_id=context.user.id,
+            workspace_id=context.workspace.id,
         )
         runtime_tracker.start(
             run_id,
@@ -636,6 +676,8 @@ def final_forecast(request: FinalForecastRequest, db: Session = Depends(get_db))
             message="正在读取完整历史数据。",
             device=str((saved_manifest.get("environment") or {}).get("device") or get_device()),
             parameter_strategy=str(saved_config.get("parameterStrategy") or "default"),
+            user_id=context.user.id,
+            workspace_id=context.workspace.id,
         )
         covariate_history = [
             {key: float(value) for key, value in row.items() if key != "time" and value is not None}

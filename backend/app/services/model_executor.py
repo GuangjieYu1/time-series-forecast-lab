@@ -26,6 +26,8 @@ class IsolatedModelResult:
     warnings: list[str]
     fit_seconds: float
     predict_seconds: float
+    prediction_features: list[dict[str, float]]
+    explainability: dict[str, Any] | None = None
 
 
 def should_isolate_model(model_id: str) -> bool:
@@ -84,9 +86,11 @@ def _isolated_fit_predict_worker(
     prepared_features: "PreparedFeatureMatrix | None",
 ) -> None:
     try:
+        from app.services.explainability import build_tree_explainability_artifact
         from app.services.model_registry import create_model
 
         model = create_model(model_id, parameters)
+        train_prepared = prepared_features.slice_history(len(values)) if prepared_features is not None else None
         fit_start = time.perf_counter()
         fit_model_instance(
             model_id,
@@ -96,13 +100,24 @@ def _isolated_fit_predict_worker(
             frequency,
             covariates=covariates,
             feature_config=feature_config,
-            prepared_features=prepared_features,
+            prepared_features=train_prepared,
         )
         fit_seconds = time.perf_counter() - fit_start
 
         predict_start = time.perf_counter()
         output = predict_model_instance(model_id, model, horizon, future_covariates=future_covariates)
         predict_seconds = time.perf_counter() - predict_start
+        explainability = None
+        if train_prepared is not None and hasattr(model, "model") and getattr(model, "model", None) is not None:
+            explainability = build_tree_explainability_artifact(
+                model_id=model_id,
+                model_name=getattr(model, "model_id", model_id),
+                target_column="target",
+                estimator=model.model,
+                feature_names=list(train_prepared.featureNames),
+                feature_matrix=train_prepared.featureValues,
+                prediction_feature_rows=list(output.predictionFeatures or []),
+            )
         result_queue.put(
             {
                 "ok": True,
@@ -112,6 +127,8 @@ def _isolated_fit_predict_worker(
                 "warnings": output.warnings,
                 "fit_seconds": fit_seconds,
                 "predict_seconds": predict_seconds,
+                "prediction_features": output.predictionFeatures or [],
+                "explainability": explainability,
             }
         )
     except BaseException as exc:
@@ -200,4 +217,6 @@ def run_isolated_fit_predict(
         warnings=payload["warnings"],
         fit_seconds=float(payload["fit_seconds"]),
         predict_seconds=float(payload["predict_seconds"]),
+        prediction_features=payload.get("prediction_features") or [],
+        explainability=payload.get("explainability"),
     )

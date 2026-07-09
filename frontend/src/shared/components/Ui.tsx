@@ -134,4 +134,46 @@ export function Tabs<T extends string>({
   );
 }
 
+export function SideDrawer({
+  open,
+  title,
+  description,
+  onClose,
+  children,
+  widthClassName = "w-full max-w-[880px]"
+}: {
+  open: boolean;
+  title: string;
+  description?: string;
+  onClose: () => void;
+  children: React.ReactNode;
+  widthClassName?: string;
+}) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <button
+        type="button"
+        aria-label="关闭抽屉"
+        className="absolute inset-0 bg-slate-950/55 backdrop-blur-[1px]"
+        onClick={onClose}
+      />
+      <aside className={`relative h-full overflow-y-auto border-l border-white/10 bg-[#0f172a] shadow-2xl ${widthClassName}`}>
+        <div className="sticky top-0 z-10 border-b border-white/10 bg-[#0f172a]/95 px-5 py-4 backdrop-blur">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-lg font-semibold text-white">{title}</div>
+              {description ? <p className="mt-1 text-sm leading-6 text-slate-300">{description}</p> : null}
+            </div>
+            <button type="button" className={controls.secondaryButton} onClick={onClose}>
+              关闭
+            </button>
+          </div>
+        </div>
+        <div className="p-5">{children}</div>
+      </aside>
+    </div>
+  );
+}
+
 export { controls, surface };

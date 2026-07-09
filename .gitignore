@@ -15,9 +15,12 @@ backend/tmp/uploads/*
 !backend/tmp/uploads/.gitkeep
 backend/data/*.sqlite
 backend/data/*.sqlite-*
+backend/data/backups/
+backend/data/*.pdf
 backend/.model_cache/
 
 .DS_Store
 *.log
 *.tar.gz
 .deploy-local/
+deploy/.local-rebuild-password

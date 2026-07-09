@@ -6,13 +6,12 @@ from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import experiments, features, feedback, forecast, llm, models, reports, runtime, system, upload, workbench_agent
+from app.api import auth, experiments, features, feedback, forecast, llm, models, reports, runtime, system, upload, user_groups, users, workbench_agent, workspaces
 from app.core.config import get_settings
 from app.core.constants import APP_VERSION
 from app.core.errors import AppError, error_payload
 from app.core.storage import startup_cleanup
-from app.db.models import Base
-from app.db.schema_compat import ensure_schema_compatibility
+from app.db.bootstrap import bootstrap_database
 from app.db.session import engine
 
 
@@ -34,8 +33,7 @@ def on_startup() -> None:
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     startup_cleanup()
-    Base.metadata.create_all(bind=engine)
-    ensure_schema_compatibility(engine)
+    bootstrap_database(engine)
 
 
 @app.exception_handler(AppError)
@@ -66,6 +64,10 @@ def health():
 
 
 app.include_router(upload.router)
+app.include_router(auth.router)
+app.include_router(users.router)
+app.include_router(user_groups.router)
+app.include_router(workspaces.router)
 app.include_router(models.router)
 app.include_router(features.router)
 app.include_router(feedback.router)

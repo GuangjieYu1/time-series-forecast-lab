@@ -8,8 +8,8 @@ from app.core.storage import delete_upload, read_upload_metadata
 from app.main import app
 
 
-def test_error_contract_for_unsupported_upload():
-    client = TestClient(app)
+def test_error_contract_for_unsupported_upload(authed_client):
+    client = authed_client.client
     response = client.post("/api/upload/preview", files={"file": ("bad.txt", b"date,value\n2026-01-01,1\n", "text/plain")})
     assert response.status_code == 400
     body = response.json()
@@ -17,8 +17,8 @@ def test_error_contract_for_unsupported_upload():
     assert "Unsupported file format" in body["message"]
 
 
-def test_upload_preview_csv_and_multi_sheet_xlsx(generated_fixtures: Path):
-    client = TestClient(app)
+def test_upload_preview_csv_and_multi_sheet_xlsx(generated_fixtures: Path, authed_client):
+    client = authed_client.client
     csv_path = generated_fixtures / "daily_air_passengers.csv"
     with csv_path.open("rb") as handle:
         csv_response = client.post("/api/upload/preview", files={"file": (csv_path.name, handle, "text/csv")})
@@ -40,8 +40,8 @@ def test_upload_preview_csv_and_multi_sheet_xlsx(generated_fixtures: Path):
     delete_upload(xlsx_body["uploadId"])
 
 
-def test_upload_preview_wide_csv_when_sniffer_cannot_determine_delimiter(tmp_path: Path):
-    client = TestClient(app)
+def test_upload_preview_wide_csv_when_sniffer_cannot_determine_delimiter(tmp_path: Path, authed_client):
+    client = authed_client.client
     columns = ["date", *[str(index) for index in range(700)], "OT"]
     values = ["2016-07-01 02:00:00", *["1.000000" for _ in range(700)], "2.000000"]
     csv_path = tmp_path / "wide.csv"
@@ -58,8 +58,8 @@ def test_upload_preview_wide_csv_when_sniffer_cannot_determine_delimiter(tmp_pat
     delete_upload(body["uploadId"])
 
 
-def test_forecast_rejects_oversized_run_before_reading_upload(tmp_path: Path):
-    client = TestClient(app)
+def test_forecast_rejects_oversized_run_before_reading_upload(tmp_path: Path, authed_client):
+    client = authed_client.client
     columns = ["date", *[f"value_{index}" for index in range(10)]]
     rows = [
         ",".join(columns),
@@ -101,8 +101,8 @@ def test_forecast_rejects_oversized_run_before_reading_upload(tmp_path: Path):
     delete_upload(upload_id)
 
 
-def test_forecast_rejects_too_many_model_runs(tmp_path: Path):
-    client = TestClient(app)
+def test_forecast_rejects_too_many_model_runs(tmp_path: Path, authed_client):
+    client = authed_client.client
     columns = ["date", "value_0", "value_1", "value_2", "value_3"]
     rows = [
         ",".join(columns),
@@ -144,8 +144,8 @@ def test_forecast_rejects_too_many_model_runs(tmp_path: Path):
     delete_upload(upload_id)
 
 
-def test_raw_multi_sheet_end_to_end_history_and_cleanup(generated_fixtures: Path):
-    client = TestClient(app)
+def test_raw_multi_sheet_end_to_end_history_and_cleanup(generated_fixtures: Path, authed_client):
+    client = authed_client.client
     fixture = generated_fixtures / "raw_flight_detail_multi_sheet.xlsx"
     with fixture.open("rb") as handle:
         upload_response = client.post(
@@ -217,6 +217,9 @@ def test_raw_multi_sheet_end_to_end_history_and_cleanup(generated_fixtures: Path
     assert "flight_no" not in detail["series"][0]
     assert 0 <= detail["dataHealth"]["score"] <= 100
     assert detail["dataHealth"]["diagnostics"]["frequency"] == forecast_body["detectedFrequency"]
+    assert "explainability" in detail
+    assert detail["explainability"]["experimentId"] == experiment_id
+    assert isinstance(detail["explainability"]["models"], list)
 
     delete_response = client.delete(f"/api/experiments/{experiment_id}")
     assert delete_response.status_code == 200

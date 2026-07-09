@@ -17,10 +17,133 @@ export interface SheetPreview {
 
 export interface UploadPreviewResponse {
   uploadId: string;
+  workspaceId: string | null;
   fileName: string;
   fileSize: number;
   fileSha256: string;
   sheets: SheetPreview[];
+}
+
+export interface AuthUser {
+  userId: string;
+  username: string;
+  displayName: string;
+  isAdmin: boolean;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface WorkspaceSummary {
+  workspaceId: string;
+  name: string;
+  kind: "personal" | "shared" | "example";
+  role: "owner" | "member";
+  isReadOnly: boolean;
+  ownerUserId: string;
+  isPersonal: boolean;
+  isOwner: boolean;
+  createdAt: string;
+}
+
+export interface AuthSessionResponse {
+  authenticated: boolean;
+  bootstrapRequired: boolean;
+  user: AuthUser | null;
+  workspaces: WorkspaceSummary[];
+  defaultWorkspaceId: string | null;
+}
+
+export interface UsernameAvailabilityResponse {
+  available: boolean;
+  normalizedUsername: string;
+  reason: "available" | "taken" | "invalid";
+  message: string | null;
+}
+
+export interface BootstrapRequest {
+  username: string;
+  displayName: string;
+  password: string;
+}
+
+export interface LoginRequest {
+  username: string;
+  password: string;
+}
+
+export interface RegisterRequest {
+  username: string;
+  displayName: string;
+  password: string;
+}
+
+export interface CreateUserRequest {
+  username: string;
+  displayName: string;
+  password: string;
+  isAdmin: boolean;
+}
+
+export interface UpdateUserRequest {
+  displayName?: string;
+  isActive?: boolean;
+}
+
+export interface UpdateUserPasswordRequest {
+  password: string;
+}
+
+export interface UserGroupRef {
+  groupId: string;
+  name: string;
+}
+
+export interface UserSummary {
+  userId: string;
+  username: string;
+  displayName: string;
+  isAdmin: boolean;
+  isActive: boolean;
+  createdAt: string;
+  groups: UserGroupRef[];
+}
+
+export interface UserGroupSummary {
+  groupId: string;
+  name: string;
+  description: string | null;
+  memberCount: number;
+  createdAt: string;
+}
+
+export interface CreateUserGroupRequest {
+  name: string;
+  description?: string;
+}
+
+export interface UpdateUserGroupsRequest {
+  groupIds: string[];
+}
+
+export interface CreateWorkspaceRequest {
+  name: string;
+}
+
+export interface UpdateWorkspaceRequest {
+  name: string;
+}
+
+export interface WorkspaceMemberResponse {
+  userId: string;
+  username: string;
+  displayName: string;
+  role: "owner" | "member";
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface AddWorkspaceMemberRequest {
+  userId: string;
 }
 
 export interface ModelCapability {
@@ -239,10 +362,8 @@ export interface HolidayConfig {
 
 export interface CovariateConfig {
   column: string;
-  type: "known_future" | "static" | "unknown_future";
-  unknownFutureAction: "analysis_only" | "forecast";
-  forecastMode: "auto" | "manual" | "per_primary_model";
-  manualModelId: "naive" | "seasonal_naive" | "arima" | "ets" | null;
+  type: "known_future" | "static";
+  backtestStrategy: "repeat_last_known" | "historical_mean" | "use_test_values";
   missingValueStrategy: MissingValueStrategy;
 }
 
@@ -458,12 +579,12 @@ export interface RuntimeFeatureNode {
   importance: number | null;
   shap: number | null;
   modelIds: string[];
-  featureType: "generated" | "known_future_covariate" | "static_covariate" | "unknown_future_covariate";
+  featureType: "generated" | "known_future_covariate" | "static_covariate";
   generator: string;
   machineId: string | null;
   machineLabel: string | null;
-  forecastStrategy: "generated" | "calendar" | "use_future_rows" | "repeat_last_known" | "use_test_timeline" | "forecast_auxiliary" | "drop_for_leakage";
-  backtestStrategy: "generated" | "calendar" | "use_future_rows" | "repeat_last_known" | "use_test_timeline" | "forecast_auxiliary" | "drop_for_leakage";
+  forecastStrategy: "generated" | "calendar" | "use_future_rows" | "repeat_last_known";
+  backtestStrategy: "generated" | "calendar" | "use_future_rows" | "repeat_last_known" | "historical_mean" | "use_test_timeline" | "use_test_values";
   usedDuring: Array<"training" | "backtest" | "forecast">;
   droppedReason: string | null;
   lifecycleTrail: string[];
@@ -494,13 +615,12 @@ export interface RuntimeFeatureMachine {
 
 export interface RuntimeCovariateDescriptor {
   name: string;
-  type: "known_future" | "static" | "unknown_future";
+  type: "known_future" | "static";
   generator: string;
-  forecastStrategy: "calendar" | "use_future_rows" | "repeat_last_known" | "forecast_auxiliary" | "drop_for_leakage";
-  backtestStrategy: "use_test_timeline" | "repeat_last_known" | "forecast_auxiliary" | "drop_for_leakage";
+  forecastStrategy: "calendar" | "use_future_rows" | "repeat_last_known";
+  backtestStrategy: "use_test_timeline" | "repeat_last_known" | "historical_mean" | "use_test_values";
   usedDuring: Array<"training" | "backtest" | "forecast">;
-  forecastMode: "auto" | "manual" | "per_primary_model" | null;
-  forecastModelId: string | null;
+  leakageRisk: boolean;
   note: string | null;
 }
 
@@ -635,6 +755,11 @@ export interface RuntimeModelConsole {
   fitSeconds: number | null;
   predictSeconds: number | null;
   tuningSeconds: number | null;
+  metricLabel: string | null;
+  currentMetric: number | null;
+  bestMetric: number | null;
+  selectedParams: Record<string, number | string | boolean | null>;
+  warnings: string[];
   computeTarget: "cpu" | "gpu";
   resource: RuntimeResourceSnapshot | null;
   optimization: RuntimeOptimizationState | null;
@@ -677,6 +802,92 @@ export interface FeatureFactoryResponse {
   targets: RuntimeFeaturePipelineTarget[];
 }
 
+export interface ExplainabilityFeatureItem {
+  feature: string;
+  importance: number | null;
+  rank: number | null;
+  meanAbsShap: number | null;
+  direction: "positive" | "negative" | "mixed" | "neutral" | null;
+}
+
+export interface ExplainabilitySinglePointContribution {
+  feature: string;
+  value: number | null;
+  shapValue: number | null;
+  direction: "positive" | "negative" | "neutral";
+}
+
+export interface ExplainabilitySinglePoint {
+  time: string | null;
+  actual: number | null;
+  predicted: number | null;
+  residual: number | null;
+  absoluteError: number | null;
+  contributions: ExplainabilitySinglePointContribution[];
+  warnings: string[];
+}
+
+export interface ExplainabilityModelSummary {
+  modelId: string;
+  modelName: string;
+  targetColumn: string;
+  supported: boolean;
+  warning: string | null;
+  featureImportance: ExplainabilityFeatureItem[];
+  shapSupported: boolean;
+  shapWarning: string | null;
+  shapTopFeatures: ExplainabilityFeatureItem[];
+  singlePoint: ExplainabilitySinglePoint | null;
+}
+
+export interface ExperimentExplainabilityResponse {
+  experimentId: string;
+  recommendedModelId: string | null;
+  models: ExplainabilityModelSummary[];
+}
+
+export interface WorkbenchIdeaAnalyzeRequest {
+  idea: string;
+  context: {
+    targetColumn?: string | null;
+    frequency?: string | null;
+    availableColumns?: string[];
+    horizon?: number | null;
+    domain?: string | null;
+  };
+  mode?: "offline" | "online" | "dual";
+}
+
+export interface WorkbenchDataSourceCandidate {
+  id: string;
+  name: string;
+  category: "built_in" | "user_upload" | "external_registry" | "connector_placeholder";
+  description: string;
+  frequencySupport: string[];
+  futureAvailability: "known_future" | "static" | "unknown_future" | "not_applicable";
+  implementationStatus: "available" | "placeholder" | "unsupported";
+  warnings: string[];
+}
+
+export interface WorkbenchCovariatePlan {
+  suggestedColumns: string[];
+  covariateType: "known_future" | "static" | "unknown_future" | "mixed" | "none";
+  backtestPolicy: string;
+  forecastPolicy: string;
+  leakagePolicy: string;
+}
+
+export interface WorkbenchIdeaAnalyzeResponse {
+  route: "feature_engineering_data" | "custom_model" | "hybrid" | "clarify" | "unsupported";
+  confidence: number;
+  rationale: string;
+  requiredInputs: string[];
+  candidateDataSources: WorkbenchDataSourceCandidate[];
+  covariatePlan: WorkbenchCovariatePlan | null;
+  leakageWarnings: string[];
+  nextApiCalls: string[];
+}
+
 export interface ExperimentListItem {
   experimentId: string;
   experimentName: string;
@@ -687,6 +898,10 @@ export interface ExperimentListItem {
   recommendedModelId: string | null;
   bestMae: number | null;
   createdAt: string;
+  workspaceId: string | null;
+  workspaceName: string | null;
+  createdByUserId: string | null;
+  createdByUsername: string | null;
 }
 
 export interface ExperimentDetail extends ExperimentListItem {
@@ -699,6 +914,7 @@ export interface ExperimentDetail extends ExperimentListItem {
   series: { time: string; value: number }[];
   finalForecast: FinalForecastResponse | null;
   modelLogs: unknown[];
+  explainability: ExperimentExplainabilityResponse | null;
   runtime: RuntimeRunDetail | null;
   manifest: ExperimentManifest | null;
   configHash: string | null;
@@ -822,6 +1038,10 @@ export interface ReportResponse {
   contentMarkdown: string;
   createdAt: string;
   model: string;
+  workspaceId: string | null;
+  workspaceName: string | null;
+  createdByUserId: string | null;
+  createdByUsername: string | null;
 }
 
 export interface ReportPdfArtifact {

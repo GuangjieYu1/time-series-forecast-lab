@@ -1,15 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { useLabStore } from "../../app/store";
 import { deleteExperiment, fetchExperiments } from "../../shared/api/client";
 import { EmptyState, ErrorBanner, LoadingBlock } from "../../shared/components/Status";
 import { Badge, controls, PageHeader, StatCard } from "../../shared/components/Ui";
 import type { ExperimentListItem } from "../../shared/types/api";
 
 export function ExperimentsPage() {
+  const { selectedWorkspaceId, workspaces } = useLabStore();
   const [experiments, setExperiments] = useState<ExperimentListItem[]>([]);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const selectedWorkspace = workspaces.find((item) => item.workspaceId === selectedWorkspaceId) ?? null;
 
   async function load() {
     setLoading(true);
@@ -25,7 +28,7 @@ export function ExperimentsPage() {
 
   useEffect(() => {
     void load();
-  }, []);
+  }, [selectedWorkspaceId]);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -94,8 +97,13 @@ export function ExperimentsPage() {
               <Link className={`${controls.primaryButton} flex-1`} to={`/experiments/${experiment.experimentId}`}>
                 打开详情
               </Link>
-              <button className={controls.dangerButton} onClick={() => void remove(experiment.experimentId)}>
-                删除
+              <button
+                className={controls.dangerButton}
+                disabled={selectedWorkspace?.isReadOnly}
+                title={selectedWorkspace?.isReadOnly ? "Example 工作区是只读空间，不能删除实验。" : undefined}
+                onClick={() => void remove(experiment.experimentId)}
+              >
+                {selectedWorkspace?.isReadOnly ? "只读" : "删除"}
               </button>
             </div>
           </article>

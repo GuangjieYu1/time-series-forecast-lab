@@ -216,7 +216,7 @@ export function FeatureEngineeringFlow({
   const [selectedTarget, setSelectedTarget] = useState(targets[0]?.targetColumn ?? "");
   const target = targets.find((item) => item.targetColumn === selectedTarget) ?? targets[0] ?? null;
   const [selectedStepId, setSelectedStepId] = useState("");
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(!compact);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [playbackIndex, setPlaybackIndex] = useState<number | null>(mode === "history" ? Math.max((target?.steps.length ?? 1) - 1, 0) : null);
@@ -300,62 +300,134 @@ export function FeatureEngineeringFlow({
         {target.traceMode === "legacy_inferred" ? <div className="mt-3 text-xs text-amber-600 dark:text-amber-300">该实验早于逐步追踪能力，当前流程由历史配置推导，不包含真实步骤耗时。</div> : null}
       </div>
 
-      <div className={`${expanded ? "grid" : "hidden"} gap-0 ${compact ? "2xl:grid-cols-[minmax(0,1fr)_320px]" : "2xl:grid-cols-[minmax(0,1fr)_380px]"}`}>
-        <div className="min-w-0 bg-[linear-gradient(rgba(148,163,184,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.08)_1px,transparent_1px)] bg-[size:24px_24px] p-4 sm:p-5">
-          <div className="mx-auto max-w-5xl">
-            {sourceStep ? <StepNode step={sourceStep} active={selectedStep?.id === sourceStep.id} onClick={() => setSelectedStepId(sourceStep.id)} /> : null}
-            <FlowArrow active={sourceStep?.status === "completed" && generatorSteps.some((step) => step.status === "running")} />
-            {generatorSteps.length ? (
-              <div>
-                <div className="mb-2 text-center text-[10px] font-semibold tracking-[0.18em] text-slate-400">特征机器</div>
-                <div className="grid gap-2 sm:grid-cols-2 2xl:grid-cols-5">
-                  {generatorSteps.map((step) => <StepNode key={step.id} step={step} active={selectedStep?.id === step.id} onClick={() => setSelectedStepId(step.id)} />)}
-                </div>
-              </div>
-            ) : null}
-            <FlowArrow active={generatorSteps.some((step) => step.status === "completed") && trunkSteps.some((step) => step.status === "running")} />
-            <div className="grid gap-2 sm:grid-cols-2 2xl:grid-cols-4">
-              {trunkSteps.map((step) => <StepNode key={step.id} step={step} active={selectedStep?.id === step.id} onClick={() => setSelectedStepId(step.id)} />)}
-            </div>
-            {hasRunningStep ? <div className="mt-4 h-1 overflow-hidden rounded-full bg-slate-100 dark:bg-white/10"><div className="h-full w-1/3 animate-pulse rounded-full bg-gradient-to-r from-indigo-500 to-cyan-400" /></div> : null}
-          </div>
-        </div>
-
-        <aside className="border-t border-slate-200 p-4 dark:border-white/10 2xl:border-l 2xl:border-t-0">
-          {selectedStep ? (
-            <div className="space-y-4">
-              <StepAnimation step={selectedStep} />
-              <div className="flex items-start justify-between gap-3">
-                <div><div className="text-xs text-slate-400">步骤 {selectedStep.sequence}</div><div className="mt-1 font-semibold text-slate-950 dark:text-white">{selectedStep.label}</div></div>
-                <Badge tone={statusMeta[selectedStep.status].tone}>{statusMeta[selectedStep.status].label}</Badge>
-              </div>
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-white/10 dark:bg-[#0b1020]">
-                <div className="flex items-center gap-2 text-xs font-semibold text-slate-500 dark:text-slate-400">
-                  <span>作用</span>
-                  <span
-                    className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full bg-slate-400/20 text-[10px] text-slate-500 dark:bg-white/10 dark:text-slate-400"
-                    title={stepDescription(selectedStep)}
-                    aria-label={`${selectedStep.label} 作用说明`}
-                    tabIndex={0}
+      {expanded ? (
+        compact ? (
+          <div className="space-y-4 p-4">
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {visibleSteps.map((step) => {
+                const meta = statusMeta[step.status];
+                return (
+                  <button
+                    key={step.id}
+                    type="button"
+                    onClick={() => setSelectedStepId(step.id)}
+                    className={`min-w-[170px] flex-none rounded-xl border p-3 text-left transition ${meta.className} ${selectedStep?.id === step.id ? "ring-2 ring-indigo-400/60" : "hover:-translate-y-0.5"}`}
                   >
-                    i
-                  </span>
-                </div>
-                <p className="mt-2 text-xs leading-5 text-slate-600 dark:text-slate-300">{stepDescription(selectedStep)}</p>
-              </div>
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <div className="rounded-lg bg-slate-50 p-3 dark:bg-[#0b1020]"><div className="text-slate-400">耗时</div><div className="mt-1 font-semibold text-slate-900 dark:text-white">{formatDuration(selectedStep.elapsedSeconds)}</div></div>
-                <div className="rounded-lg bg-slate-50 p-3 dark:bg-[#0b1020]"><div className="text-slate-400">进度</div><div className="mt-1 font-semibold text-slate-900 dark:text-white">{selectedStep.progressPercent}%</div></div>
-              </div>
-              <div><div className="mb-2 text-xs font-semibold text-slate-500">输入</div><div className="text-xs leading-5 text-slate-600 dark:text-slate-300">{selectedStep.inputSummary || "-"}</div><div className="mt-2"><ProfileSummary profile={selectedStep.inputProfile} /></div></div>
-              <div><div className="mb-2 text-xs font-semibold text-slate-500">输出</div><div className="text-xs leading-5 text-slate-600 dark:text-slate-300">{selectedStep.outputSummary || selectedStep.skipReason || "等待执行"}</div><div className="mt-2"><ProfileSummary profile={selectedStep.outputProfile} /></div></div>
-              {selectedStep.generatedFeatures.length ? <div><div className="mb-2 text-xs font-semibold text-slate-500">生成 Features</div><div className="flex flex-wrap gap-1.5">{selectedStep.generatedFeatures.map((name) => <span key={name} className="rounded-md bg-cyan-50 px-2 py-1 text-[11px] text-cyan-700 dark:bg-cyan-400/10 dark:text-cyan-200">{name}</span>)}</div></div> : null}
-              {selectedStep.warnings.length ? <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">{selectedStep.warnings.join("；")}</div> : null}
-              {selectedStep.error ? <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs leading-5 text-red-700 dark:border-red-400/20 dark:bg-red-400/10 dark:text-red-100">{selectedStep.error}</div> : null}
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-[10px] font-semibold uppercase text-current/60">Step {step.sequence}</div>
+                        <div className="mt-1 truncate text-sm font-semibold">{step.label}</div>
+                      </div>
+                      <Badge tone={meta.tone}>{meta.label}</Badge>
+                    </div>
+                    <div className="mt-3 flex items-center justify-between text-[11px] opacity-75">
+                      <span>{step.progressPercent}%</span>
+                      <span>{formatDuration(step.elapsedSeconds)}</span>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
-          ) : <div className="text-sm text-slate-500">选择一个步骤查看详情。</div>}
-        </aside>
-      </div>
+            {hasRunningStep ? <div className="h-1 overflow-hidden rounded-full bg-slate-100 dark:bg-white/10"><div className="h-full w-1/3 animate-pulse rounded-full bg-gradient-to-r from-indigo-500 to-cyan-400" /></div> : null}
+            {selectedStep ? (
+              <div className="grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
+                <div className="space-y-3">
+                  <StepAnimation step={selectedStep} />
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="rounded-lg bg-slate-50 p-3 dark:bg-[#0b1020]"><div className="text-slate-400">进度</div><div className="mt-1 font-semibold text-slate-900 dark:text-white">{selectedStep.progressPercent}%</div></div>
+                    <div className="rounded-lg bg-slate-50 p-3 dark:bg-[#0b1020]"><div className="text-slate-400">耗时</div><div className="mt-1 font-semibold text-slate-900 dark:text-white">{formatDuration(selectedStep.elapsedSeconds)}</div></div>
+                  </div>
+                </div>
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="text-xs text-slate-400">步骤 {selectedStep.sequence}</div>
+                      <div className="mt-1 font-semibold text-slate-950 dark:text-white">{selectedStep.label}</div>
+                    </div>
+                    <Badge tone={statusMeta[selectedStep.status].tone}>{statusMeta[selectedStep.status].label}</Badge>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-white/10 dark:bg-[#0b1020]">
+                    <div className="flex items-center gap-2 text-xs font-semibold text-slate-500 dark:text-slate-400">
+                      <span>作用</span>
+                      <span
+                        className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full bg-slate-400/20 text-[10px] text-slate-500 dark:bg-white/10 dark:text-slate-400"
+                        title={stepDescription(selectedStep)}
+                        aria-label={`${selectedStep.label} 作用说明`}
+                        tabIndex={0}
+                      >
+                        i
+                      </span>
+                    </div>
+                    <p className="mt-2 text-xs leading-5 text-slate-600 dark:text-slate-300">{stepDescription(selectedStep)}</p>
+                  </div>
+                  <div><div className="mb-2 text-xs font-semibold text-slate-500">输入</div><div className="text-xs leading-5 text-slate-600 dark:text-slate-300">{selectedStep.inputSummary || "-"}</div><div className="mt-2"><ProfileSummary profile={selectedStep.inputProfile} /></div></div>
+                  <div><div className="mb-2 text-xs font-semibold text-slate-500">输出</div><div className="text-xs leading-5 text-slate-600 dark:text-slate-300">{selectedStep.outputSummary || selectedStep.skipReason || "等待执行"}</div><div className="mt-2"><ProfileSummary profile={selectedStep.outputProfile} /></div></div>
+                  {selectedStep.generatedFeatures.length ? <div><div className="mb-2 text-xs font-semibold text-slate-500">生成 Features</div><div className="flex flex-wrap gap-1.5">{selectedStep.generatedFeatures.map((name) => <span key={name} className="rounded-md bg-cyan-50 px-2 py-1 text-[11px] text-cyan-700 dark:bg-cyan-400/10 dark:text-cyan-200">{name}</span>)}</div></div> : null}
+                  {selectedStep.warnings.length ? <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">{selectedStep.warnings.join("；")}</div> : null}
+                  {selectedStep.error ? <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs leading-5 text-red-700 dark:border-red-400/20 dark:bg-red-400/10 dark:text-red-100">{selectedStep.error}</div> : null}
+                </div>
+              </div>
+            ) : <div className="text-sm text-slate-500">选择一个步骤查看详情。</div>}
+          </div>
+        ) : (
+          <div className="grid gap-0 2xl:grid-cols-[minmax(0,1fr)_380px]">
+            <div className="min-w-0 bg-[linear-gradient(rgba(148,163,184,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.08)_1px,transparent_1px)] bg-[size:24px_24px] p-4 sm:p-5">
+              <div className="mx-auto max-w-5xl">
+                {sourceStep ? <StepNode step={sourceStep} active={selectedStep?.id === sourceStep.id} onClick={() => setSelectedStepId(sourceStep.id)} /> : null}
+                <FlowArrow active={sourceStep?.status === "completed" && generatorSteps.some((step) => step.status === "running")} />
+                {generatorSteps.length ? (
+                  <div>
+                    <div className="mb-2 text-center text-[10px] font-semibold tracking-[0.18em] text-slate-400">特征机器</div>
+                    <div className="grid gap-2 sm:grid-cols-2 2xl:grid-cols-5">
+                      {generatorSteps.map((step) => <StepNode key={step.id} step={step} active={selectedStep?.id === step.id} onClick={() => setSelectedStepId(step.id)} />)}
+                    </div>
+                  </div>
+                ) : null}
+                <FlowArrow active={generatorSteps.some((step) => step.status === "completed") && trunkSteps.some((step) => step.status === "running")} />
+                <div className="grid gap-2 sm:grid-cols-2 2xl:grid-cols-4">
+                  {trunkSteps.map((step) => <StepNode key={step.id} step={step} active={selectedStep?.id === step.id} onClick={() => setSelectedStepId(step.id)} />)}
+                </div>
+                {hasRunningStep ? <div className="mt-4 h-1 overflow-hidden rounded-full bg-slate-100 dark:bg-white/10"><div className="h-full w-1/3 animate-pulse rounded-full bg-gradient-to-r from-indigo-500 to-cyan-400" /></div> : null}
+              </div>
+            </div>
+
+            <aside className="border-t border-slate-200 p-4 dark:border-white/10 2xl:border-l 2xl:border-t-0">
+              {selectedStep ? (
+                <div className="space-y-4">
+                  <StepAnimation step={selectedStep} />
+                  <div className="flex items-start justify-between gap-3">
+                    <div><div className="text-xs text-slate-400">步骤 {selectedStep.sequence}</div><div className="mt-1 font-semibold text-slate-950 dark:text-white">{selectedStep.label}</div></div>
+                    <Badge tone={statusMeta[selectedStep.status].tone}>{statusMeta[selectedStep.status].label}</Badge>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-white/10 dark:bg-[#0b1020]">
+                    <div className="flex items-center gap-2 text-xs font-semibold text-slate-500 dark:text-slate-400">
+                      <span>作用</span>
+                      <span
+                        className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full bg-slate-400/20 text-[10px] text-slate-500 dark:bg-white/10 dark:text-slate-400"
+                        title={stepDescription(selectedStep)}
+                        aria-label={`${selectedStep.label} 作用说明`}
+                        tabIndex={0}
+                      >
+                        i
+                      </span>
+                    </div>
+                    <p className="mt-2 text-xs leading-5 text-slate-600 dark:text-slate-300">{stepDescription(selectedStep)}</p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="rounded-lg bg-slate-50 p-3 dark:bg-[#0b1020]"><div className="text-slate-400">耗时</div><div className="mt-1 font-semibold text-slate-900 dark:text-white">{formatDuration(selectedStep.elapsedSeconds)}</div></div>
+                    <div className="rounded-lg bg-slate-50 p-3 dark:bg-[#0b1020]"><div className="text-slate-400">进度</div><div className="mt-1 font-semibold text-slate-900 dark:text-white">{selectedStep.progressPercent}%</div></div>
+                  </div>
+                  <div><div className="mb-2 text-xs font-semibold text-slate-500">输入</div><div className="text-xs leading-5 text-slate-600 dark:text-slate-300">{selectedStep.inputSummary || "-"}</div><div className="mt-2"><ProfileSummary profile={selectedStep.inputProfile} /></div></div>
+                  <div><div className="mb-2 text-xs font-semibold text-slate-500">输出</div><div className="text-xs leading-5 text-slate-600 dark:text-slate-300">{selectedStep.outputSummary || selectedStep.skipReason || "等待执行"}</div><div className="mt-2"><ProfileSummary profile={selectedStep.outputProfile} /></div></div>
+                  {selectedStep.generatedFeatures.length ? <div><div className="mb-2 text-xs font-semibold text-slate-500">生成 Features</div><div className="flex flex-wrap gap-1.5">{selectedStep.generatedFeatures.map((name) => <span key={name} className="rounded-md bg-cyan-50 px-2 py-1 text-[11px] text-cyan-700 dark:bg-cyan-400/10 dark:text-cyan-200">{name}</span>)}</div></div> : null}
+                  {selectedStep.warnings.length ? <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">{selectedStep.warnings.join("；")}</div> : null}
+                  {selectedStep.error ? <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs leading-5 text-red-700 dark:border-red-400/20 dark:bg-red-400/10 dark:text-red-100">{selectedStep.error}</div> : null}
+                </div>
+              ) : <div className="text-sm text-slate-500">选择一个步骤查看详情。</div>}
+            </aside>
+          </div>
+        )
+      ) : null}
     </div>
   );
 }
