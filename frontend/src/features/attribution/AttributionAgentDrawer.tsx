@@ -4,19 +4,40 @@ import {
   cancelExperimentAgentRun,
   createExperimentAgentRun,
   fetchExperimentAgentHistory,
-  fetchExperimentAgentRun
+  fetchExperimentAgentRun,
+  subscribeExperimentAgentRun
 } from "../../shared/api/client";
+import { loadDeepSeekSettings } from "../../shared/api/deepseekSettings";
 import { ErrorBanner } from "../../shared/components/Status";
 import { Badge, controls, SideDrawer } from "../../shared/components/Ui";
 import type {
   AgentArtifact,
+  AgentConversationItem,
   AgentHistoryItem,
   AgentRunDetail,
   AgentRunRequest,
+  AgentStreamEvent,
   AgentSkillInvocation,
   AttributionSnapshot,
   ExperimentDetail
 } from "../../shared/types/api";
+
+type LegacyAgentArtifact = AgentArtifact & {
+  payload?: Record<string, unknown>;
+  linksToReport?: boolean;
+};
+
+type LegacyAgentSkillInvocation = AgentSkillInvocation & {
+  warning?: string | null;
+};
+
+type LegacyPlanStep = AgentRunDetail["plan"][number] & {
+  detail?: string;
+  runsModel?: boolean;
+  generatesChart?: boolean;
+  writesReport?: boolean;
+  estimatedDuration?: string | null;
+};
 
 export interface AgentLaunchRequest {
   prompt: string;
@@ -54,8 +75,76 @@ function formatValue(value: unknown): string {
   return String(value);
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function normalizeArtifact(artifact: LegacyAgentArtifact) {
+  const data = asRecord(artifact.data);
+  const payload = Object.keys(data).length ? data : asRecord(artifact.payload);
+  const markdown =
+    typeof artifact.markdown === "string"
+      ? artifact.markdown
+      : typeof payload.contentMarkdown === "string"
+        ? payload.contentMarkdown
+        : typeof payload.content === "string"
+          ? payload.content
+          : null;
+  return {
+    artifactId: artifact.artifactId,
+    kind: artifact.kind ?? "summary",
+    title: artifact.title ?? "未命名 Artifact",
+    summary: artifact.summary ?? "",
+    sourceSkillId: artifact.sourceSkillId ?? "",
+    createdAt: artifact.createdAt ?? null,
+    reportCompatible: Boolean(artifact.reportCompatible ?? artifact.linksToReport),
+    downloadable: Boolean(artifact.downloadable),
+    markdown,
+    bulletItems: asStringArray(payload.bullets),
+    data: payload
+  };
+}
+
+function normalizeInvocation(invocation: LegacyAgentSkillInvocation) {
+  const warnings = Array.isArray(invocation.warnings)
+    ? invocation.warnings.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : invocation.warning
+      ? [invocation.warning]
+      : [];
+  return {
+    ...invocation,
+    inputSummary: invocation.inputSummary ?? "-",
+    outputSummary: invocation.outputSummary ?? "-",
+    warnings,
+    artifactIds: Array.isArray(invocation.artifactIds) ? invocation.artifactIds : [],
+  };
+}
+
+function normalizePlanStep(step: LegacyPlanStep) {
+  const runs = Array.isArray(step.runs) ? [...step.runs] : [];
+  const generates = Array.isArray(step.generates) ? [...step.generates] : [];
+  if (step.runsModel) runs.push("model-run");
+  if (step.generatesChart) generates.push("chart");
+  if (step.writesReport) generates.push("report");
+  return {
+    ...step,
+    description: step.description || step.detail || "当前步骤暂无详细说明。",
+    reads: Array.isArray(step.reads) ? step.reads : [],
+    runs: Array.from(new Set(runs.filter(Boolean))),
+    generates: Array.from(new Set(generates.filter(Boolean))),
+    sideEffects: Array.isArray(step.sideEffects) ? step.sideEffects : [],
+    warnings: Array.isArray(step.warnings) ? step.warnings : [],
+  };
+}
+
 function ChartArtifactPreview({ artifact }: { artifact: AgentArtifact }) {
-  const payload = artifact.payload as {
+  const normalized = normalizeArtifact(artifact as LegacyAgentArtifact);
+  const payload = normalized.data as {
     chartType?: string;
     summary?: string[];
     contributions?: Array<{ label: string; value: number }>;
@@ -150,55 +239,154 @@ function ChartArtifactPreview({ artifact }: { artifact: AgentArtifact }) {
 }
 
 function ArtifactCard({ artifact }: { artifact: AgentArtifact }) {
-  const payload = artifact.payload as Record<string, unknown>;
-  const markdown = typeof payload.contentMarkdown === "string" ? payload.contentMarkdown : typeof payload.content === "string" ? payload.content : null;
-  const bulletItems = Array.isArray(payload.bullets) ? payload.bullets.filter((item): item is string => typeof item === "string") : [];
+  const normalized = normalizeArtifact(artifact as LegacyAgentArtifact);
   return (
     <div className="rounded-3xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-[#151b2e]">
       <div className="flex flex-wrap items-center gap-2">
-        <Badge tone={artifact.kind === "chart" ? "info" : artifact.kind === "warning" ? "warn" : artifact.kind === "report" ? "good" : "neutral"}>
-          {artifact.kind}
+        <Badge tone={normalized.kind === "chart" ? "info" : normalized.kind === "warning" ? "warn" : normalized.kind === "report" ? "good" : "neutral"}>
+          {normalized.kind}
         </Badge>
-        {artifact.sourceSkillId ? <Badge tone="neutral">{artifact.sourceSkillId}</Badge> : null}
-        {artifact.linksToReport ? <Badge tone="good">可写入报告</Badge> : null}
+        {normalized.sourceSkillId ? <Badge tone="neutral">{normalized.sourceSkillId}</Badge> : null}
+        {normalized.reportCompatible ? <Badge tone="good">可写入报告</Badge> : null}
+        {normalized.downloadable ? <Badge tone="info">可下载</Badge> : null}
       </div>
-      <div className="mt-3 text-base font-semibold text-slate-950 dark:text-white">{artifact.title}</div>
-      <div className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-300">{artifact.summary}</div>
+      <div className="mt-3 text-base font-semibold text-slate-950 dark:text-white">{normalized.title}</div>
+      <div className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-300">{normalized.summary}</div>
 
-      {artifact.kind === "chart" ? <div className="mt-4"><ChartArtifactPreview artifact={artifact} /></div> : null}
+      {normalized.kind === "chart" ? <div className="mt-4"><ChartArtifactPreview artifact={artifact} /></div> : null}
 
-      {markdown ? (
+      {normalized.markdown ? (
         <pre className="mt-4 max-h-72 overflow-auto whitespace-pre-wrap rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-6 text-slate-700 dark:border-white/10 dark:bg-[#0b1020] dark:text-slate-200">
-          {markdown}
+          {normalized.markdown}
         </pre>
       ) : null}
 
-      {bulletItems.length ? (
+      {normalized.bulletItems.length ? (
         <div className="mt-4 space-y-1 text-sm text-slate-700 dark:text-slate-200">
-          {bulletItems.map((item) => <div key={item}>• {item}</div>)}
+          {normalized.bulletItems.map((item) => <div key={item}>• {item}</div>)}
         </div>
+      ) : null}
+
+      {!normalized.markdown && !normalized.bulletItems.length && normalized.kind !== "chart" && Object.keys(normalized.data).length ? (
+        <pre className="mt-4 max-h-72 overflow-auto whitespace-pre-wrap rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-6 text-slate-700 dark:border-white/10 dark:bg-[#0b1020] dark:text-slate-200">
+          {JSON.stringify(normalized.data, null, 2)}
+        </pre>
       ) : null}
     </div>
   );
 }
 
 function InvocationCard({ invocation }: { invocation: AgentSkillInvocation }) {
+  const normalized = normalizeInvocation(invocation as LegacyAgentSkillInvocation);
   return (
     <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm dark:border-white/10 dark:bg-[#0b1020]">
       <div className="flex items-center justify-between gap-3">
-        <div className="font-medium text-slate-900 dark:text-white">{invocation.skillId}</div>
-        <Badge tone={stepTone(invocation.status)}>{invocation.status}</Badge>
+        <div className="font-medium text-slate-900 dark:text-white">{normalized.skillId}</div>
+        <Badge tone={stepTone(normalized.status)}>{normalized.status}</Badge>
       </div>
       <div className="mt-2 space-y-1 text-xs leading-5 text-slate-600 dark:text-slate-300">
-        <div>输入：{invocation.inputSummary || "-"}</div>
-        <div>输出：{invocation.outputSummary || "-"}</div>
-        <div>开始：{formatDateTime(invocation.startedAt)}</div>
-        <div>结束：{formatDateTime(invocation.finishedAt)}</div>
+        <div>输入：{normalized.inputSummary}</div>
+        <div>输出：{normalized.outputSummary}</div>
+        <div>开始：{formatDateTime(normalized.startedAt)}</div>
+        <div>结束：{formatDateTime(normalized.finishedAt)}</div>
       </div>
-      {invocation.warning ? <div className="mt-2 text-xs text-amber-700 dark:text-amber-200">{invocation.warning}</div> : null}
-      {invocation.error ? <div className="mt-2 text-xs text-rose-700 dark:text-rose-200">{invocation.error}</div> : null}
+      {normalized.warnings.length ? <div className="mt-2 text-xs text-amber-700 dark:text-amber-200">{normalized.warnings.join("；")}</div> : null}
+      {normalized.error ? <div className="mt-2 text-xs text-rose-700 dark:text-rose-200">{normalized.error}</div> : null}
     </div>
   );
+}
+
+function sortConversation(items: AgentConversationItem[]) {
+  return [...items].sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+}
+
+function mergeConversationItem(items: AgentConversationItem[], incoming: AgentConversationItem, delta?: string) {
+  let updated = false;
+  const next = items.map((item) => {
+    if (item.itemId !== incoming.itemId) return item;
+    updated = true;
+    return {
+      ...item,
+      ...incoming,
+      contentMarkdown: delta ? `${item.contentMarkdown}${delta}` : incoming.contentMarkdown,
+      streamState: delta ? "streaming" : incoming.streamState
+    };
+  });
+  if (!updated) {
+    next.push({
+      ...incoming,
+      contentMarkdown: delta ? delta : incoming.contentMarkdown,
+      streamState: delta ? "streaming" : incoming.streamState
+    });
+  }
+  return sortConversation(next);
+}
+
+function mergePlanStep(plan: AgentRunDetail["plan"], incoming: AgentRunDetail["plan"][number]) {
+  let updated = false;
+  const next = plan.map((step) => {
+    if (step.stepId !== incoming.stepId) return step;
+    updated = true;
+    return { ...step, ...incoming };
+  });
+  if (!updated) next.push(incoming);
+  return next;
+}
+
+function mergeArtifact(artifacts: AgentArtifact[], incoming: AgentArtifact) {
+  if (artifacts.some((artifact) => artifact.artifactId === incoming.artifactId)) return artifacts;
+  return [...artifacts, incoming].sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+}
+
+function applyStreamEvent(run: AgentRunDetail | null, event: AgentStreamEvent): AgentRunDetail | null {
+  if (!run || run.runId !== event.runId) return run;
+  let next = { ...run };
+  if (event.status && (event.eventType === "status" || event.eventType === "error")) {
+    next.status = event.status as AgentRunDetail["status"];
+  }
+  if (event.planStep) next.plan = mergePlanStep(run.plan, event.planStep);
+  if (event.artifact) next.artifacts = mergeArtifact(run.artifacts, event.artifact);
+  if (event.conversationItem) {
+    next.conversation = mergeConversationItem(run.conversation, event.conversationItem, event.eventType === "message_delta" ? event.delta ?? "" : undefined);
+  }
+  if (event.eventType === "message_final" && event.conversationItem?.kind === "assistant") {
+    next.summary = event.conversationItem.contentMarkdown;
+  }
+  return next;
+}
+
+function conversationTone(item: AgentConversationItem): string {
+  switch (item.kind) {
+    case "user":
+      return "border-slate-200 bg-slate-50 text-slate-700 dark:border-white/10 dark:bg-[#0b1020] dark:text-slate-200";
+    case "assistant":
+      return "border-cyan-200 bg-cyan-50 text-cyan-900 dark:border-cyan-400/20 dark:bg-cyan-400/10 dark:text-cyan-100";
+    case "plan":
+      return "border-violet-200 bg-violet-50 text-violet-900 dark:border-violet-400/20 dark:bg-violet-400/10 dark:text-violet-100";
+    case "action":
+      return "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100";
+    case "artifact":
+      return "border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-100";
+    default:
+      return "border-slate-200 bg-white text-slate-700 dark:border-white/10 dark:bg-[#151b2e] dark:text-slate-200";
+  }
+}
+
+function kindLabel(item: AgentConversationItem): string {
+  switch (item.kind) {
+    case "user":
+      return "用户";
+    case "assistant":
+      return "Agent";
+    case "plan":
+      return "计划";
+    case "action":
+      return "行动";
+    case "artifact":
+      return "Artifact";
+    default:
+      return "状态";
+  }
 }
 
 export function AttributionAgentDrawer({
@@ -234,15 +422,20 @@ export function AttributionAgentDrawer({
   attribution?: AttributionSnapshot | null;
   launchRequest?: AgentLaunchRequest | null;
 }) {
+  const [activeTab, setActiveTab] = useState<"conversation" | "artifacts" | "history" | "context">("conversation");
   const [prompt, setPrompt] = useState("");
   const [history, setHistory] = useState<AgentHistoryItem[]>(historySummary);
   const [run, setRun] = useState<AgentRunDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [streamFallback, setStreamFallback] = useState(false);
   const [consumedLaunchNonce, setConsumedLaunchNonce] = useState("");
   const [selectedHistoryRunId, setSelectedHistoryRunId] = useState<string>("");
+  const [selectedArtifactFocus, setSelectedArtifactFocus] = useState<string>("");
   const pollTimerRef = useRef<number | null>(null);
+  const streamStopRef = useRef<(() => void) | null>(null);
+  const lastStreamCursorRef = useRef(0);
 
   useEffect(() => {
     if (!open) return;
@@ -285,11 +478,34 @@ export function AttributionAgentDrawer({
   }, [consumedLaunchNonce, launchRequest, open]);
 
   useEffect(() => {
+    streamStopRef.current?.();
+    streamStopRef.current = null;
+    if (!open || !run || !["running", "planned"].includes(run.status)) return;
+    setStreamFallback(false);
+    streamStopRef.current = subscribeExperimentAgentRun(
+      experimentId,
+      run.runId,
+      (event) => {
+        lastStreamCursorRef.current = Math.max(lastStreamCursorRef.current, event.cursor);
+        setRun((current) => applyStreamEvent(current, event));
+      },
+      {
+        afterCursor: lastStreamCursorRef.current,
+        onError: () => setStreamFallback(true),
+      }
+    );
+    return () => {
+      streamStopRef.current?.();
+      streamStopRef.current = null;
+    };
+  }, [experimentId, open, run?.runId, run?.status]);
+
+  useEffect(() => {
     if (pollTimerRef.current) {
       window.clearInterval(pollTimerRef.current);
       pollTimerRef.current = null;
     }
-    if (!open || !run || !["running", "planned"].includes(run.status)) return;
+    if (!open || !run || !["running", "planned"].includes(run.status) || !streamFallback) return;
     pollTimerRef.current = window.setInterval(() => {
       void refreshRun(run.runId).catch(() => {
         // keep last visible state
@@ -301,11 +517,16 @@ export function AttributionAgentDrawer({
         pollTimerRef.current = null;
       }
     };
-  }, [open, run]);
+  }, [open, run?.runId, run?.status, streamFallback]);
 
   async function handleSubmit(text = prompt, autoExecute = true) {
     const nextPrompt = text.trim();
     if (!nextPrompt) return;
+    const settings = loadDeepSeekSettings();
+    if (!settings.apiKey.trim() || !settings.baseUrl.trim() || !settings.model.trim()) {
+      setError("请先在 API 设置中配置 DeepSeek 后再使用归因 Agent。");
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -318,11 +539,21 @@ export function AttributionAgentDrawer({
         selectedArtifactId,
         selectedVisualId,
         selectedAnomalyTime,
-        autoExecute
+        autoExecute,
+        llm: {
+          provider: "deepseek",
+          apiKey: settings.apiKey,
+          baseUrl: settings.baseUrl,
+          model: settings.model,
+          stream: true
+        }
       };
       const response = await createExperimentAgentRun(experimentId, request);
+      lastStreamCursorRef.current = 0;
+      setStreamFallback(false);
       await refreshRun(response.runId);
       setPrompt(nextPrompt);
+      setActiveTab("conversation");
       setHistory(await fetchExperimentAgentHistory(experimentId));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Agent 请求失败。");
@@ -350,7 +581,9 @@ export function AttributionAgentDrawer({
     setLoading(true);
     setError(null);
     try {
+      lastStreamCursorRef.current = 0;
       await refreshRun(runId);
+      setActiveTab("conversation");
     } catch (err) {
       setError(err instanceof Error ? err.message : "历史回放加载失败。");
     } finally {
@@ -362,23 +595,35 @@ export function AttributionAgentDrawer({
     setPrompt("");
     setRun(null);
     setSelectedHistoryRunId("");
+    setSelectedArtifactFocus("");
     setError(null);
+    lastStreamCursorRef.current = 0;
   }
 
   const context = run?.context;
   const displayedSkills = run?.availableSkills.length ? run.availableSkills : availableSkills;
-  const assistantSummary =
-    run?.summary ??
-    [...(run?.messages ?? [])].reverse().find((message) => message.role === "assistant")?.content ??
-    null;
+  const assistantConversation = run?.conversation.filter((item) => item.kind === "assistant") ?? [];
+  const assistantSummary = run?.summary ?? (assistantConversation.length ? assistantConversation[assistantConversation.length - 1]?.contentMarkdown : null) ?? null;
   const contextWarnings = context?.warnings?.length ? context.warnings : attribution?.warnings ?? [];
+  const normalizedPlan = useMemo(() => (run?.plan ?? []).map((step) => normalizePlanStep(step as LegacyPlanStep)), [run?.plan]);
+  const normalizedArtifacts = useMemo(() => (run?.artifacts ?? []).map((artifact) => normalizeArtifact(artifact as LegacyAgentArtifact)), [run?.artifacts]);
+  const activeArtifact = normalizedArtifacts.find((artifact) => artifact.artifactId === selectedArtifactFocus) ?? (normalizedArtifacts.length ? normalizedArtifacts[normalizedArtifacts.length - 1] : null);
+  const transcript = sortConversation((run?.conversation ?? []).filter((item) => item.kind === "user" || item.kind === "assistant"));
+  const showPendingTranscript = loading && transcript.length === 0 && prompt.trim().length > 0;
+  const runningStep = normalizedPlan.find((step) => step.status === "running") ?? null;
+  const completedStepCount = normalizedPlan.filter((step) => step.status === "completed").length;
+  const targetAwarePrompt = `影响${context?.targetColumn ?? experiment?.targetColumn ?? "目标"}列的主要原因是什么？`;
+  const deepSeekConfigured = (() => {
+    const settings = loadDeepSeekSettings();
+    return Boolean(settings.apiKey.trim() && settings.baseUrl.trim() && settings.model.trim());
+  })();
 
   return (
     <SideDrawer
       open={open}
       onClose={onClose}
       title="归因 Agent"
-      description="这个 Agent 只在当前实验上下文里工作：先给计划，再调用 skills，结果可回放、可中断。"
+      description="基于当前实验的真实证据连续分析，并把每一步新增的发现、解释和下一步实时展示出来。"
       widthClassName="w-full max-w-[980px]"
     >
       <div className="space-y-5">
@@ -392,6 +637,8 @@ export function AttributionAgentDrawer({
           {run ? <Badge tone={statusTone(run.status)}>{run.status}</Badge> : null}
           {run?.estimatedDuration ? <Badge tone="info">预计 {run.estimatedDuration}</Badge> : null}
           {run?.canCancel ? <Badge tone="warn">可中断</Badge> : null}
+          {run?.llmSession ? <Badge tone="good">{run.llmSession.model}</Badge> : null}
+          {streamFallback ? <Badge tone="warn">SSE 已断开，已退回轮询</Badge> : null}
         </div>
 
         <ErrorBanner message={error} />
@@ -399,8 +646,8 @@ export function AttributionAgentDrawer({
         <section className="rounded-3xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-[#151b2e]">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
-              <div className="text-sm font-semibold text-slate-950 dark:text-white">1. 对话区</div>
-              <div className="text-xs text-slate-500 dark:text-slate-400">支持自动规划、自动执行，也可以只重新规划不执行。</div>
+              <div className="text-sm font-semibold text-slate-950 dark:text-white">提问与执行</div>
+              <div className="text-xs text-slate-500 dark:text-slate-400">你提问后，我会顺着证据往前走，并把每一步的发现、解释和下一步实时写出来。</div>
             </div>
             <div className="flex flex-wrap gap-2">
               <button type="button" className={controls.secondaryButton} onClick={() => void handleSubmit(prompt, false)} disabled={loading || !prompt.trim()}>
@@ -417,16 +664,24 @@ export function AttributionAgentDrawer({
 
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
             <div className="space-y-3">
+              {!deepSeekConfigured ? (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-800 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
+                  请先在 API 设置中配置 DeepSeek 后再使用归因 Agent。
+                </div>
+              ) : null}
               <textarea
                 className={`${controls.input} min-h-[120px]`}
                 value={prompt}
                 onChange={(event) => setPrompt(event.target.value)}
-                placeholder="例如：这次最主要的下降原因是什么？生成一张管理层可看的瀑布图并写入报告。"
+                placeholder={`例如：${targetAwarePrompt}`}
                 disabled={loading}
               />
               <div className="flex flex-wrap items-center gap-3">
                 <button type="button" className={controls.primaryButton} disabled={loading || !prompt.trim()} onClick={() => void handleSubmit()}>
                   {loading ? "执行中..." : "交给 Agent"}
+                </button>
+                <button type="button" className={controls.secondaryButton} disabled={loading} onClick={() => setPrompt(targetAwarePrompt)}>
+                  使用主因问题
                 </button>
                 <span className="text-xs text-slate-500 dark:text-slate-400">
                   当前上下文：{currentPage}{currentTab ? ` / ${currentTab}` : ""}
@@ -440,126 +695,170 @@ export function AttributionAgentDrawer({
                 <div>实验：{experiment?.experimentName ?? context?.experimentName ?? experimentId}</div>
                 <div>目标列：{context?.targetColumn ?? experiment?.targetColumn ?? "-"}</div>
                 <div>当前模型：{context?.selectedModelId ?? selectedModelId ?? experiment?.recommendedModelId ?? "-"}</div>
-                <div>最近摘要：{assistantSummary ?? "等待 Agent 输出。"}</div>
+                <div>当前步骤：{runningStep?.title ?? (run?.status === "completed" ? "已完成" : loading ? "正在接入本轮运行" : "等待开始")}</div>
+                <div>计划进度：{normalizedPlan.length ? `${completedStepCount}/${normalizedPlan.length}` : "-"}</div>
+                <div>最近摘要：{assistantSummary ?? (loading ? "正在连接第一批证据..." : "等待 Agent 输出。")}</div>
               </div>
             </div>
           </div>
-
-          {run?.messages.length ? (
-            <div className="mt-4 space-y-3">
-              {run.messages.slice(-6).map((message, index) => (
-                <div
-                  key={`${message.createdAt}:${index}`}
-                  className={`rounded-2xl px-4 py-3 text-sm leading-6 ${
-                    message.role === "assistant"
-                      ? "border border-cyan-200 bg-cyan-50 text-cyan-900 dark:border-cyan-400/20 dark:bg-cyan-400/10 dark:text-cyan-100"
-                      : message.role === "system"
-                        ? "border border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100"
-                        : "border border-slate-200 bg-slate-50 text-slate-700 dark:border-white/10 dark:bg-[#0b1020] dark:text-slate-200"
-                  }`}
-                >
-                  <div className="mb-1 text-[11px] uppercase tracking-[0.12em] opacity-75">{message.role} · {formatDateTime(message.createdAt)}</div>
-                  <div className="whitespace-pre-wrap">{message.content}</div>
-                </div>
-              ))}
-            </div>
-          ) : null}
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-[#151b2e]">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-semibold text-slate-950 dark:text-white">2. Agent Plan</div>
-              <div className="text-xs text-slate-500 dark:text-slate-400">先规划、再执行。每一步会记录读了什么、跑了什么、生成了什么。</div>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {displayedSkills.slice(0, 6).map((skill) => <Badge key={skill.skillId} tone="neutral">{skill.skillId}</Badge>)}
-            </div>
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            {[
+              { id: "conversation", label: "对话" },
+              { id: "artifacts", label: `Artifacts${run ? ` · ${run.artifacts.length}` : ""}` },
+              { id: "history", label: `History${history.length ? ` · ${history.length}` : ""}` },
+              { id: "context", label: "Context" }
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id as "conversation" | "artifacts" | "history" | "context")}
+                className={`rounded-full px-4 py-2 text-sm transition ${
+                  activeTab === tab.id
+                    ? "bg-cyan-500 text-white"
+                    : "border border-slate-200 text-slate-600 hover:border-cyan-300 hover:text-cyan-700 dark:border-white/10 dark:text-slate-300 dark:hover:border-cyan-400/30 dark:hover:text-cyan-200"
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
           </div>
 
-          {run?.risks.length ? (
-            <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-800 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
-              风险提示：{run.risks.join("；")}
-            </div>
-          ) : null}
+          {activeTab === "conversation" ? (
+            <div className="space-y-4">
+              {run?.risks.length ? (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-800 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
+                  风险提示：{run.risks.join("；")}
+                </div>
+              ) : null}
 
-          <div className="space-y-3">
-            {run?.plan.length ? run.plan.map((step) => (
-              <div key={step.stepId} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-white/10 dark:bg-[#0b1020]">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="font-semibold text-slate-900 dark:text-white">{step.title}</div>
-                    <div className="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-300">{step.detail}</div>
+              {transcript.length ? transcript.map((item) => {
+                const relatedArtifact = normalizedArtifacts.find((artifact) => artifact.artifactId === item.artifactId) ?? null;
+                const relatedStep = normalizedPlan.find((step) => step.stepId === item.stepId) ?? null;
+                const isAssistant = item.kind === "assistant";
+                return (
+                  <div key={item.itemId} className={`analysis-card-rise rounded-3xl border px-4 py-4 ${conversationTone(item)}`}>
+                    {isAssistant ? (
+                      <div className="flex items-center justify-end gap-2 text-[11px] tracking-[0.08em] opacity-70">
+                        <span>{formatDateTime(item.createdAt)}</span>
+                        {item.streamState === "streaming" ? (
+                          <span className="inline-flex items-center gap-1 text-cyan-600 dark:text-cyan-200">
+                            <span className="analysis-live-dot h-2 w-2 rounded-full bg-current" />
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <div className="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.12em] opacity-80">
+                        <span>{kindLabel(item)}</span>
+                        {item.title ? <span>· {item.title}</span> : null}
+                        <span>· {formatDateTime(item.createdAt)}</span>
+                        {item.status ? <Badge tone={stepTone(item.status)}>{item.status}</Badge> : null}
+                      </div>
+                    )}
+                    <div className="mt-3 whitespace-pre-wrap text-sm leading-7">
+                      {item.contentMarkdown || "..."}
+                      {item.streamState === "streaming" && isAssistant ? (
+                        <span className="ml-1 inline-block h-4 w-1 animate-pulse rounded bg-current align-middle opacity-70" />
+                      ) : null}
+                    </div>
+                    {!isAssistant && relatedStep ? (
+                      <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                        <Badge tone="neutral">{relatedStep.skillId}</Badge>
+                        {relatedStep.generates.map((value) => <Badge key={`${relatedStep.stepId}:${value}`} tone="info">生成 {value}</Badge>)}
+                      </div>
+                    ) : null}
+                    {!isAssistant && relatedArtifact ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedArtifactFocus(relatedArtifact.artifactId);
+                          setActiveTab("artifacts");
+                        }}
+                        className="mt-3 rounded-2xl border border-current/20 px-3 py-2 text-left text-xs leading-5 transition hover:bg-white/40 dark:hover:bg-white/5"
+                      >
+                        查看 Artifact：{relatedArtifact.title}
+                      </button>
+                    ) : null}
                   </div>
-                  <Badge tone={stepTone(step.status)}>{step.status}</Badge>
+                );
+              }) : showPendingTranscript ? (
+                <>
+                  <div className="analysis-card-rise rounded-3xl border border-slate-200 bg-slate-50 px-4 py-4 text-slate-700 dark:border-white/10 dark:bg-[#0b1020] dark:text-slate-200">
+                    <div className="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.12em] opacity-80">
+                      <span>用户</span>
+                      <span>· 用户问题</span>
+                      <span>· 刚刚</span>
+                    </div>
+                    <div className="mt-3 whitespace-pre-wrap text-sm leading-7">{prompt.trim()}</div>
+                  </div>
+                  <div className="analysis-card-rise rounded-3xl border border-cyan-200 bg-cyan-50 px-4 py-4 text-cyan-900 dark:border-cyan-400/20 dark:bg-cyan-400/10 dark:text-cyan-100">
+                    <div className="flex items-center justify-end gap-2 text-[11px] tracking-[0.08em] opacity-70">
+                      <span>正在接入本轮运行</span>
+                      <span className="inline-flex items-center gap-1 text-cyan-600 dark:text-cyan-200">
+                        <span className="analysis-live-dot h-2 w-2 rounded-full bg-current" />
+                      </span>
+                    </div>
+                    <div className="mt-3 whitespace-pre-wrap text-sm leading-7">
+                      {"发现\n- 正在读取当前实验的第一批证据。\n\n解释\n- 我会先把已经跑出来的结果接上，再继续往下分析。\n\n下一步\n- 连上本轮 run 后，先读取第一步证据。"}
+                      <span className="ml-1 inline-block h-4 w-1 animate-pulse rounded bg-current align-middle opacity-70" />
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="rounded-2xl border border-dashed border-slate-300 px-4 py-8 text-sm text-slate-500 dark:border-white/10 dark:text-slate-400">
+                  这里会按时间顺序展示用户问题，以及 Agent 连续输出的发现、解释和下一步。
                 </div>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <Badge tone="neutral">{step.skillId}</Badge>
-                  {step.reads.map((item) => <Badge key={item} tone="neutral">{item}</Badge>)}
-                  {step.runsModel ? <Badge tone="warn">会跑模型</Badge> : null}
-                  {step.generatesChart ? <Badge tone="info">会生成图</Badge> : null}
-                  {step.writesReport ? <Badge tone="good">会写报告</Badge> : null}
-                  {step.estimatedDuration ? <Badge tone="info">{step.estimatedDuration}</Badge> : null}
-                </div>
-              </div>
-            )) : <div className="text-sm text-slate-500 dark:text-slate-400">还没有执行计划。</div>}
-          </div>
+              )}
 
-          {run?.skillInvocations.length ? (
-            <div className="mt-4 grid gap-3 lg:grid-cols-2">
-              {run.skillInvocations.map((invocation) => <InvocationCard key={invocation.invocationId} invocation={invocation} />)}
-            </div>
-          ) : null}
-        </section>
-
-        <section className="rounded-3xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-[#151b2e]">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-semibold text-slate-950 dark:text-white">3. Artifacts</div>
-              <div className="text-xs text-slate-500 dark:text-slate-400">新生成的图、归因摘要、报告片段和实验建议都会出现在这里。</div>
-            </div>
-            {run ? <Badge tone="info">{run.artifacts.length} artifacts</Badge> : null}
-          </div>
-          <div className="space-y-3">
-            {run?.artifacts.length ? run.artifacts.map((artifact) => <ArtifactCard key={artifact.artifactId} artifact={artifact} />) : (
-              <div className="rounded-2xl border border-dashed border-slate-300 px-4 py-8 text-sm text-slate-500 dark:border-white/10 dark:text-slate-400">
-                这里会显示 Agent 本轮生成的新图、分析结果卡和报告片段。
-              </div>
-            )}
-          </div>
-        </section>
-
-        <section className="rounded-3xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-[#151b2e]">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-semibold text-slate-950 dark:text-white">4. Context & History</div>
-              <div className="text-xs text-slate-500 dark:text-slate-400">当前实验、模型、选中的对象，以及历史对话回放都在这里。</div>
-            </div>
-            {historyLoading ? <Badge tone="info">刷新中</Badge> : null}
-          </div>
-
-          <div className="grid gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-            <div className="space-y-3 rounded-3xl border border-slate-200 bg-slate-50 p-4 dark:border-white/10 dark:bg-[#0b1020]">
-              <div className="text-xs uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Context</div>
-              <div className="space-y-2 text-sm text-slate-700 dark:text-slate-200">
-                <div>实验：{experiment?.experimentName ?? context?.experimentName ?? experimentId}</div>
-                <div>目标列：{context?.targetColumn ?? experiment?.targetColumn ?? "-"}</div>
-                <div>推荐模型：{experiment?.recommendedModelId ?? context?.recommendedModelId ?? "-"}</div>
-                <div>当前页面：{currentPage}</div>
-                <div>当前 Tab：{context?.currentTab ?? currentTab ?? "-"}</div>
-                <div>当前模型：{context?.selectedModelId ?? selectedModelId ?? "-"}</div>
-                <div>当前特征：{context?.selectedFeatureId ?? selectedFeatureId ?? "-"}</div>
-                <div>当前异常点：{context?.selectedAnomalyTime ?? selectedAnomalyTime ?? "-"}</div>
-                <div>可用协变量：{context?.covariates.length ?? 0}</div>
-              </div>
-              {contextWarnings.length ? (
-                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-6 text-amber-800 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
-                  {contextWarnings.join("；")}
+              {run?.skillInvocations.length ? (
+                <div className="grid gap-3 lg:grid-cols-2">
+                  {run.skillInvocations.map((invocation) => <InvocationCard key={invocation.invocationId} invocation={invocation} />)}
                 </div>
               ) : null}
             </div>
+          ) : null}
 
+          {activeTab === "artifacts" ? (
+            <div className="grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
+              <div className="space-y-3">
+                {normalizedArtifacts.length ? normalizedArtifacts.map((artifact) => (
+                  <button
+                    key={artifact.artifactId}
+                    type="button"
+                    onClick={() => setSelectedArtifactFocus(artifact.artifactId)}
+                    className={`w-full rounded-3xl border p-4 text-left transition ${
+                      activeArtifact?.artifactId === artifact.artifactId
+                        ? "border-cyan-300 bg-cyan-50 dark:border-cyan-400/30 dark:bg-cyan-400/10"
+                        : "border-slate-200 bg-white hover:border-slate-300 dark:border-white/10 dark:bg-[#0b1020]"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="font-medium text-slate-900 dark:text-white">{artifact.title}</div>
+                      <Badge tone={artifact.kind === "chart" ? "info" : artifact.kind === "report" ? "good" : "neutral"}>{artifact.kind}</Badge>
+                    </div>
+                    <div className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">{artifact.summary}</div>
+                  </button>
+                )) : (
+                  <div className="rounded-2xl border border-dashed border-slate-300 px-4 py-8 text-sm text-slate-500 dark:border-white/10 dark:text-slate-400">
+                    当前还没有生成 artifact。
+                  </div>
+                )}
+              </div>
+              <div>
+                {activeArtifact ? <ArtifactCard artifact={run?.artifacts.find((artifact) => artifact.artifactId === activeArtifact.artifactId) ?? run!.artifacts[0]} /> : (
+                  <div className="rounded-2xl border border-dashed border-slate-300 px-4 py-8 text-sm text-slate-500 dark:border-white/10 dark:text-slate-400">
+                    选择一条 artifact 查看详细内容。
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : null}
+
+          {activeTab === "history" ? (
             <div className="space-y-3">
+              {historyLoading ? <Badge tone="info">刷新中</Badge> : null}
               {history.length ? history.map((item) => (
                 <button
                   key={item.runId}
@@ -588,7 +887,54 @@ export function AttributionAgentDrawer({
                 </div>
               )}
             </div>
-          </div>
+          ) : null}
+
+          {activeTab === "context" ? (
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+              <div className="space-y-3 rounded-3xl border border-slate-200 bg-slate-50 p-4 dark:border-white/10 dark:bg-[#0b1020]">
+                <div className="text-xs uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">实验上下文</div>
+                <div className="space-y-2 text-sm text-slate-700 dark:text-slate-200">
+                  <div>实验：{experiment?.experimentName ?? context?.experimentName ?? experimentId}</div>
+                  <div>目标列：{context?.targetColumn ?? experiment?.targetColumn ?? "-"}</div>
+                  <div>推荐模型：{experiment?.recommendedModelId ?? context?.recommendedModelId ?? "-"}</div>
+                  <div>当前页面：{currentPage}</div>
+                  <div>当前 Tab：{context?.currentTab ?? currentTab ?? "-"}</div>
+                  <div>当前模型：{context?.selectedModelId ?? selectedModelId ?? "-"}</div>
+                  <div>可用协变量：{context?.covariates.length ?? 0}</div>
+                  <div>LLM：{run?.llmSession ? `${run.llmSession.provider} / ${run.llmSession.model}` : "未开始"}</div>
+                </div>
+                {contextWarnings.length ? (
+                  <div className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-6 text-amber-800 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
+                    {contextWarnings.join("；")}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="space-y-3">
+                <div className="rounded-3xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-[#0b1020]">
+                  <div className="text-xs uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">当前计划</div>
+                  <div className="mt-3 space-y-3">
+                    {normalizedPlan.length ? normalizedPlan.map((step) => (
+                      <div key={step.stepId} className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm dark:border-white/10 dark:bg-[#151b2e]">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="font-medium text-slate-900 dark:text-white">{step.title}</div>
+                          <Badge tone={stepTone(step.status)}>{step.status}</Badge>
+                        </div>
+                        <div className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">{step.description}</div>
+                      </div>
+                    )) : <div className="text-sm text-slate-500 dark:text-slate-400">还没有执行计划。</div>}
+                  </div>
+                </div>
+
+                <div className="rounded-3xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-[#0b1020]">
+                  <div className="text-xs uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">可用 Skills</div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {displayedSkills.slice(0, 10).map((skill) => <Badge key={skill.skillId} tone="neutral">{skill.skillId}</Badge>)}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
         </section>
       </div>
     </SideDrawer>

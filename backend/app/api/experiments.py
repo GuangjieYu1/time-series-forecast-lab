@@ -8,7 +8,13 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import WorkspaceContext, get_workspace_context, get_workspace_experiment, require_workspace_write_access
+from app.api.dependencies import (
+    WorkspaceContext,
+    ensure_experiment_manage_access,
+    get_workspace_context,
+    get_workspace_experiment,
+    resolve_workspace_context,
+)
 from app.core.errors import AppError, as_http_error
 from app.core.storage import assert_upload_ownership, read_upload_metadata
 from app.db.models import AgentRunRecord, ExperimentRecord, ReportRecord, UserRecord, WorkspaceRecord
@@ -22,6 +28,7 @@ from app.schemas import (
     ExperimentRerunRequest,
     ExperimentRerunResponse,
     FeatureFactoryResponse,
+    MoveExperimentRequest,
 )
 from app.services.explainability import load_experiment_explainability
 from app.services.agent import list_agent_skills
@@ -107,6 +114,7 @@ def list_experiments(context: WorkspaceContext = Depends(get_workspace_context),
         ExperimentListItem(
             experimentId=record.id,
             experimentName=record.name,
+            analysisType=record.analysis_type or "forecast",
             fileName=record.file_name,
             sheetName=record.sheet_name,
             targetColumn=record.target_column,
@@ -138,6 +146,9 @@ def get_experiment(experiment_id: str, context: WorkspaceContext = Depends(get_w
         manifest = _loads(record.manifest_json, None)
         diagnostics = _loads(record.diagnostics_json, {})
         model_logs = _loads(record.model_logs_json, [])
+        dataset_profile = _loads(record.dataset_profile_json, None)
+        workflow_state = _loads(record.workflow_state_json, None)
+        analysis_artifacts = _loads(record.artifacts_json, [])
         agent_runs = list_agent_runs(db, experiment_id=record.id, workspace_id=context.workspace.id, limit=20)
         report_user_ids = [report.created_by_user_id for report in reports if report.created_by_user_id]
         report_users = (
@@ -157,6 +168,7 @@ def get_experiment(experiment_id: str, context: WorkspaceContext = Depends(get_w
         return ExperimentDetail(
             experimentId=record.id,
             experimentName=record.name,
+            analysisType=record.analysis_type or "forecast",
             fileName=record.file_name,
             sheetName=record.sheet_name,
             targetColumn=record.target_column,
@@ -176,6 +188,11 @@ def get_experiment(experiment_id: str, context: WorkspaceContext = Depends(get_w
             series=_loads(record.series_json, []),
             finalForecast=_loads(record.final_forecast_json, None),
             modelLogs=model_logs,
+            datasetProfile=dataset_profile,
+            workflowState=workflow_state,
+            analysisArtifacts=analysis_artifacts,
+            parentUploadId=record.parent_upload_id,
+            sourceExperimentId=record.source_experiment_id,
             explainability=load_experiment_explainability(
                 experiment_id=record.id,
                 recommended_model_id=record.recommended_model_id,
@@ -263,10 +280,38 @@ def download_experiment_manifest(experiment_id: str, context: WorkspaceContext =
         raise as_http_error(exc) from exc
 
 
-@router.delete("/{experiment_id}")
-def delete_experiment(experiment_id: str, context: WorkspaceContext = Depends(require_workspace_write_access), db: Session = Depends(get_db)):
+@router.post("/{experiment_id}/move")
+def move_experiment(
+    experiment_id: str,
+    request: MoveExperimentRequest,
+    context: WorkspaceContext = Depends(get_workspace_context),
+    db: Session = Depends(get_db),
+):
     try:
         record = get_workspace_experiment(db, experiment_id, context)
+        ensure_experiment_manage_access(record, context)
+        target = resolve_workspace_context(db, context.user, request.targetWorkspaceId)
+        if target.workspace.is_read_only:
+            raise AppError("目标空间是只读空间，不能移入项目。", 403, "WORKSPACE_READ_ONLY")
+        if target.workspace.id == context.workspace.id:
+            return {"ok": True, "workspaceId": target.workspace.id, "workspaceName": target.workspace.name}
+        record.workspace_id = target.workspace.id
+        for report in db.scalars(select(ReportRecord).where(ReportRecord.experiment_id == experiment_id)).all():
+            report.workspace_id = target.workspace.id
+        for run in db.scalars(select(AgentRunRecord).where(AgentRunRecord.experiment_id == experiment_id)).all():
+            run.workspace_id = target.workspace.id
+        db.commit()
+        return {"ok": True, "workspaceId": target.workspace.id, "workspaceName": target.workspace.name}
+    except AppError as exc:
+        db.rollback()
+        raise as_http_error(exc) from exc
+
+
+@router.delete("/{experiment_id}")
+def delete_experiment(experiment_id: str, context: WorkspaceContext = Depends(get_workspace_context), db: Session = Depends(get_db)):
+    try:
+        record = get_workspace_experiment(db, experiment_id, context)
+        ensure_experiment_manage_access(record, context)
         for run in db.scalars(
             select(AgentRunRecord).where(AgentRunRecord.experiment_id == experiment_id, AgentRunRecord.workspace_id == context.workspace.id)
         ).all():

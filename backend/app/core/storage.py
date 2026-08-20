@@ -94,6 +94,38 @@ async def save_upload_file(file: UploadFile, *, user_id: str, workspace_id: str)
     return metadata
 
 
+def save_generated_upload_bytes(
+    *,
+    file_name: str,
+    content: bytes,
+    user_id: str,
+    workspace_id: str,
+) -> dict:
+    settings = get_settings()
+    ext = Path(file_name).suffix.lower() or ".csv"
+    if ext not in SUPPORTED_EXTENSIONS:
+        raise AppError("Unsupported generated file format.")
+    upload_id = f"tmp_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:10]}"
+    dest = settings.upload_dir / f"{upload_id}{ext}"
+    if len(content) > settings.max_upload_mb * 1024 * 1024:
+        raise AppError(f"Generated file is too large. The current limit is {settings.max_upload_mb} MB.")
+    dest.write_bytes(content)
+    metadata = {
+        "uploadId": upload_id,
+        "userId": user_id,
+        "workspaceId": workspace_id,
+        "fileName": file_name,
+        "fileSize": len(content),
+        "fileSha256": sha256(content).hexdigest(),
+        "extension": ext,
+        "path": str(dest),
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+    }
+    _metadata_path(upload_id).write_text(json.dumps(metadata, ensure_ascii=True), encoding="utf-8")
+    logger.info("generated upload temp file created", extra={"upload_id": upload_id, "path": str(dest), "file_name": file_name})
+    return metadata
+
+
 def assert_upload_ownership(metadata: dict, *, user_id: str, workspace_id: str) -> None:
     if metadata.get("userId") != user_id or metadata.get("workspaceId") != workspace_id:
         raise AppError("这个上传文件不属于当前用户或工作区，请重新上传。", 403, "UPLOAD_WORKSPACE_FORBIDDEN")

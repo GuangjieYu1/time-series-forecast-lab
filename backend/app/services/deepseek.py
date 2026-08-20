@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -775,11 +775,170 @@ def _request_completion(
         response.raise_for_status()
     body = response.json()
     choice = body["choices"][0]
-    content = choice["message"]["content"]
+    content = _extract_choice_text(choice)
     finish_reason = choice.get("finish_reason")
-    if not isinstance(content, str) or not content.strip():
+    if not content:
         raise AppError("DeepSeek returned an empty report.", code="DEEPSEEK_EMPTY_REPORT")
     return content.strip(), finish_reason
+
+
+def _coerce_chat_messages(
+    *,
+    messages: list[dict[str, str]] | None = None,
+    system_prompt: str | None = None,
+    user_prompt: str | None = None,
+) -> list[dict[str, str]]:
+    if isinstance(messages, list) and messages:
+        return messages
+    coerced: list[dict[str, str]] = []
+    if system_prompt:
+        coerced.append({"role": "system", "content": system_prompt})
+    if user_prompt:
+        coerced.append({"role": "user", "content": user_prompt})
+    if not coerced:
+        raise AppError("DeepSeek 请求缺少有效消息内容。", code="DEEPSEEK_EMPTY_MESSAGES")
+    return coerced
+
+
+def _extract_text_blocks(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                parts.append(item.strip())
+                continue
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text")
+            if isinstance(text, str) and text.strip():
+                parts.append(text.strip())
+                continue
+            content = item.get("content")
+            if isinstance(content, str) and content.strip():
+                parts.append(content.strip())
+        return "\n".join(parts).strip()
+    return ""
+
+
+def _extract_choice_text(choice: Any) -> str:
+    if not isinstance(choice, dict):
+        return ""
+    message = choice.get("message")
+    if isinstance(message, dict):
+        content = _extract_text_blocks(message.get("content"))
+        if content:
+            return content
+        reasoning = _extract_text_blocks(message.get("reasoning_content"))
+        if reasoning:
+            return reasoning
+    delta = choice.get("delta")
+    if isinstance(delta, dict):
+        content = _extract_text_blocks(delta.get("content"))
+        if content:
+            return content
+        reasoning = _extract_text_blocks(delta.get("reasoning_content"))
+        if reasoning:
+            return reasoning
+    legacy_text = _extract_text_blocks(choice.get("text"))
+    if legacy_text:
+        return legacy_text
+    output_text = _extract_text_blocks(choice.get("output_text"))
+    if output_text:
+        return output_text
+    return ""
+
+
+def request_deepseek_text(
+    *,
+    api_key: str,
+    base_url: str,
+    model: str,
+    messages: list[dict[str, str]] | None = None,
+    system_prompt: str | None = None,
+    user_prompt: str | None = None,
+    max_tokens: int,
+    temperature: float = 0.2,
+) -> str:
+    resolved_messages = _coerce_chat_messages(messages=messages, system_prompt=system_prompt, user_prompt=user_prompt)
+    payload = {
+        "model": model,
+        "messages": resolved_messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "stream": False,
+    }
+    try:
+        with httpx.Client(timeout=90) as client:
+            response = client.post(_endpoint(base_url), headers=_headers(api_key), json=payload)
+            response.raise_for_status()
+        body = response.json()
+        choice = body["choices"][0]
+        content = _extract_choice_text(choice)
+        if not content:
+            raise AppError("DeepSeek returned an empty response.", code="DEEPSEEK_EMPTY_RESPONSE")
+        return content.strip()
+    except AppError:
+        raise
+    except Exception as exc:
+        raise AppError(_sanitize_error(exc), code="DEEPSEEK_REQUEST_FAILED") from exc
+
+
+def stream_deepseek_text(
+    *,
+    api_key: str,
+    base_url: str,
+    model: str,
+    messages: list[dict[str, str]] | None = None,
+    system_prompt: str | None = None,
+    user_prompt: str | None = None,
+    max_tokens: int,
+    on_delta: Callable[[str], None],
+    temperature: float = 0.2,
+) -> str:
+    resolved_messages = _coerce_chat_messages(messages=messages, system_prompt=system_prompt, user_prompt=user_prompt)
+    payload = {
+        "model": model,
+        "messages": resolved_messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "stream": True,
+    }
+    chunks: list[str] = []
+    try:
+        with httpx.Client(timeout=90) as client:
+            with client.stream("POST", _endpoint(base_url), headers=_headers(api_key), json=payload) as response:
+                response.raise_for_status()
+                for raw_line in response.iter_lines():
+                    if not raw_line:
+                        continue
+                    line = raw_line.strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if not data or data == "[DONE]":
+                        continue
+                    try:
+                        body = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    choices = body.get("choices")
+                    if not isinstance(choices, list) or not choices:
+                        continue
+                    choice = choices[0] if isinstance(choices[0], dict) else {}
+                    text = _extract_choice_text(choice)
+                    if text:
+                        chunks.append(text)
+                        on_delta(text)
+        content = "".join(chunks).strip()
+        if not content:
+            raise AppError("DeepSeek returned an empty response.", code="DEEPSEEK_EMPTY_RESPONSE")
+        return content
+    except AppError:
+        raise
+    except Exception as exc:
+        raise AppError(_sanitize_error(exc), code="DEEPSEEK_STREAM_FAILED") from exc
 
 
 def _overlap_size(left: str, right: str) -> int:

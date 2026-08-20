@@ -133,7 +133,7 @@ export function FeedbackPage() {
   async function handleTestNotification() {
     setTestState("sending");
     try {
-      const result = await testWeComFeedbackNotification("这是一条来自时序预测实验室的反馈通知测试。");
+      const result = await testWeComFeedbackNotification("这是一条来自本地 AI 数据分析平台的反馈通知测试。");
       setTestState(result.success ? "success" : "error");
       setMessage(result.error ? `${result.message} ${result.error}` : result.message);
     } catch (error) {

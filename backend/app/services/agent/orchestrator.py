@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import ast
 import json
+import logging
 import math
+import os
+import re
 import statistics
 import threading
 import time
@@ -12,36 +16,46 @@ from typing import Any
 
 from sqlalchemy import select
 
+from app.core.errors import AppError
 from app.db.models import AgentRunRecord, ExperimentRecord, ReportRecord
 from app.db.session import SessionLocal
 from app.schemas import (
     AgentArtifact,
+    AgentConversationItem,
     AgentContextSnapshot,
+    AgentLlmConfig,
     AgentMessage,
     AgentPlanStep,
     AgentRunEvent,
     AgentRunRequest,
+    AgentStreamEvent,
     AgentSkillInvocation,
     AgentSkillDefinition,
 )
 from app.services.agent.policy import plan_risks
 from app.services.agent.run_store import (
     append_artifact,
+    append_conversation_item,
     append_event,
     append_message,
     get_agent_run,
     is_cancel_requested,
     replace_plan,
+    set_llm_session,
     to_agent_run_detail,
     update_run_status,
+    upsert_conversation_item,
     upsert_invocation,
     utc_iso,
 )
 from app.services.agent.skill_registry import get_skill_definition, list_available_agent_skills
+from app.services.agent.stream_broker import agent_stream_broker
 from app.services.attribution_snapshot import load_attribution_snapshot
-from app.services.deepseek import build_report_context
+from app.services.deepseek import build_report_context, request_deepseek_text, stream_deepseek_text
 from app.services.explainability import load_experiment_explainability
 from app.services.runtime_history import load_runtime_from_record
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -56,8 +70,12 @@ def list_agent_skills() -> list[AgentSkillDefinition]:
     return list_available_agent_skills()
 
 
-def plan_agent_run(*, request: AgentRunRequest, context: AgentContextSnapshot) -> tuple[list[AgentPlanStep], str, list[str]]:
-    skill_ids = _select_skill_ids(request.prompt)
+def plan_agent_run(*, request: AgentRunRequest, context: AgentContextSnapshot, bundle: dict[str, Any] | None = None) -> tuple[list[AgentPlanStep], str, list[str]]:
+    llm = request.llm
+    if llm is None or not llm.apiKey.strip() or not llm.baseUrl.strip() or not llm.model.strip():
+        raise AppError("请先在 API 设置中配置 DeepSeek 后再使用归因 Agent。", 400, "AGENT_LLM_NOT_CONFIGURED")
+    loaded_bundle = bundle or _load_bundle(context.experimentId)
+    skill_ids = _plan_skill_ids_with_llm(request=request, context=context, bundle=loaded_bundle)
     steps: list[AgentPlanStep] = []
     for index, skill_id in enumerate(skill_ids, start=1):
         definition = get_skill_definition(skill_id)
@@ -80,6 +98,153 @@ def plan_agent_run(*, request: AgentRunRequest, context: AgentContextSnapshot) -
     return steps, estimated_duration, risks
 
 
+def _parse_llm_json(text: str) -> dict[str, Any]:
+    raw = text.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+    candidates = [raw]
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(raw[start : end + 1])
+    list_start = raw.find("[")
+    list_end = raw.rfind("]")
+    if list_start >= 0 and list_end > list_start:
+        candidates.append(raw[list_start : list_end + 1])
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+            if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
+                return parsed[0]
+        except json.JSONDecodeError:
+            pass
+
+        repaired = candidate
+        repaired = repaired.replace("“", "\"").replace("”", "\"").replace("’", "'").replace("‘", "'")
+        repaired = re.sub(r",(\s*[}\]])", r"\1", repaired)
+        repaired = re.sub(r"\bTrue\b", "true", repaired)
+        repaired = re.sub(r"\bFalse\b", "false", repaired)
+        repaired = re.sub(r"\bNone\b", "null", repaired)
+        try:
+            parsed = json.loads(repaired)
+            if isinstance(parsed, dict):
+                return parsed
+            if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
+                return parsed[0]
+        except json.JSONDecodeError:
+            pass
+
+        try:
+            parsed = ast.literal_eval(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+            if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
+                return parsed[0]
+        except (ValueError, SyntaxError):
+            pass
+
+    logger.warning("agent llm json parse failed: %s", raw[:600])
+    raise AppError("DeepSeek 规划结果无法解析为 JSON。", 502, "AGENT_LLM_PLAN_INVALID")
+
+
+def _planning_evidence(request: AgentRunRequest, context: AgentContextSnapshot, bundle: dict[str, Any], candidate_skill_ids: list[str]) -> dict[str, Any]:
+    drivers = _driver_items(bundle)[:5]
+    covariates = [
+        {
+            "name": item.name,
+            "type": item.type,
+            "backtestStrategy": item.backtestStrategy,
+            "forecastStrategy": item.forecastStrategy,
+            "leakageRisk": item.leakageRisk,
+        }
+        for item in _covariates(bundle)[:8]
+    ]
+    rows = _prediction_rows(bundle)
+    largest_residual = max(rows, key=lambda row: abs(_safe_float(row.get("residual")) or 0.0), default=None)
+    best_models = []
+    for item in bundle.get("rankedModels") or []:
+        if not isinstance(item, dict) or item.get("status") != "success":
+            continue
+        best_models.append(
+            {
+                "modelId": item.get("modelId"),
+                "modelName": item.get("modelName"),
+                "mae": _metric(item, "mae"),
+                "rank": item.get("rank"),
+            }
+        )
+    return {
+        "question": _normalize_main_cause_question(request.prompt, context.targetColumn),
+        "targetColumn": context.targetColumn,
+        "recommendedModelId": context.recommendedModelId,
+        "candidateSkillIds": candidate_skill_ids,
+        "topDrivers": drivers,
+        "largestResidual": largest_residual,
+        "covariates": covariates,
+        "rankedModels": best_models[:4],
+        "attributionOverview": bundle["attribution"].overview.summary[:3],
+        "attributionQuickDiagnosis": bundle["attribution"].quickDiagnosis.summary[:3],
+        "warnings": context.warnings,
+    }
+
+
+def _plan_skill_ids_with_llm(*, request: AgentRunRequest, context: AgentContextSnapshot, bundle: dict[str, Any]) -> list[str]:
+    llm = request.llm
+    if llm is None:
+        raise AppError("请先在 API 设置中配置 DeepSeek 后再使用归因 Agent。", 400, "AGENT_LLM_NOT_CONFIGURED")
+    candidate_skill_ids = _select_skill_ids(request.prompt, target_column=context.targetColumn)
+    evidence = _planning_evidence(request, context, bundle, candidate_skill_ids)
+    payload = request_deepseek_text(
+        api_key=llm.apiKey,
+        base_url=llm.baseUrl,
+        model=llm.model,
+        system_prompt=(
+            "你是一个归因实验室 Agent 规划器。"
+            "你只能从允许的 skillId 列表中选择。"
+            "优先使用 explainability/tree driver, residual diagnostics, benchmark gap, covariate flow, attribution snapshot 这条证据顺序。"
+            "输出严格 JSON，格式为 {\"skillIds\":[...],\"overview\":\"...\"}。"
+            "skillIds 最多 7 个，必须按执行顺序排列，不得输出任何额外文本。"
+        ),
+        user_prompt=json.dumps(
+            {
+                "userQuestion": request.prompt,
+                "context": {
+                    "experimentId": context.experimentId,
+                    "targetColumn": context.targetColumn,
+                    "currentPage": context.currentPage,
+                    "currentTab": context.currentTab,
+                },
+                "evidence": evidence,
+            },
+            ensure_ascii=False,
+        ),
+        temperature=0.1,
+        max_tokens=500,
+    )
+    try:
+        parsed = _parse_llm_json(payload)
+        requested_ids = parsed.get("skillIds")
+    except AppError as exc:
+        if exc.code != "AGENT_LLM_PLAN_INVALID":
+            raise
+        logger.warning("agent llm plan fallback to heuristic order")
+        return candidate_skill_ids
+    normalized: list[str] = []
+    if isinstance(requested_ids, list):
+        for item in requested_ids:
+            skill_id = str(item)
+            if skill_id in candidate_skill_ids and skill_id not in normalized:
+                normalized.append(skill_id)
+    if not normalized:
+        logger.warning("agent llm plan returned no usable skillIds; fallback to heuristic order")
+        return candidate_skill_ids
+    return normalized
+
+
 class AttributionAgentOrchestrator:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -94,6 +259,233 @@ class AttributionAgentOrchestrator:
             self._threads[run_id] = thread
             thread.start()
 
+    def _publish_stream(
+        self,
+        run_id: str,
+        *,
+        event_type: str,
+        status: str | None = None,
+        step_id: str | None = None,
+        skill_id: str | None = None,
+        artifact_id: str | None = None,
+        delta: str | None = None,
+        warning: str | None = None,
+        error: str | None = None,
+        title: str | None = None,
+        detail: str | None = None,
+        conversation_item: AgentConversationItem | None = None,
+        plan_step: AgentPlanStep | None = None,
+        artifact: AgentArtifact | None = None,
+    ) -> None:
+        agent_stream_broker.publish(
+            run_id,
+            AgentStreamEvent(
+                cursor=1,
+                runId=run_id,
+                eventType=event_type,
+                timestamp=utc_iso(),
+                status=status,
+                stepId=step_id,
+                skillId=skill_id,
+                artifactId=artifact_id,
+                delta=delta,
+                warning=warning,
+                error=error,
+                title=title,
+                detail=detail,
+                conversationItem=conversation_item,
+                planStep=plan_step,
+                artifact=artifact,
+            ),
+        )
+
+    def _append_conversation(
+        self,
+        db,
+        run_id: str,
+        *,
+        kind: str,
+        title: str | None,
+        content_markdown: str,
+        status: str | None = None,
+        step_id: str | None = None,
+        skill_id: str | None = None,
+        artifact_id: str | None = None,
+        stream_state: str = "final",
+    ) -> AgentConversationItem:
+        item = AgentConversationItem(
+            itemId=f"conv_{uuid.uuid4().hex[:10]}",
+            kind=kind,
+            title=title,
+            contentMarkdown=content_markdown,
+            status=status,
+            stepId=step_id,
+            skillId=skill_id,
+            artifactId=artifact_id,
+            createdAt=utc_iso(),
+            streamState=stream_state,
+        )
+        append_conversation_item(db, run_id, item)
+        if kind == "artifact":
+            event_type = "artifact_ready"
+        elif kind == "plan":
+            event_type = "plan_step"
+        elif kind == "action":
+            event_type = "skill_status"
+        else:
+            event_type = "status"
+        self._publish_stream(
+            run_id,
+            event_type=event_type,
+            status=status,
+            step_id=step_id,
+            skill_id=skill_id,
+            artifact_id=artifact_id,
+            title=title,
+            detail=content_markdown,
+            conversation_item=item,
+        )
+        return item
+
+    def _emit_scripted_assistant_message(
+        self,
+        db,
+        *,
+        run_id: str,
+        title: str,
+        content_markdown: str,
+        step_id: str | None = None,
+        skill_id: str | None = None,
+        status: str | None = None,
+        chunk_delay_seconds: float | None = None,
+    ) -> str:
+        if chunk_delay_seconds is None:
+            chunk_delay_seconds = _stream_chunk_delay_seconds()
+        item = AgentConversationItem(
+            itemId=f"conv_{uuid.uuid4().hex[:10]}",
+            kind="assistant",
+            title=title,
+            contentMarkdown="",
+            status=status,
+            stepId=step_id,
+            skillId=skill_id,
+            createdAt=utc_iso(),
+            streamState="streaming",
+        )
+        append_conversation_item(db, run_id, item)
+        for chunk in _scripted_message_chunks(content_markdown):
+            self._publish_stream(
+                run_id,
+                event_type="message_delta",
+                status=status,
+                step_id=step_id,
+                skill_id=skill_id,
+                delta=chunk,
+                conversation_item=item,
+            )
+            if chunk_delay_seconds > 0:
+                time.sleep(chunk_delay_seconds)
+        item.contentMarkdown = content_markdown
+        item.streamState = "final"
+        upsert_conversation_item(db, run_id, item)
+        append_message(db, run_id, AgentMessage(role="assistant", content=content_markdown, createdAt=item.createdAt))
+        self._publish_stream(
+            run_id,
+            event_type="message_final",
+            status=status,
+            step_id=step_id,
+            skill_id=skill_id,
+            title=title,
+            detail=content_markdown,
+            conversation_item=item,
+        )
+        return content_markdown
+
+    def _stream_assistant_message(
+        self,
+        db,
+        *,
+        run_id: str,
+        llm: AgentLlmConfig,
+        prompt: str,
+        title: str,
+        step_id: str | None = None,
+        skill_id: str | None = None,
+        status: str | None = None,
+        system_prompt: str,
+    ) -> str:
+        item = AgentConversationItem(
+            itemId=f"conv_{uuid.uuid4().hex[:10]}",
+            kind="assistant",
+            title=title,
+            contentMarkdown="",
+            status=status,
+            stepId=step_id,
+            skillId=skill_id,
+            createdAt=utc_iso(),
+            streamState="streaming",
+        )
+        append_conversation_item(db, run_id, item)
+        content_parts: list[str] = []
+
+        def on_delta(delta: str) -> None:
+            content_parts.append(delta)
+            self._publish_stream(
+                run_id,
+                event_type="message_delta",
+                status=status,
+                step_id=step_id,
+                skill_id=skill_id,
+                delta=delta,
+                conversation_item=item,
+            )
+
+        try:
+            final_text = stream_deepseek_text(
+                api_key=llm.apiKey,
+                base_url=llm.baseUrl,
+                model=llm.model,
+                system_prompt=system_prompt,
+                user_prompt=prompt,
+                on_delta=on_delta,
+                temperature=0.2,
+                max_tokens=500,
+            )
+        except AppError as exc:
+            logger.warning("agent llm stream fallback to request: %s", exc.code)
+            self._publish_stream(
+                run_id,
+                event_type="warning",
+                status=status,
+                step_id=step_id,
+                skill_id=skill_id,
+                warning="DeepSeek 流式通道不可用，已自动切换为普通生成。",
+            )
+            final_text = request_deepseek_text(
+                api_key=llm.apiKey,
+                base_url=llm.baseUrl,
+                model=llm.model,
+                system_prompt=system_prompt,
+                user_prompt=prompt,
+                temperature=0.2,
+                max_tokens=500,
+            )
+        item.contentMarkdown = final_text or "".join(content_parts)
+        item.streamState = "final"
+        upsert_conversation_item(db, run_id, item)
+        append_message(db, run_id, AgentMessage(role="assistant", content=item.contentMarkdown, createdAt=item.createdAt))
+        self._publish_stream(
+            run_id,
+            event_type="message_final",
+            status=status,
+            step_id=step_id,
+            skill_id=skill_id,
+            title=title,
+            detail=item.contentMarkdown,
+            conversation_item=item,
+        )
+        return item.contentMarkdown
+
     def _execute_run(self, run_id: str) -> None:
         db = SessionLocal()
         try:
@@ -103,6 +495,23 @@ class AttributionAgentOrchestrator:
             detail = to_agent_run_detail(record)
             if not detail.request.autoExecute:
                 return
+            if detail.request.llm is None:
+                update_run_status(db, run_id, "failed", "DeepSeek 未配置，无法执行归因 Agent。")
+                self._append_conversation(
+                    db,
+                    run_id,
+                    kind="status",
+                    title="DeepSeek 未配置",
+                    content_markdown="请先在 API 设置中配置 DeepSeek 后再使用归因 Agent。",
+                    status="failed",
+                )
+                return
+            set_llm_session(
+                db,
+                run_id,
+                llm_session=detail.llmSession
+                or None,
+            )
             update_run_status(db, run_id, "running")
             append_event(
                 db,
@@ -116,9 +525,34 @@ class AttributionAgentOrchestrator:
                     status="running",
                 ),
             )
+            self._append_conversation(
+                db,
+                run_id,
+                kind="status",
+                title="正在理解你的问题",
+                content_markdown="我先围绕当前实验读取 explainability、residual、benchmark 和 covariate 证据，再按计划逐步归因。",
+                status="running",
+            )
             bundle = _load_bundle(record.experiment_id)
             plan = detail.plan
             scratch: dict[str, Any] = {"runCreatedByUserId": record.created_by_user_id}
+            llm = detail.request.llm
+            if llm is None:
+                raise AppError("请先在 API 设置中配置 DeepSeek 后再使用归因 Agent。", 400, "AGENT_LLM_NOT_CONFIGURED")
+
+            plan_outline = "\n".join(f"{index + 1}. {step.title} ({step.skillId}) - {step.description}" for index, step in enumerate(plan))
+            self._emit_scripted_assistant_message(
+                db,
+                run_id=run_id,
+                title="计划",
+                status="running",
+                content_markdown=_build_pre_evidence_plan_message(
+                    prompt=detail.request.prompt,
+                    target_column=detail.context.targetColumn,
+                    plan_outline=plan_outline,
+                    plan=plan,
+                ),
+            )
             for index, step in enumerate(plan):
                 if is_cancel_requested(db, run_id):
                     step.status = "cancelled"
@@ -138,8 +572,19 @@ class AttributionAgentOrchestrator:
                             status="cancelled",
                         ),
                     )
+                    self._append_conversation(
+                        db,
+                        run_id,
+                        kind="status",
+                        title="任务已停止",
+                        content_markdown="本轮 Agent 已按你的要求停止，已保留已生成的中间 artifacts。",
+                        status="cancelled",
+                        step_id=step.stepId,
+                        skill_id=step.skillId,
+                    )
                     append_message(db, run_id, AgentMessage(role="assistant", content="本轮 Agent 已按你的要求停止，已保留已生成的中间 artifacts。", createdAt=utc_iso()))
                     update_run_status(db, run_id, "cancelled", "本轮运行已被用户中断。")
+                    self._publish_stream(run_id, event_type="status", status="cancelled", title="cancelled", detail="run cancelled")
                     return
 
                 invocation = AgentSkillInvocation(
@@ -167,7 +612,18 @@ class AttributionAgentOrchestrator:
                         status="running",
                     ),
                 )
-                time.sleep(0.08)
+                self._append_conversation(
+                    db,
+                    run_id,
+                    kind="action",
+                    title="行动",
+                    content_markdown=f"正在执行“{step.title}”。{step.description}",
+                    status="running",
+                    step_id=step.stepId,
+                    skill_id=step.skillId,
+                )
+                self._publish_stream(run_id, event_type="plan_step", status=step.status, step_id=step.stepId, skill_id=step.skillId, plan_step=step)
+                time.sleep(0.05)
                 try:
                     result = _execute_skill(step.skillId, bundle=bundle, scratch=scratch, request=detail.request, context=detail.context)
                     scratch.update(result.scratch)
@@ -182,6 +638,17 @@ class AttributionAgentOrchestrator:
                     for artifact in result.artifacts:
                         append_artifact(db, run_id, artifact)
                         invocation.artifactIds.append(artifact.artifactId)
+                        self._append_conversation(
+                            db,
+                            run_id,
+                            kind="artifact",
+                            title=artifact.title,
+                            content_markdown=artifact.summary,
+                            status="completed",
+                            step_id=step.stepId,
+                            skill_id=step.skillId,
+                            artifact_id=artifact.artifactId,
+                        )
                         append_event(
                             db,
                             run_id,
@@ -197,8 +664,23 @@ class AttributionAgentOrchestrator:
                                 status="completed",
                             ),
                         )
+                        self._publish_stream(run_id, event_type="artifact_ready", status="completed", step_id=step.stepId, skill_id=step.skillId, artifact_id=artifact.artifactId, artifact=artifact)
                     replace_plan(db, run_id, plan)
                     upsert_invocation(db, run_id, invocation)
+                    self._publish_stream(run_id, event_type="skill_status", status="completed", step_id=step.stepId, skill_id=step.skillId, plan_step=step)
+                    self._emit_scripted_assistant_message(
+                        db,
+                        run_id=run_id,
+                        title="发现 / 解释 / 下一步",
+                        step_id=step.stepId,
+                        skill_id=step.skillId,
+                        status="completed",
+                        content_markdown=_build_step_transcript_message(
+                            step=step,
+                            result=result,
+                            next_step_title=plan[index + 1].title if index + 1 < len(plan) else None,
+                        ),
+                    )
                 except Exception as exc:
                     step.status = "failed"
                     step.error = str(exc)
@@ -222,12 +704,28 @@ class AttributionAgentOrchestrator:
                             status="failed",
                         ),
                     )
+                    self._append_conversation(
+                        db,
+                        run_id,
+                        kind="status",
+                        title=f"{step.title} 失败",
+                        content_markdown=str(exc),
+                        status="failed",
+                        step_id=step.stepId,
+                        skill_id=step.skillId,
+                    )
                     append_message(db, run_id, AgentMessage(role="assistant", content=f"步骤“{step.title}”失败：{exc}", createdAt=utc_iso()))
+                    self._publish_stream(run_id, event_type="error", status="failed", step_id=step.stepId, skill_id=step.skillId, error=str(exc), title=f"{step.title} 失败")
                     update_run_status(db, run_id, "failed", f"运行在 {step.title} 失败。")
                     return
 
-            final_summary = _build_final_summary(scratch, bundle, request=detail.request)
-            append_message(db, run_id, AgentMessage(role="assistant", content=final_summary, createdAt=utc_iso()))
+            final_summary = self._emit_scripted_assistant_message(
+                db,
+                run_id=run_id,
+                title="归因结论",
+                status="completed",
+                content_markdown=_build_final_transcript_message(scratch, bundle, request=detail.request),
+            )
             append_event(
                 db,
                 run_id,
@@ -240,7 +738,30 @@ class AttributionAgentOrchestrator:
                     status="completed",
                 ),
             )
+            self._append_conversation(
+                db,
+                run_id,
+                kind="status",
+                title="归因完成",
+                content_markdown="本轮归因分析已完成，可以回放 transcript 或查看生成的 artifacts。",
+                status="completed",
+            )
+            self._publish_stream(run_id, event_type="status", status="completed", title="completed", detail="run completed")
             update_run_status(db, run_id, "completed", final_summary)
+        except Exception as exc:
+            update_run_status(db, run_id, "failed", str(exc))
+            try:
+                self._append_conversation(
+                    db,
+                    run_id,
+                    kind="status",
+                    title="归因失败",
+                    content_markdown=str(exc),
+                    status="failed",
+                )
+            except Exception:
+                pass
+            self._publish_stream(run_id, event_type="error", status="failed", error=str(exc), title="agent_run_failed")
         finally:
             db.close()
             with self._lock:
@@ -267,7 +788,177 @@ def _estimate_duration(skill_ids: list[str]) -> str:
     return f"{seconds // 60}m {seconds % 60}s"
 
 
-def _select_skill_ids(prompt: str) -> list[str]:
+def _scripted_message_chunks(content_markdown: str) -> list[str]:
+    text = content_markdown.strip()
+    if not text:
+        return [""]
+    lines = text.splitlines(keepends=True)
+    chunks: list[str] = []
+    for line in lines:
+        if not line.strip():
+            if chunks:
+                chunks[-1] = f"{chunks[-1]}\n"
+            continue
+        chunks.append(line)
+    if chunks:
+        return chunks
+    if len(text) > 48:
+        midpoint = len(text) // 2
+        return [text[:midpoint], text[midpoint:]]
+    return [text]
+
+
+def _stream_chunk_delay_seconds() -> float:
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return 0.0
+    return 0.18
+
+
+def _build_pre_evidence_plan_message(
+    *,
+    prompt: str,
+    target_column: str | None,
+    plan_outline: str,
+    plan: list[AgentPlanStep],
+) -> str:
+    normalized_question = _normalize_main_cause_question(prompt, target_column)
+    step_titles = [step.title for step in plan[:4]]
+    if len(plan) > 4:
+        step_titles.append(f"其余 {len(plan) - 4} 步")
+    first_step = plan[0].title if plan else "读取当前实验的真实证据"
+    return "\n".join(
+        [
+            _bullet_section(
+                "发现",
+                [
+                    f"当前先聚焦“{normalized_question}”。",
+                    f"接下来会依次查看：{'、'.join(step_titles) if step_titles else '证据读取与归因整理'}。",
+                ],
+            ),
+            _bullet_section(
+                "解释",
+                [
+                    "我会先把证据路线排清楚，再把每一步新增的信息单独讲明白。",
+                    "后面的判断只会建立在当前实验已经跑出来的真实结果上。",
+                ],
+            ),
+            _bullet_section(
+                "下一步",
+                [
+                    f"先执行“{first_step}”。",
+                    "拿到第一批证据后，再继续推进后面的步骤。",
+                ],
+            ),
+        ]
+    )
+
+
+def _bullet_section(title: str, lines: list[str]) -> str:
+    content = [line.strip() for line in lines if line and line.strip()]
+    if not content:
+        content = ["暂无更新。"]
+    return "\n".join([title, *[f"- {line}" for line in content]])
+
+
+def _trim_trailing_punctuation(text: str) -> str:
+    return text.rstrip("。；;，,：:")
+
+
+def _normalize_sentence(text: str) -> str:
+    cleaned = re.sub(r"\s+", " ", (text or "").strip())
+    cleaned = re.sub(r"^(我们|我)根据[^。！？]*[。！？]?", "", cleaned)
+    cleaned = re.sub(r"^(系统|模型|Agent)根据[^。！？]*[。！？]?", "", cleaned)
+    cleaned = cleaned.strip()
+    if not cleaned:
+        return ""
+    if cleaned[-1] not in "。！？":
+        cleaned = f"{cleaned}。"
+    return cleaned
+
+
+def _step_explanation(step: AgentPlanStep, result: SkillExecutionResult) -> str:
+    artifact_count = len(result.artifacts)
+    if step.skillId.startswith("read_"):
+        return f"这一步先把“{step.title}”相关的真实证据读出来，后面的判断会直接建立在这些证据上。"
+    if artifact_count:
+        return f"这一步把证据整理成 {artifact_count} 个可回放 artifact，方便继续追问和复盘。"
+    if result.warnings:
+        return "这一步虽然拿到了结果，但同时暴露了限制或风险，因此后续判断会更保守。"
+    return f"这一步补齐了“{step.title}”这条证据链，让后续结论不只停留在口头描述。"
+
+
+def _build_step_transcript_message(
+    *,
+    step: AgentPlanStep,
+    result: SkillExecutionResult,
+    next_step_title: str | None,
+) -> str:
+    finding_lines = [_normalize_sentence(result.output_summary) or f"已完成“{step.title}”。"]
+    if result.artifacts:
+        artifact_titles = "、".join(artifact.title for artifact in result.artifacts[:3])
+        finding_lines.append(f"本步新增 {len(result.artifacts)} 个 artifact：{artifact_titles}。")
+    if result.warnings:
+        finding_lines.append(f"同时发现 {len(result.warnings)} 条提示：{'；'.join(_trim_trailing_punctuation(warning) for warning in result.warnings[:2])}。")
+
+    explanation_lines = [_step_explanation(step, result)]
+    if step.skillId == "tree_driver_analysis":
+        explanation_lines.append("如果这里没有足够的树模型驱动证据，后续就会降级去看 residual、benchmark 和 covariate。")
+    elif step.skillId == "read_covariate_flow":
+        explanation_lines.append("这一步主要用来确认当前结论有没有协变量泄漏风险，避免把未来信息误当成真实解释。")
+    elif step.skillId == "benchmark_gap_analysis":
+        explanation_lines.append("这一步会补上与基线或备选模型的差距，帮助判断结果是偶然波动还是稳定信号。")
+
+    if next_step_title:
+        next_lines = [f"继续执行“{next_step_title}”，把这条证据链和前面的结果拼起来。"]
+    else:
+        next_lines = ["整理全部证据并收口成最终归因结论。"]
+
+    return "\n\n".join(
+        [
+            _bullet_section("发现", finding_lines),
+            _bullet_section("解释", explanation_lines),
+            _bullet_section("下一步", next_lines),
+        ]
+    )
+
+
+def _normalize_main_cause_question(prompt: str, target_column: str | None) -> str:
+    text = (prompt or "").strip()
+    target = (target_column or "目标").strip()
+    if any(keyword in text for keyword in ["主要原因", "下降原因", "主因", "原因是什么", "OT 原因", "影响"]) or not text:
+        return f"影响{target}列的主要原因是什么？"
+    return text
+
+
+def _final_summary_prompt_payload(scratch: dict[str, Any], bundle: dict[str, Any], *, request: AgentRunRequest) -> dict[str, Any]:
+    normalized_question = _normalize_main_cause_question(request.prompt, bundle["record"].target_column)
+    drivers = _driver_items(bundle)[:3]
+    covariates = _covariates(bundle)
+    risk_count = sum(1 for item in covariates if item.leakageRisk)
+    tree_driver_sentence = (
+        "主要驱动候选：" + "、".join(item["feature"] for item in drivers) + "。"
+        if drivers
+        else "当前没有足够的树模型驱动证据，因此结论更多来自 residual / benchmark / covariate 策略。"
+    )
+    covariate_sentence = (
+        f"协变量风险项 {risk_count} 个。"
+        if risk_count > 0
+        else "当前实验没有协变量风险项。"
+    )
+    extra_notes: list[str] = []
+    if scratch.get("latestReportSection"):
+        extra_notes.append("已同步生成报告章节草稿。")
+    if scratch.get("latestChartArtifact"):
+        extra_notes.append("已生成可继续解读的图表 artifact。")
+    return {
+        "normalizedQuestion": normalized_question,
+        "treeDriverSentence": tree_driver_sentence,
+        "covariateSentence": covariate_sentence,
+        "extraNotes": extra_notes,
+    }
+
+
+def _select_skill_ids(prompt: str, *, target_column: str | None = None) -> list[str]:
     text = prompt.lower()
     skill_ids: list[str] = []
 
@@ -276,7 +967,20 @@ def _select_skill_ids(prompt: str) -> list[str]:
             if item not in skill_ids:
                 skill_ids.append(item)
 
-    include("read_attribution_snapshot", "read_residual_diagnostics")
+    normalized = _normalize_main_cause_question(prompt, target_column)
+    is_main_cause = normalized == f"影响{(target_column or '目标').strip()}列的主要原因是什么？"
+
+    if is_main_cause:
+        include(
+            "read_explainability",
+            "tree_driver_analysis",
+            "read_residual_diagnostics",
+            "benchmark_gap_analysis",
+            "read_covariate_flow",
+            "read_attribution_snapshot",
+        )
+    else:
+        include("read_attribution_snapshot", "read_residual_diagnostics")
     if any(keyword in prompt for keyword in ["特征", "驱动", "原因", "下降", "上升", "解释"]):
         include("read_explainability", "driver_ranking")
     if "协变量" in prompt or "泄漏" in prompt:
@@ -949,26 +1653,59 @@ def _artifact(
 
 
 def _build_final_summary(scratch: dict[str, Any], bundle: dict[str, Any], *, request: AgentRunRequest) -> str:
+    payload = _final_summary_prompt_payload(scratch, bundle, request=request)
+    fragments = [
+        f"已围绕“{payload['normalizedQuestion']}”完成本轮归因分析。",
+        payload["treeDriverSentence"],
+        payload["covariateSentence"],
+    ]
+    fragments.extend(payload["extraNotes"])
+    return " ".join(fragment for fragment in fragments if fragment)
+
+
+def _build_final_transcript_message(scratch: dict[str, Any], bundle: dict[str, Any], *, request: AgentRunRequest) -> str:
+    payload = _final_summary_prompt_payload(scratch, bundle, request=request)
     drivers = _driver_items(bundle)[:3]
     covariates = _covariates(bundle)
-    fragments = [
-        f"已围绕“{request.prompt}”完成本轮归因分析。",
-        (
-            "主要驱动候选：" + "、".join(item["feature"] for item in drivers) + "。"
-            if drivers
-            else "当前没有足够的树模型驱动证据，因此结论更多来自 residual / benchmark / covariate 策略。"
-        ),
-        (
-            f"协变量风险项 {sum(1 for item in covariates if item.leakageRisk)} 个。"
-            if covariates
-            else "当前实验没有协变量风险项。"
-        ),
+    risk_count = sum(1 for item in covariates if item.leakageRisk)
+
+    finding_lines = [
+        f"已围绕“{payload['normalizedQuestion']}”完成本轮归因分析。",
+        payload["treeDriverSentence"],
+        payload["covariateSentence"],
+        *payload["extraNotes"],
     ]
-    if scratch.get("latestReportSection"):
-        fragments.append("已同步生成报告章节草稿。")
+
+    if drivers:
+        explanation_lines = [
+            "本轮主因判断优先参考了树模型驱动证据，再和 residual、benchmark、covariate 结果交叉校验。",
+            f"当前最靠前的驱动候选包括：{'、'.join(item['feature'] for item in drivers)}。",
+        ]
+    else:
+        explanation_lines = [
+            "当前没有足够的树模型驱动证据，所以这次判断主要依赖 residual、benchmark 和 covariate 三条证据链。",
+            "这代表当前结论更适合当作解释证据，而不是严格的因果证明。",
+        ]
+    if risk_count > 0:
+        explanation_lines.append(f"当前共识别到 {risk_count} 个协变量风险项，阅读结果时需要额外注意泄漏风险。")
+    else:
+        explanation_lines.append("当前没有识别到协变量泄漏风险，因此这一部分不会额外拉偏结论。")
+
+    next_lines = []
     if scratch.get("latestChartArtifact"):
-        fragments.append("已生成可继续解读的图表 artifact。")
-    return " ".join(fragments)
+        next_lines.append("可以继续打开 Artifacts 查看新生成的图表，并围绕某个驱动项或异常点继续追问。")
+    if scratch.get("latestReportSection"):
+        next_lines.append("如果需要，我可以继续把这轮结论扩写成报告章节或管理层摘要。")
+    if not next_lines:
+        next_lines.append("如果你愿意，我们下一步可以继续按异常点、协变量或某个业务切片维度深挖。")
+
+    return "\n\n".join(
+        [
+            _bullet_section("发现", finding_lines),
+            _bullet_section("解释", explanation_lines),
+            _bullet_section("下一步", next_lines),
+        ]
+    )
 
 
 def _model_label(model_name: Any, model_id: Any) -> str:
@@ -998,6 +1735,11 @@ def _format_metric(value: Any) -> str:
     if number is None:
         return "-"
     return f"{number:.4f}" if abs(number) < 1 else f"{number:.2f}"
+
+
+def _metric(model_row: dict[str, Any], metric_name: str) -> float | None:
+    metrics = model_row.get("metrics") if isinstance(model_row.get("metrics"), dict) else {}
+    return _safe_float(metrics.get(metric_name))
 
 
 def _parse_time(value: Any) -> datetime | None:

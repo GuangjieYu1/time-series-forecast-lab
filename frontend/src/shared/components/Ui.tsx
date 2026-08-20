@@ -159,6 +159,7 @@ export function SideDrawer({
         onClick={onClose}
       />
       <aside className={`relative h-full overflow-y-auto border-l border-white/10 bg-[#0f172a] shadow-2xl ${widthClassName}`}>
+        <div className="drawer-slide-in h-full">
         <div className="sticky top-0 z-10 border-b border-white/10 bg-[#0f172a]/95 px-5 py-4 backdrop-blur">
           <div className="flex items-start justify-between gap-4">
             <div>
@@ -171,6 +172,7 @@ export function SideDrawer({
           </div>
         </div>
         <div className="p-5">{children}</div>
+        </div>
       </aside>
     </div>
   );

@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,6 +15,7 @@ from sqlalchemy.orm import sessionmaker
 from app.db.models import Base, ExperimentRecord, ReportRecord, UserRecord, WorkspaceMembershipRecord, WorkspaceRecord
 from app.db.session import get_db
 from app.main import app
+from app.schemas import AgentRunRequest
 from app.services.agent import orchestrator as agent_orchestrator_module
 
 
@@ -352,6 +354,44 @@ def _wait_for_agent_status(client: TestClient, *, experiment_id: str, run_id: st
     raise AssertionError(f"Agent run {run_id} did not finish in time. Last payload: {latest}")
 
 
+def _fake_agent_llm_plan(*args, user_prompt: str, **kwargs) -> str:
+    text = user_prompt
+    skill_ids = ["read_explainability", "read_residual_diagnostics", "read_covariate_flow", "read_attribution_snapshot"]
+    if "瀑布" in text:
+        skill_ids.extend(["driver_ranking", "generate_waterfall_chart"])
+    if "报告" in text and "完整" in text:
+        skill_ids.append("generate_full_report")
+    elif "报告" in text:
+        skill_ids.append("generate_report_section")
+    skill_ids.append("executive_summary_writeback")
+    return json.dumps({"skillIds": skill_ids, "overview": "fake plan"}, ensure_ascii=False)
+
+
+def _fake_agent_stream(*args, user_prompt: str, on_delta, **kwargs) -> str:
+    try:
+        payload = json.loads(user_prompt)
+    except json.JSONDecodeError:
+        payload = {}
+    if "normalizedQuestion" in payload:
+        text = " ".join(
+            [
+                f"已围绕“{payload['normalizedQuestion']}”完成本轮归因分析。",
+                payload["treeDriverSentence"],
+                payload["covariateSentence"],
+                *payload.get("extraNotes", []),
+            ]
+        ).strip()
+    elif "stepTitle" in payload:
+        text = f"我刚完成“{payload['stepTitle']}”，{payload['outputSummary']}。下一步会继续处理：{payload['nextStep']}。"
+    else:
+        text = "我准备先读取 explainability、residual、benchmark 和 covariate 证据，再按计划逐步归因。"
+    midpoint = max(1, len(text) // 2)
+    for chunk in (text[:midpoint], text[midpoint:]):
+        if chunk:
+            on_delta(chunk)
+    return text
+
+
 def _login(client: TestClient, *, username: str, password: str, workspace_id: str | None = None):
     response = client.post("/api/auth/login", json={"username": username, "password": password})
     assert response.status_code == 200, response.text
@@ -420,7 +460,7 @@ def test_bootstrap_login_logout_and_repeat_bootstrap_rejected(isolated_auth_env)
     bootstrapped = _bootstrap_admin(client)
     assert bootstrapped["authenticated"] is True
     assert bootstrapped["user"]["isAdmin"] is True
-    assert any(workspace["kind"] == "personal" for workspace in bootstrapped["workspaces"])
+    assert any(workspace["kind"] == "private" for workspace in bootstrapped["workspaces"])
     assert any(workspace["kind"] == "example" for workspace in bootstrapped["workspaces"])
 
     repeated = isolated_auth_env.make_client().post(
@@ -464,7 +504,7 @@ def test_register_requires_bootstrap_then_creates_normal_user(isolated_auth_env)
     assert registered["authenticated"] is True
     assert registered["user"]["isAdmin"] is False
     workspace_kinds = {workspace["kind"] for workspace in registered["workspaces"]}
-    assert {"personal", "example"}.issubset(workspace_kinds)
+    assert {"private", "example"}.issubset(workspace_kinds)
 
     duplicate = isolated_auth_env.make_client().post(
         "/api/auth/register",
@@ -547,7 +587,7 @@ def test_admin_created_user_gets_personal_workspace(isolated_auth_env):
         personal_count = db.scalar(
             select(func.count())
             .select_from(WorkspaceRecord)
-            .where(WorkspaceRecord.owner_user_id == created_user["userId"], WorkspaceRecord.kind == "personal")
+            .where(WorkspaceRecord.owner_user_id == created_user["userId"], WorkspaceRecord.kind == "private")
         )
         example_membership_count = db.scalar(
             select(func.count())
@@ -567,7 +607,7 @@ def test_admin_created_user_gets_personal_workspace(isolated_auth_env):
     analyst_client = isolated_auth_env.make_client()
     session = _login(analyst_client, username="analyst", password="password123")
     workspace_kinds = {workspace["kind"] for workspace in session["workspaces"]}
-    assert {"personal", "example"}.issubset(workspace_kinds)
+    assert {"private", "example"}.issubset(workspace_kinds)
 
 
 def test_shared_workspace_membership_and_member_permissions(isolated_auth_env):
@@ -674,7 +714,69 @@ def test_workspace_scoping_upload_ownership_and_example_read_only(isolated_auth_
     assert read_only_upload.status_code == 403
 
 
-def test_agent_run_plan_history_and_artifact_replay(isolated_auth_env):
+def test_agent_run_rejects_missing_llm_config(isolated_auth_env):
+    admin_client = isolated_auth_env.make_client()
+    admin_session = _bootstrap_admin(admin_client)
+    personal_workspace_id = admin_session["defaultWorkspaceId"]
+
+    db = isolated_auth_env.session_local()
+    try:
+        _insert_agent_ready_experiment(
+            db,
+            workspace_id=personal_workspace_id,
+            user_id=admin_session["user"]["userId"],
+            experiment_id="exp_agent_no_llm_1",
+            name="Agent Missing LLM Demo",
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    admin_client.headers.update({"X-Workspace-Id": personal_workspace_id})
+    response = admin_client.post(
+        "/api/experiments/exp_agent_no_llm_1/agent/runs",
+        json={
+            "prompt": "影响 value 列的主要原因是什么？",
+            "currentPage": "/experiments/exp_agent_no_llm_1/attribution",
+            "currentTab": "attribution",
+            "selectedModelId": "xgboost",
+            "autoExecute": False,
+        },
+    )
+    assert response.status_code == 400, response.text
+    payload = response.json()
+    assert payload.get("detail", payload)["code"] == "AGENT_LLM_NOT_CONFIGURED"
+
+
+def test_agent_final_summary_normalizes_ot_main_cause_without_driver_or_covariate_risk():
+    request = AgentRunRequest(prompt="这次 OT 的主要原因是什么？")
+    bundle = {
+        "record": SimpleNamespace(target_column="OT"),
+        "explainability": SimpleNamespace(
+            recommendedModelId="lightgbm",
+            models=[
+                SimpleNamespace(
+                    modelId="lightgbm",
+                    shapTopFeatures=[],
+                    featureImportance=[],
+                )
+            ],
+        ),
+        "runtime": SimpleNamespace(featurePipeline=[SimpleNamespace(covariates=[])]),
+    }
+
+    summary = agent_orchestrator_module._build_final_summary({}, bundle, request=request)
+
+    assert summary == (
+        "已围绕“影响OT列的主要原因是什么？”完成本轮归因分析。 "
+        "当前没有足够的树模型驱动证据，因此结论更多来自 residual / benchmark / covariate 策略。 "
+        "当前实验没有协变量风险项。"
+    )
+
+
+def test_agent_run_plan_history_and_artifact_replay(isolated_auth_env, monkeypatch):
+    monkeypatch.setattr(agent_orchestrator_module, "request_deepseek_text", _fake_agent_llm_plan)
+    monkeypatch.setattr(agent_orchestrator_module, "SessionLocal", isolated_auth_env.session_local)
     admin_client = isolated_auth_env.make_client()
     admin_session = _bootstrap_admin(admin_client)
     personal_workspace_id = admin_session["defaultWorkspaceId"]
@@ -701,6 +803,13 @@ def test_agent_run_plan_history_and_artifact_replay(isolated_auth_env):
             "currentTab": "attribution",
             "selectedModelId": "xgboost",
             "autoExecute": False,
+            "llm": {
+                "provider": "deepseek",
+                "apiKey": "test-key",
+                "baseUrl": "https://api.deepseek.com",
+                "model": "deepseek-v4-flash",
+                "stream": True,
+            },
         },
     )
     assert response.status_code == 200, response.text
@@ -721,6 +830,8 @@ def test_agent_run_plan_history_and_artifact_replay(isolated_auth_env):
     assert detail_payload["request"]["prompt"].startswith("解释这次下降原因")
     assert detail_payload["events"][0]["type"] == "plan"
     assert detail_payload["messages"][0]["role"] == "user"
+    assert detail_payload["conversation"][0]["kind"] == "user"
+    assert detail_payload["llmSession"]["model"] == "deepseek-v4-flash"
     assert detail_payload["availableSkills"]
 
     history = admin_client.get("/api/experiments/exp_agent_plan_1/agent/history")
@@ -737,6 +848,8 @@ def test_agent_run_plan_history_and_artifact_replay(isolated_auth_env):
 
 def test_agent_auto_execute_generates_artifacts_and_report_record(isolated_auth_env, monkeypatch):
     monkeypatch.setattr(agent_orchestrator_module, "SessionLocal", isolated_auth_env.session_local)
+    monkeypatch.setattr(agent_orchestrator_module, "request_deepseek_text", _fake_agent_llm_plan)
+    monkeypatch.setattr(agent_orchestrator_module, "stream_deepseek_text", _fake_agent_stream)
     admin_client = isolated_auth_env.make_client()
     admin_session = _bootstrap_admin(admin_client)
     personal_workspace_id = admin_session["defaultWorkspaceId"]
@@ -763,6 +876,13 @@ def test_agent_auto_execute_generates_artifacts_and_report_record(isolated_auth_
             "currentTab": "attribution",
             "selectedModelId": "xgboost",
             "autoExecute": True,
+            "llm": {
+                "provider": "deepseek",
+                "apiKey": "test-key",
+                "baseUrl": "https://api.deepseek.com",
+                "model": "deepseek-v4-flash",
+                "stream": True,
+            },
         },
     )
     assert response.status_code == 200, response.text
@@ -773,6 +893,21 @@ def test_agent_auto_execute_generates_artifacts_and_report_record(isolated_auth_
     assert any(artifact["kind"] == "chart" for artifact in detail_payload["artifacts"])
     assert any(artifact["kind"] == "report" for artifact in detail_payload["artifacts"])
     assert any(message["role"] == "assistant" for message in detail_payload["messages"])
+    assert any(item["kind"] == "assistant" for item in detail_payload["conversation"])
+    assert "已围绕" in detail_payload["summary"]
+    plan_message = next(item for item in detail_payload["conversation"] if item["kind"] == "assistant" and item["title"] == "计划")
+    assert "发现" in plan_message["contentMarkdown"]
+    assert "解释" in plan_message["contentMarkdown"]
+    assert "下一步" in plan_message["contentMarkdown"]
+    assert "当前先聚焦" in plan_message["contentMarkdown"]
+    assert "证据路线排清楚" in plan_message["contentMarkdown"]
+    assert "Read Explainability" in plan_message["contentMarkdown"]
+    step_summary = next(item for item in detail_payload["conversation"] if item["kind"] == "assistant" and item["title"] == "发现 / 解释 / 下一步")
+    assert "发现" in step_summary["contentMarkdown"]
+    assert "解释" in step_summary["contentMarkdown"]
+    assert "下一步" in step_summary["contentMarkdown"]
+    assert "根据输入生成步骤摘要" not in step_summary["contentMarkdown"]
+    assert "根据给定的模板" not in detail_payload["summary"]
 
     chart_artifact = next(artifact for artifact in detail_payload["artifacts"] if artifact["kind"] == "chart")
     artifact_response = admin_client.get(f"/api/experiments/exp_agent_exec_1/agent/artifacts/{chart_artifact['artifactId']}")
@@ -797,6 +932,8 @@ def test_agent_auto_execute_generates_artifacts_and_report_record(isolated_auth_
 
 def test_agent_cancel_guardrails_and_workspace_scope(isolated_auth_env, monkeypatch):
     monkeypatch.setattr(agent_orchestrator_module, "SessionLocal", isolated_auth_env.session_local)
+    monkeypatch.setattr(agent_orchestrator_module, "request_deepseek_text", _fake_agent_llm_plan)
+    monkeypatch.setattr(agent_orchestrator_module, "stream_deepseek_text", _fake_agent_stream)
     admin_client = isolated_auth_env.make_client()
     admin_session = _bootstrap_admin(admin_client)
     personal_workspace_id = admin_session["defaultWorkspaceId"]
@@ -826,6 +963,13 @@ def test_agent_cancel_guardrails_and_workspace_scope(isolated_auth_env, monkeypa
             "currentTab": "results",
             "selectedModelId": "xgboost",
             "autoExecute": True,
+            "llm": {
+                "provider": "deepseek",
+                "apiKey": "test-key",
+                "baseUrl": "https://api.deepseek.com",
+                "model": "deepseek-v4-flash",
+                "stream": True,
+            },
         },
     )
     assert create_response.status_code == 200, create_response.text
@@ -842,7 +986,18 @@ def test_agent_cancel_guardrails_and_workspace_scope(isolated_auth_env, monkeypa
     example_experiment_id = example_client.get("/api/experiments").json()[0]["experimentId"]
     read_only_response = example_client.post(
         f"/api/experiments/{example_experiment_id}/agent/runs",
-        json={"prompt": "帮我解释一下这个示例实验。", "currentPage": "/experiments/demo", "autoExecute": False},
+        json={
+            "prompt": "帮我解释一下这个示例实验。",
+            "currentPage": "/experiments/demo",
+            "autoExecute": False,
+            "llm": {
+                "provider": "deepseek",
+                "apiKey": "test-key",
+                "baseUrl": "https://api.deepseek.com",
+                "model": "deepseek-v4-flash",
+                "stream": True,
+            },
+        },
     )
     assert read_only_response.status_code == 403
 

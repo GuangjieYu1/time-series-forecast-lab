@@ -24,6 +24,251 @@ export interface UploadPreviewResponse {
   sheets: SheetPreview[];
 }
 
+export type AnalysisType = "forecast" | "attribution" | "supervised_ml" | "clustering";
+export type DatasetIssueType =
+  | "constant_column"
+  | "high_missing_rate"
+  | "suspected_identifier"
+  | "duplicate_rows"
+  | "duplicate_time_index"
+  | "single_unique_value"
+  | "possible_target_candidates"
+  | "possible_grouping_columns";
+export type DatasetIssueSeverity = "info" | "warn" | "high";
+export type DatasetTransformType =
+  | "drop_constant_columns"
+  | "drop_identifier_columns"
+  | "drop_high_missing_columns"
+  | "normalize_numeric_features";
+
+export interface DatasetIssue {
+  issueType: DatasetIssueType;
+  severity: DatasetIssueSeverity;
+  title: string;
+  description: string;
+  columns: string[];
+  metricValue: number | null;
+}
+
+export interface DatasetRecommendation {
+  recommendationId: string;
+  title: string;
+  description: string;
+  actionType: DatasetTransformType | "routing" | "observation";
+  columns: string[];
+  expectedBenefit: string;
+}
+
+export interface ReadinessDimensionScore {
+  key: "completeness" | "stability" | "temporal_integrity" | "feature_usability" | "leakage_risk" | "modeling_readiness";
+  label: string;
+  score: number;
+  reason: string;
+}
+
+export interface ReadinessScore {
+  overall: number;
+  level: "excellent" | "good" | "fair" | "poor";
+  dimensions: ReadinessDimensionScore[];
+  summary: string;
+}
+
+export interface DatasetColumnProfile extends ColumnProfile {
+  uniqueCountInPreview: number;
+  uniqueRateInPreview: number;
+  nullRateInPreview: number;
+  isConstant: boolean;
+  isPotentialIdentifier: boolean;
+  numericMeanInPreview: number | null;
+  numericStdInPreview: number | null;
+  roleHints: string[];
+}
+
+export interface DatasetProfile {
+  uploadId: string;
+  workspaceId: string | null;
+  fileName: string;
+  sheetName: string;
+  rowCountApprox: number | null;
+  columnCount: number;
+  previewRowCount: number;
+  columns: DatasetColumnProfile[];
+  typeCounts: Record<string, number>;
+  timeColumnCandidates: string[];
+  targetCandidates: string[];
+  groupingCandidates: string[];
+  numericColumns: string[];
+  categoricalColumns: string[];
+  textColumns: string[];
+  issues: DatasetIssue[];
+  recommendations: DatasetRecommendation[];
+  readinessScore: ReadinessScore;
+}
+
+export interface AnalysisProfileRequest {
+  uploadId: string;
+  sheetName: string;
+}
+
+export interface WorkflowRouteSuggestion {
+  analysisType: AnalysisType;
+  label: string;
+  eligible: boolean;
+  recommended: boolean;
+  matchScore: number;
+  reasons: string[];
+  requiredInputs: string[];
+  warnings: string[];
+  nextPath: string | null;
+}
+
+export interface RouteSuggestion {
+  recommendedRoutes: WorkflowRouteSuggestion[];
+  blockedRoutes: WorkflowRouteSuggestion[];
+  requiredInputs: string[];
+  reasoning: string[];
+  warnings: string[];
+}
+
+export interface AnalysisRouteSuggestionRequest {
+  uploadId: string;
+  sheetName: string;
+}
+
+export interface DatasetTransformPlanRequest {
+  uploadId: string;
+  sheetName: string;
+  transformType: DatasetTransformType;
+  columns: string[];
+}
+
+export interface DatasetTransformPlan {
+  transformType: DatasetTransformType;
+  explanation: string;
+  columns: string[];
+  willCreateNewDataset: boolean;
+  readinessBefore: ReadinessScore;
+  readinessAfter: ReadinessScore;
+  datasetIssuesAddressed: string[];
+  expectedEffects: string[];
+}
+
+export interface DatasetTransformExecutionRequest extends DatasetTransformPlanRequest {
+  confirmed: boolean;
+}
+
+export interface DatasetTransformResult {
+  transformType: DatasetTransformType;
+  appliedColumns: string[];
+  upload: UploadPreviewResponse;
+  sheet: SheetPreview;
+  datasetProfile: DatasetProfile;
+  readinessBefore: ReadinessScore;
+  readinessAfter: ReadinessScore;
+  qualityDeltaSummary: string;
+  beforeIssues: DatasetIssue[];
+  afterIssues: DatasetIssue[];
+}
+
+export interface WorkflowStartRequest {
+  uploadId: string;
+  sheetName: string;
+  experimentName?: string | null;
+  targetColumn?: string | null;
+  timeColumn?: string | null;
+  groupingColumns?: string[];
+  featureColumns?: string[];
+  clusterCount?: number | null;
+}
+
+export interface WorkflowStageDetail {
+  stageId: string;
+  title: string;
+  description: string;
+  status: "planned" | "running" | "completed" | "failed";
+  progressPercent: number;
+}
+
+export interface AnalysisRunEvent {
+  eventId: string;
+  type: string;
+  title: string;
+  detail: string;
+  status: "planned" | "running" | "completed" | "failed";
+}
+
+export interface WorkflowRunDetail {
+  runId: string;
+  status: "planned" | "running" | "completed" | "failed";
+  analysisType: AnalysisType;
+  experimentId: string | null;
+  experimentName: string | null;
+  nextPath: string | null;
+  summary: string;
+  warnings: string[];
+  currentStage: string | null;
+  progressPercent: number;
+  startedAt: string | null;
+  completedAt: string | null;
+  configSummary: Record<string, unknown>;
+  metricsSummary: Record<string, unknown>;
+  stages: WorkflowStageDetail[];
+  rerunSupported: boolean;
+}
+
+export interface AnalysisRunEventsResponse {
+  runId: string;
+  events: AnalysisRunEvent[];
+}
+
+export interface AgentDecisionCard {
+  cardId: string;
+  title: string;
+  explanation: string;
+  actionType: "transform" | "workflow" | "routing" | "observation";
+  actionId: string;
+  columns: string[];
+  expectedBenefit: string;
+  requiresConfirmation: boolean;
+  whatDetected: string;
+  whyRecommended: string;
+  ifSkipped: string;
+  expectedChange: string;
+}
+
+export interface AgentDatasetContext {
+  uploadId: string;
+  sheetName: string;
+  currentPage: string | null;
+  selectedRoute: AnalysisType | null;
+  datasetProfile: DatasetProfile;
+  routeSuggestion: RouteSuggestion | null;
+}
+
+export interface AnalysisAgentRequest {
+  uploadId: string;
+  sheetName: string;
+  prompt: string;
+  currentPage?: string | null;
+  selectedRoute?: AnalysisType | null;
+}
+
+export interface AnalysisAgentPlanStep {
+  stepId: string;
+  title: string;
+  description: string;
+  status: "planned" | "running" | "completed";
+}
+
+export interface AnalysisAgentResponse {
+  summary: string;
+  message: string;
+  context: AgentDatasetContext;
+  plan: AnalysisAgentPlanStep[];
+  decisionCards: AgentDecisionCard[];
+  warnings: string[];
+}
+
 export interface AuthUser {
   userId: string;
   username: string;
@@ -36,12 +281,16 @@ export interface AuthUser {
 export interface WorkspaceSummary {
   workspaceId: string;
   name: string;
-  kind: "personal" | "shared" | "example";
-  role: "owner" | "member";
+  kind: "private" | "public" | "custom" | "example";
+  role: "owner" | "manager" | "member" | "admin";
   isReadOnly: boolean;
   ownerUserId: string;
+  groupId: string | null;
   isPersonal: boolean;
   isOwner: boolean;
+  isArchived: boolean;
+  canWrite: boolean;
+  canManageMembers: boolean;
   createdAt: string;
 }
 
@@ -75,6 +324,7 @@ export interface RegisterRequest {
   username: string;
   displayName: string;
   password: string;
+  requestedGroupIds: string[];
 }
 
 export interface CreateUserRequest {
@@ -82,6 +332,7 @@ export interface CreateUserRequest {
   displayName: string;
   password: string;
   isAdmin: boolean;
+  groupIds: string[];
 }
 
 export interface UpdateUserRequest {
@@ -96,6 +347,8 @@ export interface UpdateUserPasswordRequest {
 export interface UserGroupRef {
   groupId: string;
   name: string;
+  role: "member" | "manager";
+  isArchived: boolean;
 }
 
 export interface UserSummary {
@@ -113,12 +366,56 @@ export interface UserGroupSummary {
   name: string;
   description: string | null;
   memberCount: number;
+  managerCount: number;
+  publicWorkspaceId: string | null;
+  isArchived: boolean;
   createdAt: string;
 }
 
 export interface CreateUserGroupRequest {
   name: string;
   description?: string;
+  managerUserIds?: string[];
+}
+
+export interface RegistrationGroupSummary {
+  groupId: string;
+  name: string;
+  description: string | null;
+}
+
+export interface GroupMembershipSummary {
+  groupId: string;
+  name: string;
+  role: "member" | "manager";
+  publicWorkspaceId: string;
+  isArchived: boolean;
+}
+
+export interface GroupJoinRequestSummary {
+  requestId: string;
+  groupId: string;
+  groupName: string;
+  userId: string;
+  username: string;
+  displayName: string;
+  status: "pending" | "approved" | "rejected" | "cancelled";
+  reviewedByUserId: string | null;
+  reviewedAt: string | null;
+  notifyStatus: "pending" | "sent" | "failed" | "skipped";
+  notifyError: string | null;
+  createdAt: string;
+}
+
+export interface MyGroupStateResponse {
+  memberships: GroupMembershipSummary[];
+  requests: GroupJoinRequestSummary[];
+}
+
+export interface UserDirectoryEntry {
+  userId: string;
+  username: string;
+  displayName: string;
 }
 
 export interface UpdateUserGroupsRequest {
@@ -127,6 +424,7 @@ export interface UpdateUserGroupsRequest {
 
 export interface CreateWorkspaceRequest {
   name: string;
+  memberUserIds: string[];
 }
 
 export interface UpdateWorkspaceRequest {
@@ -137,13 +435,19 @@ export interface WorkspaceMemberResponse {
   userId: string;
   username: string;
   displayName: string;
-  role: "owner" | "member";
+  role: "owner" | "manager" | "member";
   isActive: boolean;
   createdAt: string;
 }
 
 export interface AddWorkspaceMemberRequest {
   userId: string;
+}
+
+export interface MoveExperimentResponse {
+  ok: boolean;
+  workspaceId: string;
+  workspaceName: string;
 }
 
 export interface ModelCapability {
@@ -893,6 +1197,24 @@ export type AgentRunStatus = "planned" | "running" | "completed" | "failed" | "c
 export type AgentPlanStepStatus = "pending" | "running" | "completed" | "failed" | "cancelled" | "skipped";
 export type AgentArtifactKind = "summary" | "markdown" | "chart" | "diagnosis" | "report" | "table" | "warning" | "run_request";
 export type AgentEventType = "status" | "plan" | "skill" | "artifact" | "message" | "warning" | "error";
+export type AgentConversationKind = "user" | "assistant" | "plan" | "action" | "artifact" | "status";
+export type AgentConversationStreamState = "streaming" | "final";
+export type AgentStreamEventType = "status" | "message_delta" | "message_final" | "plan_step" | "skill_status" | "artifact_ready" | "warning" | "error" | "heartbeat";
+
+export interface AgentLlmConfig {
+  provider: "deepseek";
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+  stream: boolean;
+}
+
+export interface AgentLlmSession {
+  provider: "deepseek";
+  baseUrl: string;
+  model: string;
+  stream: boolean;
+}
 
 export interface AgentSkillDefinition {
   skillId: string;
@@ -910,15 +1232,19 @@ export interface AgentSkillDefinition {
 export interface AgentPlanStep {
   stepId: string;
   title: string;
-  detail: string;
   skillId: string;
   status: AgentPlanStepStatus;
+  description: string;
   reads: string[];
-  runsModel: boolean;
-  generatesChart: boolean;
-  writesReport: boolean;
-  estimatedDuration: string | null;
-  risks: string[];
+  runs: string[];
+  generates: string[];
+  sideEffects: string[];
+  inputSummary: string | null;
+  outputSummary: string | null;
+  warnings: string[];
+  error: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
 }
 
 export interface AgentSkillInvocation {
@@ -927,10 +1253,11 @@ export interface AgentSkillInvocation {
   status: AgentPlanStepStatus;
   startedAt: string | null;
   finishedAt: string | null;
-  inputSummary: string;
-  outputSummary: string;
-  warning: string | null;
+  inputSummary: string | null;
+  outputSummary: string | null;
+  warnings: string[];
   error: string | null;
+  artifactIds: string[];
 }
 
 export interface AgentArtifact {
@@ -940,8 +1267,23 @@ export interface AgentArtifact {
   summary: string;
   createdAt: string;
   sourceSkillId: string | null;
-  payload: Record<string, unknown>;
-  linksToReport: boolean;
+  markdown: string | null;
+  reportCompatible: boolean;
+  downloadable: boolean;
+  data: Record<string, unknown>;
+}
+
+export interface AgentConversationItem {
+  itemId: string;
+  kind: AgentConversationKind;
+  title: string | null;
+  contentMarkdown: string;
+  stepId: string | null;
+  skillId: string | null;
+  artifactId: string | null;
+  status: string | null;
+  createdAt: string;
+  streamState: AgentConversationStreamState;
 }
 
 export interface AgentContextSnapshot {
@@ -980,6 +1322,8 @@ export interface AgentRunEvent {
   skillId: string | null;
   artifactId: string | null;
   status: string | null;
+  conversationItemId?: string | null;
+  payload?: Record<string, unknown> | null;
 }
 
 export interface AgentRunRequest {
@@ -992,6 +1336,7 @@ export interface AgentRunRequest {
   selectedVisualId?: string | null;
   selectedAnomalyTime?: string | null;
   autoExecute?: boolean;
+  llm?: AgentLlmConfig | null;
 }
 
 export interface AgentRunResponse {
@@ -1025,12 +1370,14 @@ export interface AgentRunDetail {
   plan: AgentPlanStep[];
   events: AgentRunEvent[];
   messages: AgentMessage[];
+  conversation: AgentConversationItem[];
   skillInvocations: AgentSkillInvocation[];
   artifacts: AgentArtifact[];
   availableSkills: AgentSkillDefinition[];
   estimatedDuration: string | null;
   risks: string[];
   summary: string | null;
+  llmSession: AgentLlmSession | null;
   canCancel: boolean;
   createdAt: string;
   updatedAt: string;
@@ -1039,6 +1386,25 @@ export interface AgentRunDetail {
 export interface AgentRunEventsResponse {
   runId: string;
   events: AgentRunEvent[];
+}
+
+export interface AgentStreamEvent {
+  cursor: number;
+  runId: string;
+  eventType: AgentStreamEventType;
+  timestamp: string;
+  status: string | null;
+  stepId: string | null;
+  skillId: string | null;
+  artifactId: string | null;
+  delta: string | null;
+  warning: string | null;
+  error: string | null;
+  title: string | null;
+  detail: string | null;
+  conversationItem: AgentConversationItem | null;
+  planStep: AgentPlanStep | null;
+  artifact: AgentArtifact | null;
 }
 
 export interface AttributionSnapshotSection {
@@ -1062,6 +1428,7 @@ export interface AttributionSnapshot {
 export interface ExperimentListItem {
   experimentId: string;
   experimentName: string;
+  analysisType: AnalysisType;
   fileName: string;
   sheetName: string;
   targetColumn: string;
@@ -1085,6 +1452,11 @@ export interface ExperimentDetail extends ExperimentListItem {
   series: { time: string; value: number }[];
   finalForecast: FinalForecastResponse | null;
   modelLogs: unknown[];
+  datasetProfile: DatasetProfile | null;
+  workflowState: Record<string, unknown> | null;
+  analysisArtifacts: AgentArtifact[];
+  parentUploadId: string | null;
+  sourceExperimentId: string | null;
   explainability: ExperimentExplainabilityResponse | null;
   runtime: RuntimeRunDetail | null;
   attribution: AttributionSnapshot | null;

@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import WorkspaceContext, get_workspace_context, get_workspace_experiment, require_workspace_write_access
+from app.api.dependencies import WorkspaceContext, ensure_experiment_manage_access, get_workspace_context, get_workspace_experiment, require_workspace_write_access
 from app.core.errors import AppError, as_http_error
 from app.db.models import ExperimentRecord, ReportRecord, UserRecord
 from app.db.session import get_db
@@ -73,6 +73,7 @@ def _experiment_payload(record: ExperimentRecord) -> dict:
 def generate_report(request: GenerateReportRequest, context: WorkspaceContext = Depends(require_workspace_write_access), db: Session = Depends(get_db)):
     try:
         record = get_workspace_experiment(db, request.experimentId, context)
+        ensure_experiment_manage_access(record, context)
         report_context = build_report_context(_experiment_payload(record))
         content = generate_deepseek_report(
             api_key=request.apiKey,

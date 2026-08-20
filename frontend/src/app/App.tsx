@@ -1,5 +1,7 @@
 import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { AnalysisPage } from "../features/analysis/AnalysisPage";
+import { AnalysisWorkflowPage } from "../features/analysis/AnalysisWorkflowPage";
 import { AttributionLabPage } from "../features/attribution/AttributionLabPage";
 import { ExperimentDetailPage } from "../features/experiments/ExperimentDetailPage";
 import { ExperimentsPage } from "../features/experiments/ExperimentsPage";
@@ -9,17 +11,18 @@ import { ModelsPage } from "../features/models/ModelsPage";
 import { OverviewPage } from "../features/overview/OverviewPage";
 import { ApiSettingsPage } from "../features/settings/ApiSettingsPage";
 import { UploadPage } from "../features/upload/UploadPage";
-import { bootstrapAuth, checkUsernameAvailability, fetchDevice, fetchHealth, fetchModels, fetchSession, login, logout, register } from "../shared/api/client";
+import { bootstrapAuth, checkUsernameAvailability, fetchDevice, fetchHealth, fetchModels, fetchRegistrationGroups, fetchSession, login, logout, register } from "../shared/api/client";
 import { loadDeepSeekSettings } from "../shared/api/deepseekSettings";
 import { ErrorBanner, LoadingBlock } from "../shared/components/Status";
 import { Badge, controls, surface } from "../shared/components/Ui";
 import { zhCN } from "../shared/i18n/zhCN";
-import type { AuthSessionResponse, WorkspaceSummary } from "../shared/types/api";
+import type { AuthSessionResponse, RegistrationGroupSummary, WorkspaceSummary } from "../shared/types/api";
 import { useLabStore } from "./store";
 
 const navItems = [
   { to: "/", label: zhCN.nav.overview, code: "OV" },
   { to: "/upload", label: zhCN.nav.upload, code: "UP" },
+  { to: "/analysis", label: zhCN.nav.analysis, code: "AN" },
   { to: "/forecast", label: zhCN.nav.forecast, code: "FX" },
   { to: "/models", label: zhCN.nav.models, code: "MD" },
   { to: "/experiments", label: zhCN.nav.experiments, code: "HX" },
@@ -140,11 +143,12 @@ function MobileMenuButton({ open, onClick }: { open: boolean; onClick: () => voi
 
 function WorkspaceBadge({ workspace }: { workspace: WorkspaceSummary | null }) {
   if (!workspace) return null;
+  const kindLabel = workspace.kind === "private" ? "Private" : workspace.kind === "public" ? "Public" : workspace.kind === "custom" ? "Custom" : "Example";
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <Badge tone={workspace.kind === "example" ? "warn" : workspace.kind === "shared" ? "info" : "good"}>{workspace.name}</Badge>
-      <Badge tone="neutral">{workspace.kind === "personal" ? "Personal" : workspace.kind === "shared" ? "Shared" : "Example"}</Badge>
-      <Badge tone="neutral">{workspace.role === "owner" ? "Owner" : "Member"}</Badge>
+      <Badge tone={workspace.kind === "example" ? "warn" : workspace.kind === "public" ? "info" : "good"}>{workspace.name}</Badge>
+      <Badge tone="neutral">{kindLabel}</Badge>
+      <Badge tone="neutral">{workspace.role}</Badge>
       {workspace.isReadOnly ? <Badge tone="warn">只读</Badge> : null}
     </div>
   );
@@ -173,6 +177,12 @@ function TopStatusBar({
   const [deepSeekConfigured, setDeepSeekConfigured] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const selectedWorkspace = workspaces.find((item) => item.workspaceId === selectedWorkspaceId) ?? null;
+  const groupedWorkspaces = [
+    { label: "我的 Private", kinds: ["private"] },
+    { label: "组 Public", kinds: ["public"] },
+    { label: "协作 Custom", kinds: ["custom"] },
+    { label: "示例", kinds: ["example"] },
+  ].map((group) => ({ ...group, items: workspaces.filter((workspace) => group.kinds.includes(workspace.kind)) })).filter((group) => group.items.length > 0);
 
   useEffect(() => {
     void fetchHealth()
@@ -225,10 +235,14 @@ function TopStatusBar({
                 value={selectedWorkspaceId ?? ""}
                 onChange={(event) => onWorkspaceChange(event.target.value)}
               >
-                {workspaces.map((workspace) => (
-                  <option key={workspace.workspaceId} value={workspace.workspaceId} className="text-slate-950">
-                    {workspace.name} · {workspace.kind} · {workspace.role}
-                  </option>
+                {groupedWorkspaces.map((group) => (
+                  <optgroup key={group.label} label={group.label} className="text-slate-950">
+                    {group.items.map((workspace) => (
+                      <option key={workspace.workspaceId} value={workspace.workspaceId} className="text-slate-950">
+                        {workspace.name} · {workspace.role}{workspace.isReadOnly ? " · 只读" : ""}
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
               </select>
             </label>
@@ -350,6 +364,8 @@ function AuthScreen({
   const [usernameAvailability, setUsernameAvailability] = useState<UsernameAvailabilityState>("idle");
   const [usernameAvailabilityMessage, setUsernameAvailabilityMessage] = useState<string | null>(null);
   const [lastCheckedUsername, setLastCheckedUsername] = useState("");
+  const [registrationGroups, setRegistrationGroups] = useState<RegistrationGroupSummary[]>([]);
+  const [requestedGroupIds, setRequestedGroupIds] = useState<string[]>([]);
   const [touched, setTouched] = useState({ username: false, displayName: false, password: false });
   const usernameCheckRequestRef = useRef(0);
   const canRegister = !bootstrapRequired;
@@ -360,6 +376,13 @@ function AuthScreen({
   const displayNameValid = displayName.trim().length > 0;
   const passwordRegisterValid = passwordMeetsRegisterRule(password);
   const passwordStrength = getPasswordStrength(password);
+
+  useEffect(() => {
+    if (!isRegistering) return;
+    void fetchRegistrationGroups()
+      .then(setRegistrationGroups)
+      .catch(() => setRegistrationGroups([]));
+  }, [isRegistering]);
 
   function resetRegisterValidationState() {
     setPendingRegisterSession(null);
@@ -448,7 +471,7 @@ function AuthScreen({
     if ((touched.displayName || submitAttempted) && !displayNameValid) {
       return <span className="text-rose-300">显示名称不能为空。</span>;
     }
-    return <span>显示名称会用于你的 Personal Workspace 名称。</span>;
+    return <span>显示名称会用于你的 Private Space 名称。</span>;
   }
 
   function passwordHelper() {
@@ -479,7 +502,7 @@ function AuthScreen({
         if (!usernameLocallyValid || !displayNameValid || !passwordRegisterValid || usernameAvailability === "checking" || usernameAvailability === "taken" || usernameAvailability === "invalid") {
           return;
         }
-        const session = await register({ username, displayName, password });
+        const session = await register({ username, displayName, password, requestedGroupIds });
         setPendingRegisterSession(session);
         setMode("register_success");
         return;
@@ -511,14 +534,14 @@ function AuthScreen({
             Local multi-user workspace v1
           </div>
           <div className="space-y-4">
-            <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">Forecast Lab</h1>
+            <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">Data Analysis Platform</h1>
             <p className="max-w-2xl text-base leading-7 text-slate-300">
-              现在实验、报告、上传、Feature Factory 和 Runtime 回放都跟随当前工作区隔离。这个版本只做本地多用户，不依赖云端账号体系。
+              现在实验、报告、上传、Feature Factory、Runtime 回放与分析工作台都跟随当前工作区隔离。这个版本只做本地多用户，不依赖云端账号体系。
             </p>
           </div>
           <div className="grid gap-3 sm:grid-cols-3">
             {[
-              ["工作区隔离", "每个用户默认拥有 Personal Workspace，也可加入 Shared Workspace。"],
+              ["工作区隔离", "每个用户自动拥有 Private Space，审批入组后自动获得组 Public Space。"],
               ["浏览器 API 设置", "DeepSeek / API Key 继续只保存在当前浏览器，并按 userId 做隔离。"],
               ["只读 Example", "系统初始化后会自动附带 1 个 walkthrough Example Workspace。"]
             ].map(([title, detail]) => (
@@ -536,16 +559,16 @@ function AuthScreen({
               {bootstrapRequired ? "Bootstrap" : isRegisterSuccess ? "Success" : isRegistering ? "Register" : "Login"}
             </div>
             <h2 className="mt-2 text-2xl font-semibold text-slate-950 dark:text-white">
-              {bootstrapRequired ? "创建第一个管理员账号" : isRegisterSuccess ? "注册成功" : isRegistering ? "注册新账号" : "登录 Forecast Lab"}
+              {bootstrapRequired ? "创建第一个管理员账号" : isRegisterSuccess ? "注册成功" : isRegistering ? "注册新账号" : "登录 Data Analysis Platform"}
             </h2>
             <p className="mt-2 text-sm leading-6 text-slate-500 dark:text-slate-400">
               {bootstrapRequired
                 ? "检测到当前数据库还没有任何用户。先完成 bootstrap 创建第一个管理员账号，后续普通用户即可自行注册，管理员也可以在系统内直接创建账号。"
                 : isRegisterSuccess
-                  ? "账号已创建，Personal Workspace 已就绪。Example Workspace 也已共享给你。"
+                ? "账号已创建，Private Space 已就绪。入组申请审批通过后会自动出现 Public Space。"
                 : isRegistering
                   ? "注册完成后会先进入成功过渡页，再由你手动进入系统。"
-                  : "请输入用户名和密码进入你的 Personal Workspace，或切换到被共享给你的空间。"}
+                  : "请输入用户名和密码进入 Private、组 Public 或受邀的 Custom Space。"}
             </p>
           </div>
 
@@ -581,8 +604,10 @@ function AuthScreen({
           {isRegisterSuccess ? (
             <div className="space-y-5 rounded-3xl border border-emerald-400/20 bg-emerald-400/8 p-5">
               <div className="space-y-2">
-                <div className="text-lg font-semibold text-white">账号已创建，Personal Workspace 已就绪</div>
-                <p className="text-sm leading-6 text-slate-300">Example Workspace 也已共享给你。</p>
+                <div className="text-lg font-semibold text-white">账号已创建，Private Space 已就绪</div>
+                <p className="text-sm leading-6 text-slate-300">
+                  {requestedGroupIds.length ? `已提交 ${requestedGroupIds.length} 个入组申请，审批前不会看到组 Public Space。` : "你可以稍后在设置中申请加入用户组。"}
+                </p>
               </div>
               <button
                 className={`${controls.primaryButton} w-full`}
@@ -632,6 +657,25 @@ function AuthScreen({
                 placeholder="至少 8 位"
                 helper={passwordHelper()}
               />
+              {isRegistering && registrationGroups.length ? (
+                <fieldset className="space-y-3 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                  <legend className="px-1 text-sm font-medium text-slate-200">申请加入用户组（可多选）</legend>
+                  <p className="text-xs leading-5 text-slate-400">申请需要组管理员审批；审批前你只有 Private Space。</p>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {registrationGroups.map((group) => (
+                      <label key={group.groupId} className="flex cursor-pointer items-start gap-3 rounded-xl border border-white/10 p-3 text-sm text-slate-200">
+                        <input
+                          className="mt-1"
+                          type="checkbox"
+                          checked={requestedGroupIds.includes(group.groupId)}
+                          onChange={(event) => setRequestedGroupIds((current) => event.target.checked ? [...current, group.groupId] : current.filter((id) => id !== group.groupId))}
+                        />
+                        <span><span className="font-medium">{group.name}</span>{group.description ? <span className="mt-1 block text-xs text-slate-400">{group.description}</span> : null}</span>
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+              ) : null}
               <button
                 className={`${controls.primaryButton} w-full`}
                 type="submit"
@@ -792,6 +836,8 @@ export function App() {
             <Route path="/login" element={<Navigate to="/" replace />} />
             <Route path="/" element={<OverviewPage />} />
             <Route path="/upload" element={<UploadPage />} />
+            <Route path="/analysis" element={<AnalysisPage />} />
+            <Route path="/analysis/workflows/:workflowType" element={<AnalysisWorkflowPage />} />
             <Route path="/forecast" element={<ForecastPage />} />
             <Route path="/models" element={<ModelsPage />} />
             <Route path="/experiments" element={<ExperimentsPage />} />

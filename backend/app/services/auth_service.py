@@ -15,6 +15,7 @@ from app.core.constants import APP_VERSION
 from app.core.security import password_hash, utc_now
 from app.db.models import (
     ExperimentRecord,
+    AgentRunRecord,
     ReportRecord,
     SessionRecord,
     UserRecord,
@@ -69,9 +70,10 @@ def create_user_with_personal_workspace(
 
     personal_workspace = WorkspaceRecord(
         id=f"ws_{uuid.uuid4().hex[:12]}",
-        name=f"{user.display_name} · Personal",
-        kind="personal",
+        name=f"{user.display_name} · Private",
+        kind="private",
         owner_user_id=user.id,
+        group_id=None,
         is_read_only=False,
         created_at=now,
     )
@@ -126,21 +128,34 @@ def list_workspace_memberships_query(user_id: str) -> Select[tuple[WorkspaceMemb
 
 def list_workspace_summaries(db: Session, user: UserRecord) -> list[WorkspaceSummary]:
     rows = db.execute(list_workspace_memberships_query(user.id)).all()
-    summaries = [
-        WorkspaceSummary(
-            workspaceId=workspace.id,
-            name=workspace.name,
-            kind=workspace.kind,
-            role=membership.role,
-            isReadOnly=workspace.is_read_only,
-            ownerUserId=workspace.owner_user_id,
-            isPersonal=workspace.kind == "personal",
-            isOwner=membership.role == "owner",
-            createdAt=workspace.created_at.isoformat(),
+    by_workspace_id = {workspace.id: (membership, workspace) for membership, workspace in rows}
+    if user.is_admin:
+        for workspace in db.scalars(select(WorkspaceRecord).where(WorkspaceRecord.kind == "public")).all():
+            by_workspace_id.setdefault(workspace.id, (None, workspace))
+
+    summaries: list[WorkspaceSummary] = []
+    for membership, workspace in by_workspace_id.values():
+        role = "admin" if user.is_admin and workspace.kind == "public" else membership.role if membership else "member"
+        is_archived = workspace.kind == "public" and workspace.is_read_only
+        summaries.append(
+            WorkspaceSummary(
+                workspaceId=workspace.id,
+                name=workspace.name,
+                kind=workspace.kind,
+                role=role,
+                isReadOnly=workspace.is_read_only,
+                ownerUserId=workspace.owner_user_id,
+                groupId=workspace.group_id,
+                isPersonal=workspace.kind == "private",
+                isOwner=role == "owner",
+                isArchived=is_archived,
+                canWrite=not workspace.is_read_only,
+                canManageMembers=workspace.kind == "custom" and role == "owner",
+                createdAt=workspace.created_at.isoformat(),
+            )
         )
-        for membership, workspace in rows
-    ]
-    summaries.sort(key=lambda item: (0 if item.kind == "personal" else 1 if item.kind == "shared" else 2, item.name.lower()))
+    order = {"private": 0, "public": 1, "custom": 2, "example": 3}
+    summaries.sort(key=lambda item: (order.get(item.kind, 9), item.name.lower()))
     return summaries
 
 
@@ -148,7 +163,7 @@ def default_workspace_id(workspaces: list[WorkspaceSummary]) -> str | None:
     if not workspaces:
         return None
     for workspace in workspaces:
-        if workspace.kind == "personal":
+        if workspace.kind == "private":
             return workspace.workspaceId
     return workspaces[0].workspaceId
 
@@ -157,6 +172,7 @@ def delete_workspace_and_contents(db: Session, workspace: WorkspaceRecord) -> No
     experiment_ids = db.scalars(select(ExperimentRecord.id).where(ExperimentRecord.workspace_id == workspace.id)).all()
     if experiment_ids:
         db.execute(delete(ReportRecord).where(ReportRecord.experiment_id.in_(experiment_ids)))
+        db.execute(delete(AgentRunRecord).where(AgentRunRecord.experiment_id.in_(experiment_ids)))
     db.execute(delete(ReportRecord).where(ReportRecord.workspace_id == workspace.id))
     db.execute(delete(ExperimentRecord).where(ExperimentRecord.workspace_id == workspace.id))
     db.execute(delete(WorkspaceMembershipRecord).where(WorkspaceMembershipRecord.workspace_id == workspace.id))
@@ -174,6 +190,7 @@ def seed_example_workspace(db: Session, *, owner_user_id: str, backend_root: Pat
         name=EXAMPLE_WORKSPACE_NAME,
         kind="example",
         owner_user_id=owner_user_id,
+        group_id=None,
         is_read_only=True,
         created_at=now,
     )
@@ -315,6 +332,7 @@ def _seed_example_artifacts(
         workspace_id=workspace_id,
         created_by_user_id=owner_user_id,
         name="Codex walkthrough current UI · Example",
+        analysis_type="forecast",
         file_name=fixture_path.name,
         sheet_name="CSV",
         target_column=value_col,
@@ -337,6 +355,28 @@ def _seed_example_artifacts(
                         "warnings": ["Example workspace is read-only."],
                     }
                 ]
+            }
+        ),
+        dataset_profile_json=serialize_json(
+            {
+                "uploadId": "example_upload",
+                "workspaceId": workspace_id,
+                "fileName": fixture_path.name,
+                "sheetName": "CSV",
+                "rowCountApprox": int(len(frame)),
+                "columnCount": int(len(frame.columns)),
+                "previewRowCount": min(int(len(frame)), 100),
+                "columns": [],
+                "typeCounts": {},
+                "timeColumnCandidates": [time_col],
+                "targetCandidates": [value_col],
+                "groupingCandidates": [],
+                "numericColumns": [value_col],
+                "categoricalColumns": [],
+                "textColumns": [],
+                "issues": [],
+                "recommendations": [],
+                "readinessScore": {"overall": 82, "level": "good", "dimensions": [], "summary": "Example dataset is ready for walkthrough."},
             }
         ),
         metrics_json=serialize_json(
@@ -408,6 +448,8 @@ def _seed_example_artifacts(
         ),
         runtime_json=None,
         manifest_json=serialize_json(manifest),
+        workflow_state_json=serialize_json({"stage": "completed", "analysisType": "forecast"}),
+        artifacts_json="[]",
         config_hash="example-config-hash",
         source_file_sha256="example-sha256",
         app_version=APP_VERSION,

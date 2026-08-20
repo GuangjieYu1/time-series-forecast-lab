@@ -1,11 +1,12 @@
 export const zhCN = {
-  productName: "时序预测实验室",
-  productNameEn: "Time Series Forecast Lab",
-  productTagline: "上传表格，比较模型，解释结果，一键生成预测报告。",
+  productName: "本地 AI 数据分析平台",
+  productNameEn: "Local AI Data Analysis Platform",
+  productTagline: "上传数据，理解画像，选择 workflow，用 Agent 引导分析与解释结果。",
   nav: {
     overview: "首页概览",
     upload: "数据导入",
-    forecast: "预测实验",
+    analysis: "分析工作台",
+    forecast: "预测工作流",
     models: "模型库",
     experiments: "实验历史",
     feedback: "反馈中心",

@@ -27,6 +27,7 @@ class UserGroupRecord(Base):
     name: Mapped[str] = mapped_column(String(120), unique=True, nullable=False, index=True)
     description: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_by_user_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
 
 
@@ -37,6 +38,21 @@ class UserGroupMembershipRecord(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True, index=True)
     group_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     user_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="member")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
+class UserGroupJoinRequestRecord(Base):
+    __tablename__ = "user_group_join_requests"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, index=True)
+    group_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
+    reviewed_by_user_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    notify_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    notify_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
 
 
@@ -47,6 +63,7 @@ class WorkspaceRecord(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     owner_user_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    group_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
     is_read_only: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
 
@@ -80,6 +97,9 @@ class ExperimentRecord(Base):
     workspace_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     created_by_user_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    analysis_type: Mapped[str] = mapped_column(String(32), nullable=False, default="forecast", index=True)
+    parent_upload_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    source_experiment_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     file_name: Mapped[str] = mapped_column(String(255), nullable=False)
     sheet_name: Mapped[str] = mapped_column(String(255), nullable=False)
     target_column: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -88,6 +108,7 @@ class ExperimentRecord(Base):
     model_count: Mapped[str] = mapped_column(String(20), default="0")
     config_json: Mapped[str] = mapped_column(Text, nullable=False)
     data_profile_json: Mapped[str] = mapped_column(Text, nullable=False)
+    dataset_profile_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     metrics_json: Mapped[str] = mapped_column(Text, nullable=False)
     backtest_json: Mapped[str] = mapped_column(Text, nullable=False)
     diagnostics_json: Mapped[str] = mapped_column(Text, nullable=False)
@@ -97,6 +118,8 @@ class ExperimentRecord(Base):
     runtime_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     attribution_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     manifest_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    workflow_state_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    artifacts_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     config_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     source_file_sha256: Mapped[str | None] = mapped_column(String(128), nullable=True)
     app_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -129,7 +152,9 @@ class AgentRunRecord(Base):
     events_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     artifacts_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     messages_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    conversation_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     invocations_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    llm_session_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="planned", index=True)
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

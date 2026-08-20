@@ -48,6 +48,11 @@ export function AttributionLabPage() {
     ];
   }, [experiment]);
 
+  const mainCausePrompt = useMemo(
+    () => `影响${experiment?.targetColumn ?? "目标"}列的主要原因是什么？`,
+    [experiment?.targetColumn],
+  );
+
   function askAgent(prompt: string) {
     setAgentOpen(true);
     setLaunchRequest({
@@ -101,7 +106,7 @@ export function AttributionLabPage() {
           <SectionCard title="归因入口建议" description="可以直接点下面的快捷追问，带着当前实验上下文发给 Agent。">
             <div className="space-y-2">
               {[
-                "这次最主要的下降原因是什么",
+                mainCausePrompt,
                 "生成一张管理层可看的瀑布图",
                 "只看主要 driver 的贡献排序",
                 "把协变量泄漏风险单独总结出来",

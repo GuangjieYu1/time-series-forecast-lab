@@ -95,9 +95,11 @@ function ColumnProfilePanel({ columns }: { columns: ColumnProfile[] }) {
 
 export function UploadPage() {
   const navigate = useNavigate();
-  const { upload, selectedSheet, rerunDraft, setUpload, setSelectedSheet, setRerunDraft } = useLabStore();
+  const { upload, selectedSheet, rerunDraft, workspaces, selectedWorkspaceId, selectWorkspace, setUpload, setSelectedSheet, setRerunDraft } = useLabStore();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const selectedWorkspace = workspaces.find((workspace) => workspace.workspaceId === selectedWorkspaceId) ?? null;
+  const writableWorkspaces = workspaces.filter((workspace) => workspace.canWrite && !workspace.isReadOnly);
 
   async function handleFile(file: File | null) {
     if (!file) return;
@@ -138,6 +140,22 @@ export function UploadPage() {
         title="上传工作台"
         description="后端负责解析 CSV / XLS / XLSX、识别 Sheet、推断字段类型；前端只接收前 100 行预览，适合大文件验收。"
       />
+
+      <SectionCard title="选择项目目标空间" description="文件、实验、报告和 Agent Run 会从创建开始绑定到这个空间，之后也可以在实验页整体移动。">
+        <label className="block space-y-2">
+          <span className={`text-sm font-medium ${surface.strongText}`}>保存到</span>
+          <select className={controls.input} value={selectedWorkspaceId ?? ""} onChange={(event) => selectWorkspace(event.target.value)}>
+            {writableWorkspaces.map((workspace) => (
+              <option key={workspace.workspaceId} value={workspace.workspaceId}>
+                {workspace.kind === "private" ? "我的 Private" : workspace.kind === "public" ? "组 Public" : "协作 Custom"} · {workspace.name}
+              </option>
+            ))}
+          </select>
+          <span className={`block text-xs ${surface.mutedText}`}>
+            {selectedWorkspace?.canWrite && !selectedWorkspace.isReadOnly ? `当前目标：${selectedWorkspace.name}` : "当前空间不可写，请先选择一个可写空间。"}
+          </span>
+        </label>
+      </SectionCard>
 
       <ErrorBanner message={error} />
       {loading ? <LoadingBlock label="正在由后端解析文件预览..." /> : null}
@@ -190,11 +208,11 @@ export function UploadPage() {
               <Badge tone="info">支持 CSV / XLSX / XLS</Badge>
               <h2 className="mt-5 text-3xl font-semibold tracking-tight text-slate-950 dark:text-white">拖拽或选择时间序列表格</h2>
               <p className="mt-3 text-sm leading-6 text-slate-500 dark:text-slate-300">
-                适合上传航班明细、客流、销量、能耗、M4 / ETT 等时间序列数据。原始文件只在临时目录中保留，实验完成后删除。
+                适合上传航班明细、客流、销量、能耗、经营指标等表格数据。上传后会先进入分析工作台，再决定走预测、归因、监督学习还是聚类流程。
               </p>
               <label className={`${controls.primaryButton} mt-6 cursor-pointer`}>
                 上传文件
-                <input className="hidden" type="file" accept=".csv,.xlsx,.xls" onChange={(event) => void handleFile(event.target.files?.[0] ?? null)} />
+                <input className="hidden" type="file" accept=".csv,.xlsx,.xls" disabled={!selectedWorkspace?.canWrite || selectedWorkspace.isReadOnly} onChange={(event) => void handleFile(event.target.files?.[0] ?? null)} />
               </label>
             </div>
           </div>
@@ -206,8 +224,8 @@ export function UploadPage() {
                   <div className="truncate text-sm font-semibold text-slate-950 dark:text-white">{upload.fileName}</div>
                   <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">{formatFileSize(upload.fileSize)} / {upload.sheets.length} 个 Sheet / {selectedSheet.columns.length} 列 / SHA256 {upload.fileSha256.slice(0, 12)}...</div>
                 </div>
-                <button className={`${controls.primaryButton} shrink-0`} onClick={() => navigate("/forecast")}>
-                  进入预测实验
+                <button className={`${controls.primaryButton} shrink-0`} onClick={() => navigate("/analysis")}>
+                  进入分析工作台
                 </button>
               </div>
 

@@ -22,6 +22,22 @@ def _has_table(sqlite_path, table_name: str) -> bool:
     return row is not None
 
 
+def _needs_workspace_model_migration(sqlite_path) -> bool:
+    if not sqlite_path.exists() or not _has_table(sqlite_path, "workspaces"):
+        return False
+    with sqlite3.connect(sqlite_path) as connection:
+        legacy_kind = connection.execute(
+            "SELECT 1 FROM workspaces WHERE kind IN ('personal', 'shared') LIMIT 1"
+        ).fetchone()
+        workspace_columns = {row[1] for row in connection.execute("PRAGMA table_info(workspaces)").fetchall()}
+        group_columns = (
+            {row[1] for row in connection.execute("PRAGMA table_info(user_groups)").fetchall()}
+            if _has_table(sqlite_path, "user_groups")
+            else set()
+        )
+    return bool(legacy_kind) or "group_id" not in workspace_columns or (group_columns and "archived_at" not in group_columns)
+
+
 def bootstrap_database(engine: Engine) -> None:
     settings = get_settings()
     sqlite_path = settings.data_dir / "forecast_lab.sqlite"
@@ -33,6 +49,11 @@ def bootstrap_database(engine: Engine) -> None:
         engine.dispose()
         shutil.copy2(sqlite_path, backup_path)
         sqlite_path.unlink(missing_ok=True)
+    elif _needs_workspace_model_migration(sqlite_path):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = settings.data_backup_dir / f"forecast_lab_before_workspace_model_{timestamp}.sqlite"
+        engine.dispose()
+        shutil.copy2(sqlite_path, backup_path)
 
     Base.metadata.create_all(bind=engine)
     ensure_schema_compatibility(engine)

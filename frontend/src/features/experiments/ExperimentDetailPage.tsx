@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { fetchExperiment, manifestDownloadUrl, prepareExperimentRerun } from "../../shared/api/client";
+import { fetchExperiment, manifestDownloadUrl, moveExperiment, prepareExperimentRerun } from "../../shared/api/client";
 import { useLabStore } from "../../app/store";
-import { DataTable } from "../../shared/components/Table";
 import { EmptyState, ErrorBanner, LoadingBlock } from "../../shared/components/Status";
 import { Badge, controls, PageHeader, SectionCard, StatCard, surface, Tabs } from "../../shared/components/Ui";
 import type { ExperimentDetail, ForecastRunResponse } from "../../shared/types/api";
@@ -26,7 +25,14 @@ import { FeatureFactoryPanel } from "../runtime/FeatureFactoryPanel";
 import { RuntimeModelConsoleDrawer } from "../runtime/RuntimeModelConsoleDrawer";
 import { RuntimeInspectorPanel } from "../runtime/RuntimeInspectorPanel";
 
-type DetailTab = "runtime" | "featureFactory" | "explainability" | "attribution" | "dataHealth" | "overview" | "residual" | "metrics" | "distribution" | "final" | "report";
+type DetailTab = "runtime" | "featureFactory" | "explainability" | "attribution" | "dataHealth" | "overview" | "residual" | "metrics" | "distribution" | "final" | "report" | "datasetProfile" | "workflow" | "artifacts";
+
+const analysisTypeLabels: Record<ExperimentDetail["analysisType"], string> = {
+  attribution: "归因分析",
+  clustering: "聚类分析",
+  forecast: "时间序列预测",
+  supervised_ml: "监督学习",
+};
 
 function asForecastResult(experiment: ExperimentDetail): ForecastRunResponse {
   return {
@@ -70,6 +76,45 @@ function asForecastResult(experiment: ExperimentDetail): ForecastRunResponse {
   };
 }
 
+function ProjectMoveControl({ experiment }: { experiment: ExperimentDetail }) {
+  const navigate = useNavigate();
+  const { currentUser, workspaces, selectedWorkspaceId, selectWorkspace } = useLabStore();
+  const [targetWorkspaceId, setTargetWorkspaceId] = useState("");
+  const [moving, setMoving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const sourceWorkspace = workspaces.find((workspace) => workspace.workspaceId === selectedWorkspaceId) ?? null;
+  const canManage = experiment.createdByUserId === currentUser?.userId || sourceWorkspace?.role === "owner" || sourceWorkspace?.role === "manager" || sourceWorkspace?.role === "admin";
+  const targets = workspaces.filter((workspace) => workspace.workspaceId !== selectedWorkspaceId && workspace.canWrite && !workspace.isReadOnly);
+
+  if (!canManage || !targets.length) return null;
+
+  async function handleMove() {
+    if (!targetWorkspaceId) return;
+    setMoving(true);
+    setError(null);
+    try {
+      await moveExperiment(experiment.experimentId, targetWorkspaceId);
+      selectWorkspace(targetWorkspaceId);
+      navigate(`/experiments/${experiment.experimentId}`, { replace: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "移动项目失败。");
+    } finally {
+      setMoving(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <select className={`${controls.input} min-w-[180px]`} value={targetWorkspaceId} onChange={(event) => setTargetWorkspaceId(event.target.value)}>
+        <option value="">移动项目到…</option>
+        {targets.map((workspace) => <option key={workspace.workspaceId} value={workspace.workspaceId}>{workspace.name} · {workspace.kind}</option>)}
+      </select>
+      <button className={controls.secondaryButton} disabled={!targetWorkspaceId || moving} onClick={() => void handleMove()}>{moving ? "移动中…" : "移动"}</button>
+      {error ? <span className="text-xs text-rose-400">{error}</span> : null}
+    </div>
+  );
+}
+
 export function ExperimentDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -93,7 +138,9 @@ export function ExperimentDetailPage() {
       setError(null);
       setActionError(null);
       try {
-        setExperiment(await fetchExperiment(experimentId));
+        const nextExperiment = await fetchExperiment(experimentId);
+        setExperiment(nextExperiment);
+        setTab(nextExperiment.analysisType === "forecast" ? "runtime" : "overview");
       } catch (err) {
         setError(err instanceof Error ? err.message : "实验详情加载失败。");
       } finally {
@@ -106,6 +153,254 @@ export function ExperimentDetailPage() {
   if (loading) return <LoadingBlock label="正在加载实验详情..." />;
   if (error) return <ErrorBanner message={error} />;
   if (!experiment) return <EmptyState title="没有找到这个实验" detail="历史记录可能已被删除，或实验 ID 不存在。" />;
+
+  if (experiment.analysisType !== "forecast") {
+    const readinessScore = experiment.datasetProfile?.readinessScore.overall ?? null;
+    const artifacts = experiment.analysisArtifacts ?? [];
+    const workflowStage = typeof experiment.workflowState?.stage === "string" ? String(experiment.workflowState.stage) : "completed";
+
+    return (
+      <div className="space-y-6">
+        <PageHeader
+          eyebrow={analysisTypeLabels[experiment.analysisType]}
+          title={experiment.experimentName}
+          description={`${experiment.fileName} / ${experiment.sheetName}${experiment.targetColumn ? ` / 目标列：${experiment.targetColumn}` : ""}`}
+          action={
+            <div className="flex flex-wrap gap-2">
+              <Link className={controls.secondaryButton} to="/experiments">
+                返回历史
+              </Link>
+              {experiment.analysisType === "attribution" ? (
+                <Link className={controls.secondaryButton} to={`/experiments/${experiment.experimentId}/attribution`}>
+                  Attribution Lab
+                </Link>
+              ) : null}
+              <button type="button" className={controls.primaryButton} onClick={() => setAgentOpen(true)}>
+                归因 Agent
+              </button>
+              <ProjectMoveControl experiment={experiment} />
+            </div>
+          }
+        />
+        <ErrorBanner message={actionError} />
+
+        <div className="grid gap-4 md:grid-cols-4">
+          <StatCard label="分析类型" value={analysisTypeLabels[experiment.analysisType]} hint="通用 analysis container" tone="info" />
+          <StatCard label="当前阶段" value={workflowStage} hint={experiment.recommendedModelId ?? "workflow snapshot"} tone="good" />
+          <StatCard label="Readiness" value={readinessScore === null ? "-" : readinessScore} hint={experiment.datasetProfile?.readinessScore.summary ?? "来自数据画像快照"} />
+          <StatCard label="产物数" value={artifacts.length} hint={`创建于 ${new Date(experiment.createdAt).toLocaleString()}`} />
+        </div>
+
+        <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
+          <SectionCard className="min-w-0 overflow-hidden" title="分析实验详情" description="这个实验使用通用 analysis container 展示，不再按 forecast-only 结构强行渲染。">
+            <Tabs<DetailTab>
+              value={tab}
+              onChange={setTab}
+              items={[
+                { id: "overview", label: "概览" },
+                { id: "datasetProfile", label: "数据画像" },
+                { id: "workflow", label: "Workflow" },
+                { id: "artifacts", label: "Artifacts" },
+                ...(experiment.explainability ? [{ id: "explainability" as const, label: "特征解释" }] : []),
+                ...(experiment.attribution ? [{ id: "attribution" as const, label: "归因实验室" }] : []),
+              ]}
+            />
+
+            <div className="mt-5">
+              {tab === "overview" ? (
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div className={`${surface.softPanel} p-4`}>
+                    <div className={`text-xs ${surface.mutedText}`}>实验摘要</div>
+                    <div className={`mt-3 text-lg font-semibold ${surface.strongText}`}>{artifacts[0]?.summary ?? "已生成 workflow 快照。"}</div>
+                    <div className={`mt-3 text-sm leading-6 ${surface.mutedText}`}>
+                      这个页面现在会根据 analysisType 切换展示逻辑。当前实验不会再误走 forecast 图表渲染，因此 attribution / clustering / supervised ML 结果都能直接回看。
+                    </div>
+                  </div>
+                  <div className={`${surface.softPanel} p-4`}>
+                    <div className={`text-xs ${surface.mutedText}`}>关键信息</div>
+                    <div className={`mt-3 space-y-2 text-sm ${surface.strongText}`}>
+                      <div>目标列：{experiment.targetColumn || "-"}</div>
+                      <div>推荐方法：{experiment.recommendedModelId ?? "-"}</div>
+                      <div>来源上传：{experiment.parentUploadId ?? "-"}</div>
+                      <div>来源实验：{experiment.sourceExperimentId ?? "-"}</div>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {tab === "datasetProfile" ? (
+                experiment.datasetProfile ? (
+                  <div className="space-y-4">
+                    <div className="grid gap-4 md:grid-cols-4">
+                      <StatCard label="行数" value={experiment.datasetProfile.rowCountApprox ?? "-"} hint={`${experiment.datasetProfile.previewRowCount} 行预览`} />
+                      <StatCard label="列数" value={experiment.datasetProfile.columnCount} hint={`时间候选 ${experiment.datasetProfile.timeColumnCandidates.length} 个`} />
+                      <StatCard label="目标候选" value={experiment.datasetProfile.targetCandidates[0] ?? "未识别"} hint={`${experiment.datasetProfile.targetCandidates.length} 个`} tone="good" />
+                      <StatCard label="分组候选" value={experiment.datasetProfile.groupingCandidates[0] ?? "未识别"} hint={`${experiment.datasetProfile.groupingCandidates.length} 个`} />
+                    </div>
+                    <div className="grid gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(320px,1.1fr)]">
+                      <div className="space-y-3">
+                        {experiment.datasetProfile.readinessScore.dimensions.map((dimension) => (
+                          <div key={dimension.key} className="rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-white/10 dark:bg-[#0b1020]">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="font-medium text-slate-900 dark:text-white">{dimension.label}</div>
+                              <Badge tone={dimension.score >= 80 ? "good" : dimension.score >= 65 ? "info" : dimension.score >= 50 ? "warn" : "bad"}>
+                                {dimension.score}
+                              </Badge>
+                            </div>
+                            <div className="mt-2 text-sm text-slate-600 dark:text-slate-300">{dimension.reason}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="space-y-3">
+                        {experiment.datasetProfile.issues.map((issue, index) => (
+                          <div key={`${issue.issueType}:${index}`} className="rounded-2xl border border-slate-200 bg-white p-3 dark:border-white/10 dark:bg-[#151b2e]">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge tone={issue.severity === "high" ? "bad" : issue.severity === "warn" ? "warn" : "info"}>{issue.issueType}</Badge>
+                              {issue.columns.slice(0, 3).map((column) => <Badge key={`${issue.issueType}:${column}`} tone="neutral">{column}</Badge>)}
+                            </div>
+                            <div className="mt-2 font-medium text-slate-900 dark:text-white">{issue.title}</div>
+                            <div className="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-300">{issue.description}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <EmptyState title="当前实验没有持久化数据画像" detail="后续新的 analysis workflow 会把 dataset profile 一起落库。" />
+                )
+              ) : null}
+
+              {tab === "workflow" ? (
+                <div className="grid gap-4 xl:grid-cols-2">
+                  <SectionCard title="Workflow State" description="这里保留 workflow 的阶段、选择项和中间状态。">
+                    <pre className="max-h-96 overflow-auto rounded-2xl bg-slate-950 p-4 text-xs leading-5 text-slate-100">
+                      {JSON.stringify(experiment.workflowState ?? {}, null, 2)}
+                    </pre>
+                  </SectionCard>
+                  <SectionCard title="Diagnostics" description="非 forecast workflow 的诊断结果以通用 JSON 形式回放。">
+                    <pre className="max-h-96 overflow-auto rounded-2xl bg-slate-950 p-4 text-xs leading-5 text-slate-100">
+                      {JSON.stringify(experiment.diagnostics ?? {}, null, 2)}
+                    </pre>
+                  </SectionCard>
+                </div>
+              ) : null}
+
+              {tab === "artifacts" ? (
+                artifacts.length ? (
+                  <div className="space-y-4">
+                    {artifacts.map((artifact) => (
+                      <div key={artifact.artifactId} className="rounded-3xl border border-slate-200 bg-white p-5 dark:border-white/10 dark:bg-[#151b2e]">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge tone="info">{artifact.kind}</Badge>
+                          {artifact.reportCompatible ? <Badge tone="good">可进报告</Badge> : null}
+                          {artifact.downloadable ? <Badge tone="neutral">可下载</Badge> : null}
+                        </div>
+                        <div className="mt-3 text-lg font-semibold text-slate-950 dark:text-white">{artifact.title}</div>
+                        <div className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-300">{artifact.summary}</div>
+                        {artifact.markdown ? (
+                          <pre className="mt-4 overflow-auto rounded-2xl bg-slate-950 p-4 text-xs leading-6 text-slate-100">{artifact.markdown}</pre>
+                        ) : null}
+                        {!artifact.markdown && artifact.data ? (
+                          <pre className="mt-4 overflow-auto rounded-2xl bg-slate-950 p-4 text-xs leading-6 text-slate-100">
+                            {JSON.stringify(artifact.data, null, 2)}
+                          </pre>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <EmptyState title="当前实验还没有 analysis artifact" detail="后续 Agent、transform 和 workflow 产物都会统一落在这里。" />
+                )
+              ) : null}
+
+              {tab === "explainability" && experiment.explainability ? (
+                <ExplainabilityPanel
+                  experimentId={experiment.experimentId}
+                  recommendedModelId={experiment.recommendedModelId}
+                  initialPayload={experiment.explainability}
+                />
+              ) : null}
+
+              {tab === "attribution" && experiment.attribution ? (
+                <AttributionSnapshotPanel
+                  attribution={experiment.attribution}
+                  onAskAgent={askAgent}
+                  heading="Attribution Lab"
+                  description="这里把当前实验的归因证据整理成结构化快照，每个区块都可以继续交给右侧 Agent 深挖。"
+                />
+              ) : null}
+            </div>
+          </SectionCard>
+
+          <div className="min-w-0 space-y-5">
+            <SectionCard title="通用分析容器" description="平台开始把实验抽象成 analysis container，而不再只是一条 forecast 路线。">
+              <div className={`${surface.softPanel} p-4 text-sm leading-6 ${surface.mutedText}`}>
+                当前实验类型是 <span className={surface.strongText}>{analysisTypeLabels[experiment.analysisType]}</span>。
+                这意味着 runtime、feature factory、explainability、attribution 和 artifacts 都会逐步按 workflow-aware 的方式统一接入。
+              </div>
+            </SectionCard>
+
+            <SectionCard title="诊断摘要" description="快速查看当前分析快照。">
+              <pre className="max-h-96 overflow-auto rounded-2xl bg-slate-950 p-4 text-xs leading-5 text-slate-100">
+                {JSON.stringify(experiment.diagnostics ?? {}, null, 2)}
+              </pre>
+            </SectionCard>
+          </div>
+        </div>
+
+        <SectionCard
+          title="实验可复现"
+          description="即使当前不是 forecast 实验，也会保留来源上传、分析类型和 artifact 快照。"
+          action={
+            <div className="flex flex-wrap gap-2">
+              <button
+                className={controls.secondaryButton}
+                disabled={!experiment.manifest}
+                title={experiment.manifest ? undefined : "当前实验还没有 manifest 可下载。"}
+                onClick={() => window.open(manifestDownloadUrl(experiment.experimentId), "_blank")}
+              >
+                下载 Manifest
+              </button>
+              <button className={controls.secondaryButton} onClick={() => void handleCopyHash()} disabled={!experiment.configHash}>
+                {copyState === "done" ? "已复制 Hash" : copyState === "failed" ? "复制失败" : "复制 Hash"}
+              </button>
+            </div>
+          }
+        >
+          <div className="grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-3">
+            {[
+              ["分析类型", analysisTypeLabels[experiment.analysisType]],
+              ["来源上传", experiment.parentUploadId ?? "-"],
+              ["来源实验", experiment.sourceExperimentId ?? "-"],
+              ["配置 Hash", experiment.configHash ?? "-"],
+              ["源文件 Hash", experiment.sourceFileSha256 ?? "-"],
+              ["应用版本", experiment.appVersion ?? "-"],
+              ["Git Commit", experiment.gitCommit ?? "-"],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-2xl bg-slate-50 p-3 dark:bg-[#151b2e]">
+                <div className="text-xs text-slate-500 dark:text-slate-400">{label}</div>
+                <div className="mt-2 break-all font-medium text-slate-900 dark:text-white">{value}</div>
+              </div>
+            ))}
+          </div>
+        </SectionCard>
+
+        <AttributionAgentDrawer
+          open={agentOpen}
+          onClose={() => setAgentOpen(false)}
+          experimentId={experiment.experimentId}
+          experiment={experiment}
+          currentPage="/experiments/:id"
+          currentTab={tab}
+          selectedModelId={experiment.recommendedModelId}
+          historySummary={experiment.agentHistorySummary}
+          availableSkills={experiment.availableAgentSkills}
+          attribution={experiment.attribution}
+          launchRequest={launchRequest}
+        />
+      </div>
+    );
+  }
 
   const result = asForecastResult(experiment);
   const successfulModels = experiment.rankedModels.filter((model) => model.status === "success").length;
@@ -160,6 +455,7 @@ export function ExperimentDetailPage() {
             <button type="button" className={controls.primaryButton} onClick={() => setAgentOpen(true)}>
               归因 Agent
             </button>
+            <ProjectMoveControl experiment={experiment} />
           </div>
         }
       />

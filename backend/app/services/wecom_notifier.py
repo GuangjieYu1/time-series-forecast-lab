@@ -96,3 +96,34 @@ def notify_test_message(message: str, settings: Settings) -> WeComNotifyResult:
     except (urllib.error.URLError, TimeoutError, OSError, RuntimeError) as exc:
         return WeComNotifyResult(status="failed", error=f"企业微信通知发送失败：{exc}")
     return WeComNotifyResult(status="sent")
+
+
+def notify_group_join_request(
+    *,
+    request_id: str,
+    group_name: str,
+    username: str,
+    display_name: str,
+    settings: Settings,
+) -> WeComNotifyResult:
+    webhook_url = settings.wecom_group_request_webhook_url or settings.wecom_feedback_webhook_url
+    if not webhook_url:
+        return WeComNotifyResult(status="skipped", error="未配置企业微信入组申请机器人 webhook。")
+    now = datetime.now(timezone.utc).isoformat()
+    content = "\n".join(
+        [
+            f"# [入组申请] {group_name}",
+            "",
+            f"{display_name} (@{username}) 申请加入该用户组。",
+            "",
+            f"> 申请 ID：{request_id}",
+            f"> 申请时间：{now}",
+            "> 请在 Forecast Lab 的组审批中心处理。",
+        ]
+    )
+    payload = {"msgtype": "markdown", "markdown": {"content": content}}
+    try:
+        _post_wecom_message(webhook_url, payload, settings.feedback_notification_timeout_seconds)
+    except (urllib.error.URLError, TimeoutError, OSError, RuntimeError) as exc:
+        return WeComNotifyResult(status="failed", error=f"企业微信通知发送失败：{exc}")
+    return WeComNotifyResult(status="sent")

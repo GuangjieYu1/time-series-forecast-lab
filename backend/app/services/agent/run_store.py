@@ -11,8 +11,10 @@ from sqlalchemy.orm import Session
 from app.db.models import AgentRunRecord
 from app.schemas import (
     AgentArtifact,
+    AgentConversationItem,
     AgentContextSnapshot,
     AgentHistoryItem,
+    AgentLlmSession,
     AgentMessage,
     AgentPlanStep,
     AgentRunDetail,
@@ -37,6 +39,145 @@ def _loads(value: str | None, default):
     return json.loads(value)
 
 
+def _normalize_plan_step_payload(row: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(row)
+    description = normalized.get("description")
+    if not isinstance(description, str) or not description.strip():
+        legacy_detail = normalized.get("detail")
+        if isinstance(legacy_detail, str):
+            normalized["description"] = legacy_detail
+
+    runs = normalized.get("runs")
+    if not isinstance(runs, list):
+        runs = []
+    if normalized.get("runsModel"):
+        runs = [*runs, "model-run"]
+    normalized["runs"] = runs
+
+    generates = normalized.get("generates")
+    if not isinstance(generates, list):
+        generates = []
+    if normalized.get("generatesChart"):
+        generates = [*generates, "chart"]
+    if normalized.get("writesReport"):
+        generates = [*generates, "report"]
+    normalized["generates"] = list(dict.fromkeys(str(item) for item in generates if item))
+
+    side_effects = normalized.get("sideEffects")
+    normalized["sideEffects"] = side_effects if isinstance(side_effects, list) else []
+    warnings = normalized.get("warnings")
+    if not isinstance(warnings, list):
+        normalized["warnings"] = []
+    return normalized
+
+
+def _normalize_invocation_payload(row: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(row)
+    warnings = normalized.get("warnings")
+    if isinstance(warnings, list):
+        normalized["warnings"] = [str(item) for item in warnings if item]
+    else:
+        warning = normalized.get("warning")
+        normalized["warnings"] = [str(warning)] if warning else []
+    artifact_ids = normalized.get("artifactIds")
+    normalized["artifactIds"] = [str(item) for item in artifact_ids] if isinstance(artifact_ids, list) else []
+    return normalized
+
+
+def _normalize_artifact_payload(row: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(row)
+    data = normalized.get("data")
+    if not isinstance(data, dict):
+        legacy_payload = normalized.get("payload")
+        normalized["data"] = legacy_payload if isinstance(legacy_payload, dict) else {}
+    markdown = normalized.get("markdown")
+    if markdown is None:
+        payload = normalized.get("data") if isinstance(normalized.get("data"), dict) else {}
+        markdown = payload.get("contentMarkdown") or payload.get("content")
+        normalized["markdown"] = markdown if isinstance(markdown, str) else None
+    if "reportCompatible" not in normalized and "linksToReport" in normalized:
+        normalized["reportCompatible"] = bool(normalized.get("linksToReport"))
+    if "downloadable" not in normalized:
+        normalized["downloadable"] = False
+    return normalized
+
+
+def _normalize_conversation_payload(row: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(row)
+    title = normalized.get("title")
+    if title is not None and not isinstance(title, str):
+        normalized["title"] = str(title)
+    content = normalized.get("contentMarkdown")
+    if not isinstance(content, str):
+        legacy_content = normalized.get("content")
+        normalized["contentMarkdown"] = str(legacy_content or "")
+    if not normalized.get("createdAt"):
+        normalized["createdAt"] = utc_iso()
+    if normalized.get("streamState") not in {"streaming", "final"}:
+        normalized["streamState"] = "final"
+    return normalized
+
+
+def _legacy_conversation(
+    *,
+    request: AgentRunRequest,
+    messages: list[AgentMessage],
+    plan: list[AgentPlanStep],
+    artifacts: list[AgentArtifact],
+) -> list[AgentConversationItem]:
+    items: list[AgentConversationItem] = [
+        AgentConversationItem(
+            itemId=f"conv_user_{index}",
+            kind="user" if message.role == "user" else "assistant",
+            title="用户问题" if message.role == "user" else "Agent 回复",
+            contentMarkdown=message.content,
+            createdAt=message.createdAt,
+            streamState="final",
+        )
+        for index, message in enumerate(messages)
+    ]
+    if not items:
+        items.append(
+            AgentConversationItem(
+                itemId="conv_user_0",
+                kind="user",
+                title="用户问题",
+                contentMarkdown=request.prompt,
+                createdAt=utc_iso(),
+                streamState="final",
+            )
+        )
+    if plan:
+        first_step = plan[0]
+        items.append(
+            AgentConversationItem(
+                itemId="conv_plan_legacy",
+                kind="plan",
+                title="执行计划",
+                contentMarkdown=f"已生成 {len(plan)} 步计划，首步是“{first_step.title}”。",
+                stepId=first_step.stepId,
+                skillId=first_step.skillId,
+                createdAt=items[-1].createdAt,
+                streamState="final",
+            )
+        )
+    for artifact in artifacts:
+        items.append(
+            AgentConversationItem(
+                itemId=f"conv_artifact_{artifact.artifactId}",
+                kind="artifact",
+                title=artifact.title,
+                contentMarkdown=artifact.summary,
+                artifactId=artifact.artifactId,
+                skillId=artifact.sourceSkillId,
+                createdAt=artifact.createdAt,
+                streamState="final",
+            )
+        )
+    items.sort(key=lambda item: item.createdAt)
+    return items
+
+
 def create_agent_run(
     db: Session,
     *,
@@ -49,8 +190,25 @@ def create_agent_run(
     available_skills: list[AgentSkillDefinition],
     risks: list[str],
     estimated_duration: str | None,
+    llm_session: AgentLlmSession | None = None,
 ) -> AgentRunRecord:
     now = utc_iso()
+    user_conversation = AgentConversationItem(
+        itemId=f"conv_{uuid.uuid4().hex[:10]}",
+        kind="user",
+        title="用户问题",
+        contentMarkdown=request.prompt,
+        createdAt=now,
+        streamState="final",
+    )
+    plan_conversation = AgentConversationItem(
+        itemId=f"conv_{uuid.uuid4().hex[:10]}",
+        kind="plan",
+        title="计划已生成",
+        contentMarkdown="Agent 已生成执行计划，准备按顺序读取证据并输出分步摘要。",
+        createdAt=now,
+        streamState="final",
+    )
     record = AgentRunRecord(
         id=f"arun_{uuid.uuid4().hex[:12]}",
         experiment_id=experiment_id,
@@ -73,6 +231,7 @@ def create_agent_run(
         ),
         artifacts_json=_dump([]),
         messages_json=_dump([AgentMessage(role="user", content=request.prompt, createdAt=now).model_dump(mode="json")]),
+        conversation_json=_dump([user_conversation.model_dump(mode="json"), plan_conversation.model_dump(mode="json")]),
         invocations_json=_dump([]),
         summary_json=_dump(
             {
@@ -81,6 +240,7 @@ def create_agent_run(
                 "estimatedDuration": estimated_duration,
             }
         ),
+        llm_session_json=_dump(llm_session.model_dump(mode="json")) if llm_session else None,
         status="planned",
         cancel_requested=False,
     )
@@ -132,6 +292,42 @@ def append_artifact(db: Session, run_id: str, artifact: AgentArtifact) -> None:
     artifacts = _loads(record.artifacts_json, [])
     artifacts.append(artifact.model_dump(mode="json"))
     record.artifacts_json = _dump(artifacts)
+    db.commit()
+
+
+def append_conversation_item(db: Session, run_id: str, item: AgentConversationItem) -> None:
+    record = get_agent_run(db, run_id)
+    if record is None:
+        return
+    conversation = _loads(record.conversation_json, [])
+    conversation.append(item.model_dump(mode="json"))
+    record.conversation_json = _dump(conversation)
+    db.commit()
+
+
+def upsert_conversation_item(db: Session, run_id: str, item: AgentConversationItem) -> None:
+    record = get_agent_run(db, run_id)
+    if record is None:
+        return
+    conversation = _loads(record.conversation_json, [])
+    payload = item.model_dump(mode="json")
+    updated = False
+    for index, row in enumerate(conversation):
+        if isinstance(row, dict) and row.get("itemId") == item.itemId:
+            conversation[index] = payload
+            updated = True
+            break
+    if not updated:
+        conversation.append(payload)
+    record.conversation_json = _dump(conversation)
+    db.commit()
+
+
+def set_llm_session(db: Session, run_id: str, llm_session: AgentLlmSession | None) -> None:
+    record = get_agent_run(db, run_id)
+    if record is None:
+        return
+    record.llm_session_json = _dump(llm_session.model_dump(mode="json")) if llm_session else None
     db.commit()
 
 
@@ -189,6 +385,13 @@ def is_cancel_requested(db: Session, run_id: str) -> bool:
 def to_agent_run_detail(record: AgentRunRecord) -> AgentRunDetail:
     summary = _loads(record.summary_json, {})
     messages = [AgentMessage.model_validate(item) for item in _loads(record.messages_json, []) if isinstance(item, dict)]
+    plan = [AgentPlanStep.model_validate(_normalize_plan_step_payload(item)) for item in _loads(record.plan_json, []) if isinstance(item, dict)]
+    artifacts = [AgentArtifact.model_validate(_normalize_artifact_payload(item)) for item in _loads(record.artifacts_json, []) if isinstance(item, dict)]
+    request = AgentRunRequest.model_validate(_loads(record.request_json, {}))
+    conversation_rows = [item for item in _loads(record.conversation_json, []) if isinstance(item, dict)]
+    conversation = [AgentConversationItem.model_validate(_normalize_conversation_payload(item)) for item in conversation_rows]
+    if not conversation:
+        conversation = _legacy_conversation(request=request, messages=messages, plan=plan, artifacts=artifacts)
     assistant_messages = [message.content for message in messages if message.role == "assistant" and message.content]
     return AgentRunDetail(
         runId=record.id,
@@ -196,17 +399,19 @@ def to_agent_run_detail(record: AgentRunRecord) -> AgentRunDetail:
         workspaceId=record.workspace_id,
         createdByUserId=record.created_by_user_id,
         status=record.status,
-        request=AgentRunRequest.model_validate(_loads(record.request_json, {})),
+        request=request,
         context=AgentContextSnapshot.model_validate(_loads(record.context_json, {})),
-        plan=[AgentPlanStep.model_validate(item) for item in _loads(record.plan_json, []) if isinstance(item, dict)],
+        plan=plan,
         events=[AgentRunEvent.model_validate(item) for item in _loads(record.events_json, []) if isinstance(item, dict)],
         messages=messages,
-        skillInvocations=[AgentSkillInvocation.model_validate(item) for item in _loads(record.invocations_json, []) if isinstance(item, dict)],
-        artifacts=[AgentArtifact.model_validate(item) for item in _loads(record.artifacts_json, []) if isinstance(item, dict)],
+        conversation=conversation,
+        skillInvocations=[AgentSkillInvocation.model_validate(_normalize_invocation_payload(item)) for item in _loads(record.invocations_json, []) if isinstance(item, dict)],
+        artifacts=artifacts,
         availableSkills=[AgentSkillDefinition.model_validate(item) for item in summary.get("availableSkills") or [] if isinstance(item, dict)],
         estimatedDuration=summary.get("estimatedDuration"),
         risks=[str(item) for item in summary.get("risks") or [] if item],
         summary=summary.get("summary") or (assistant_messages[-1] if assistant_messages else None),
+        llmSession=AgentLlmSession.model_validate(_loads(record.llm_session_json, {})) if record.llm_session_json else None,
         canCancel=record.status in {"planned", "running"} and not record.cancel_requested,
         createdAt=record.created_at.astimezone(timezone.utc).isoformat(),
         updatedAt=record.updated_at.astimezone(timezone.utc).isoformat(),

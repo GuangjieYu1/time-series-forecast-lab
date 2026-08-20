@@ -32,6 +32,241 @@ class UploadPreviewResponse(BaseModel):
     sheets: list[SheetPreview]
 
 
+AnalysisType = Literal["forecast", "attribution", "supervised_ml", "clustering"]
+DatasetIssueType = Literal[
+    "constant_column",
+    "high_missing_rate",
+    "suspected_identifier",
+    "duplicate_rows",
+    "duplicate_time_index",
+    "single_unique_value",
+    "possible_target_candidates",
+    "possible_grouping_columns",
+]
+DatasetIssueSeverity = Literal["info", "warn", "high"]
+DatasetTransformType = Literal[
+    "drop_constant_columns",
+    "drop_identifier_columns",
+    "drop_high_missing_columns",
+    "normalize_numeric_features",
+]
+
+
+class DatasetIssue(BaseModel):
+    issueType: DatasetIssueType
+    severity: DatasetIssueSeverity = "info"
+    title: str
+    description: str
+    columns: list[str] = Field(default_factory=list)
+    metricValue: float | None = None
+
+
+class DatasetRecommendation(BaseModel):
+    recommendationId: str
+    title: str
+    description: str
+    actionType: Literal["drop_constant_columns", "drop_identifier_columns", "drop_high_missing_columns", "normalize_numeric_features", "routing", "observation"]
+    columns: list[str] = Field(default_factory=list)
+    expectedBenefit: str = ""
+
+
+class ReadinessDimensionScore(BaseModel):
+    key: Literal["completeness", "stability", "temporal_integrity", "feature_usability", "leakage_risk", "modeling_readiness"]
+    label: str
+    score: int = Field(ge=0, le=100)
+    reason: str
+
+
+class ReadinessScore(BaseModel):
+    overall: int = Field(ge=0, le=100)
+    level: Literal["excellent", "good", "fair", "poor"] = "fair"
+    dimensions: list[ReadinessDimensionScore] = Field(default_factory=list)
+    summary: str = ""
+
+
+class DatasetColumnProfile(ColumnProfile):
+    uniqueCountInPreview: int = 0
+    uniqueRateInPreview: float = 0
+    nullRateInPreview: float = 0
+    isConstant: bool = False
+    isPotentialIdentifier: bool = False
+    numericMeanInPreview: float | None = None
+    numericStdInPreview: float | None = None
+    roleHints: list[str] = Field(default_factory=list)
+
+
+class DatasetProfile(BaseModel):
+    uploadId: str
+    workspaceId: str | None = None
+    fileName: str
+    sheetName: str
+    rowCountApprox: int | None = None
+    columnCount: int = 0
+    previewRowCount: int = 0
+    columns: list[DatasetColumnProfile] = Field(default_factory=list)
+    typeCounts: dict[str, int] = Field(default_factory=dict)
+    timeColumnCandidates: list[str] = Field(default_factory=list)
+    targetCandidates: list[str] = Field(default_factory=list)
+    groupingCandidates: list[str] = Field(default_factory=list)
+    numericColumns: list[str] = Field(default_factory=list)
+    categoricalColumns: list[str] = Field(default_factory=list)
+    textColumns: list[str] = Field(default_factory=list)
+    issues: list[DatasetIssue] = Field(default_factory=list)
+    recommendations: list[DatasetRecommendation] = Field(default_factory=list)
+    readinessScore: ReadinessScore = Field(default_factory=ReadinessScore)
+
+
+class AnalysisProfileRequest(BaseModel):
+    uploadId: str
+    sheetName: str
+
+
+class WorkflowRouteSuggestion(BaseModel):
+    analysisType: AnalysisType
+    label: str
+    eligible: bool = True
+    recommended: bool = False
+    matchScore: int = Field(default=0, ge=0, le=100)
+    reasons: list[str] = Field(default_factory=list)
+    requiredInputs: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    nextPath: str | None = None
+
+
+class RouteSuggestion(BaseModel):
+    recommendedRoutes: list[WorkflowRouteSuggestion] = Field(default_factory=list)
+    blockedRoutes: list[WorkflowRouteSuggestion] = Field(default_factory=list)
+    requiredInputs: list[str] = Field(default_factory=list)
+    reasoning: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class AnalysisRouteSuggestionRequest(BaseModel):
+    uploadId: str
+    sheetName: str
+
+
+class DatasetTransformPlanRequest(BaseModel):
+    uploadId: str
+    sheetName: str
+    transformType: DatasetTransformType
+    columns: list[str] = Field(default_factory=list)
+
+
+class DatasetTransformPlan(BaseModel):
+    transformType: DatasetTransformType
+    explanation: str
+    columns: list[str] = Field(default_factory=list)
+    willCreateNewDataset: bool = True
+    readinessBefore: ReadinessScore
+    readinessAfter: ReadinessScore
+    datasetIssuesAddressed: list[str] = Field(default_factory=list)
+    expectedEffects: list[str] = Field(default_factory=list)
+
+
+class DatasetTransformExecutionRequest(DatasetTransformPlanRequest):
+    confirmed: bool = False
+
+
+class DatasetTransformResult(BaseModel):
+    transformType: DatasetTransformType
+    appliedColumns: list[str] = Field(default_factory=list)
+    upload: UploadPreviewResponse
+    sheet: SheetPreview
+    datasetProfile: DatasetProfile
+    readinessBefore: ReadinessScore
+    readinessAfter: ReadinessScore
+    qualityDeltaSummary: str
+    beforeIssues: list[DatasetIssue] = Field(default_factory=list)
+    afterIssues: list[DatasetIssue] = Field(default_factory=list)
+
+
+class WorkflowStartRequest(BaseModel):
+    uploadId: str
+    sheetName: str
+    experimentName: str | None = None
+    targetColumn: str | None = None
+    timeColumn: str | None = None
+    groupingColumns: list[str] = Field(default_factory=list)
+    featureColumns: list[str] = Field(default_factory=list)
+    clusterCount: int | None = Field(default=None, ge=2, le=10)
+
+
+class WorkflowStageDetail(BaseModel):
+    stageId: str
+    title: str
+    description: str
+    status: Literal["planned", "running", "completed", "failed"] = "planned"
+    progressPercent: int = Field(default=0, ge=0, le=100)
+
+
+class WorkflowRunDetail(BaseModel):
+    runId: str
+    status: Literal["planned", "running", "completed", "failed"] = "completed"
+    analysisType: AnalysisType
+    experimentId: str | None = None
+    experimentName: str | None = None
+    nextPath: str | None = None
+    summary: str = ""
+    warnings: list[str] = Field(default_factory=list)
+    currentStage: str | None = None
+    progressPercent: int = Field(default=0, ge=0, le=100)
+    startedAt: str | None = None
+    completedAt: str | None = None
+    configSummary: dict[str, Any] = Field(default_factory=dict)
+    metricsSummary: dict[str, Any] = Field(default_factory=dict)
+    stages: list[WorkflowStageDetail] = Field(default_factory=list)
+    rerunSupported: bool = True
+
+
+class AgentDecisionCard(BaseModel):
+    cardId: str
+    title: str
+    explanation: str
+    actionType: Literal["transform", "workflow", "routing", "observation"]
+    actionId: str
+    columns: list[str] = Field(default_factory=list)
+    expectedBenefit: str = ""
+    requiresConfirmation: bool = True
+    whatDetected: str = ""
+    whyRecommended: str = ""
+    ifSkipped: str = ""
+    expectedChange: str = ""
+
+
+class AgentDatasetContext(BaseModel):
+    uploadId: str
+    sheetName: str
+    currentPage: str | None = None
+    selectedRoute: AnalysisType | None = None
+    datasetProfile: DatasetProfile
+    routeSuggestion: RouteSuggestion | None = None
+
+
+class AnalysisAgentRequest(BaseModel):
+    uploadId: str
+    sheetName: str
+    prompt: str = Field(min_length=1)
+    currentPage: str | None = None
+    selectedRoute: AnalysisType | None = None
+
+
+class AnalysisAgentPlanStep(BaseModel):
+    stepId: str
+    title: str
+    description: str
+    status: Literal["planned", "running", "completed"] = "planned"
+
+
+class AnalysisAgentResponse(BaseModel):
+    summary: str
+    message: str
+    context: AgentDatasetContext
+    plan: list[AnalysisAgentPlanStep] = Field(default_factory=list)
+    decisionCards: list[AgentDecisionCard] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class AuthUser(BaseModel):
     userId: str
     username: str
@@ -44,12 +279,16 @@ class AuthUser(BaseModel):
 class WorkspaceSummary(BaseModel):
     workspaceId: str
     name: str
-    kind: Literal["personal", "shared", "example"]
-    role: Literal["owner", "member"]
+    kind: Literal["private", "public", "custom", "example"]
+    role: Literal["owner", "manager", "member", "admin"]
     isReadOnly: bool
     ownerUserId: str
+    groupId: str | None = None
     isPersonal: bool
     isOwner: bool
+    isArchived: bool = False
+    canWrite: bool = False
+    canManageMembers: bool = False
     createdAt: str
 
 
@@ -83,6 +322,7 @@ class RegisterRequest(BaseModel):
     username: str = Field(min_length=3, max_length=120)
     displayName: str = Field(min_length=1, max_length=255)
     password: str = Field(min_length=8, max_length=255)
+    requestedGroupIds: list[str] = Field(default_factory=list)
 
 
 class CreateUserRequest(BaseModel):
@@ -90,6 +330,7 @@ class CreateUserRequest(BaseModel):
     displayName: str = Field(min_length=1, max_length=255)
     password: str = Field(min_length=8, max_length=255)
     isAdmin: bool = False
+    groupIds: list[str] = Field(default_factory=list)
 
 
 class UpdateUserRequest(BaseModel):
@@ -104,6 +345,8 @@ class UpdateUserPasswordRequest(BaseModel):
 class UserGroupRef(BaseModel):
     groupId: str
     name: str
+    role: Literal["member", "manager"] = "member"
+    isArchived: bool = False
 
 
 class UserSummary(BaseModel):
@@ -121,20 +364,74 @@ class UserGroupSummary(BaseModel):
     name: str
     description: str | None = None
     memberCount: int = 0
+    managerCount: int = 0
+    publicWorkspaceId: str | None = None
+    isArchived: bool = False
     createdAt: str
 
 
 class CreateUserGroupRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=512)
+    managerUserIds: list[str] = Field(default_factory=list)
 
 
 class UpdateUserGroupsRequest(BaseModel):
     groupIds: list[str] = Field(default_factory=list)
 
 
+class UpdateUserGroupRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=512)
+    managerUserIds: list[str] | None = None
+    archived: bool | None = None
+
+
+class RegistrationGroupSummary(BaseModel):
+    groupId: str
+    name: str
+    description: str | None = None
+
+
+class GroupMembershipSummary(BaseModel):
+    groupId: str
+    name: str
+    role: Literal["member", "manager"]
+    publicWorkspaceId: str
+    isArchived: bool
+
+
+class GroupJoinRequestSummary(BaseModel):
+    requestId: str
+    groupId: str
+    groupName: str
+    userId: str
+    username: str
+    displayName: str
+    status: Literal["pending", "approved", "rejected", "cancelled"]
+    reviewedByUserId: str | None = None
+    reviewedAt: str | None = None
+    notifyStatus: Literal["pending", "sent", "failed", "skipped"]
+    notifyError: str | None = None
+    createdAt: str
+
+
+class MyGroupStateResponse(BaseModel):
+    memberships: list[GroupMembershipSummary] = Field(default_factory=list)
+    requests: list[GroupJoinRequestSummary] = Field(default_factory=list)
+
+
+class CreateGroupJoinRequestsRequest(BaseModel):
+    groupIds: list[str] = Field(min_length=1)
+
+
+class ReviewGroupJoinRequest(BaseModel):
+    decision: Literal["approved", "rejected"]
+
+
 class CreateWorkspaceRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
+    memberUserIds: list[str] = Field(default_factory=list)
 
 
 class UpdateWorkspaceRequest(BaseModel):
@@ -145,13 +442,27 @@ class WorkspaceMemberResponse(BaseModel):
     userId: str
     username: str
     displayName: str
-    role: Literal["owner", "member"]
+    role: Literal["owner", "manager", "member"]
     isActive: bool
     createdAt: str
 
 
 class AddWorkspaceMemberRequest(BaseModel):
     userId: str
+
+
+class ReplaceWorkspaceMembersRequest(BaseModel):
+    memberUserIds: list[str] = Field(default_factory=list)
+
+
+class UserDirectoryEntry(BaseModel):
+    userId: str
+    username: str
+    displayName: str
+
+
+class MoveExperimentRequest(BaseModel):
+    targetWorkspaceId: str
 
 
 class ParsedDateTime(BaseModel):
@@ -996,6 +1307,24 @@ AgentRunStatus = Literal["planned", "running", "completed", "failed", "cancelled
 AgentPlanStepStatus = Literal["pending", "running", "completed", "failed", "cancelled", "skipped"]
 AgentArtifactKind = Literal["summary", "markdown", "chart", "diagnosis", "report", "table", "warning", "run_request"]
 AgentEventType = Literal["status", "plan", "skill", "artifact", "message", "warning", "error"]
+AgentConversationKind = Literal["user", "assistant", "plan", "action", "artifact", "status"]
+AgentConversationStreamState = Literal["streaming", "final"]
+AgentStreamEventType = Literal["status", "message_delta", "message_final", "plan_step", "skill_status", "artifact_ready", "warning", "error", "heartbeat"]
+
+
+class AgentLlmConfig(BaseModel):
+    provider: Literal["deepseek"] = "deepseek"
+    apiKey: str = Field(min_length=1)
+    baseUrl: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    stream: bool = True
+
+
+class AgentLlmSession(BaseModel):
+    provider: Literal["deepseek"] = "deepseek"
+    baseUrl: str
+    model: str
+    stream: bool = True
 
 
 class AgentSkillDefinition(BaseModel):
@@ -1056,6 +1385,19 @@ class AgentArtifact(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
+class AgentConversationItem(BaseModel):
+    itemId: str
+    kind: AgentConversationKind
+    title: str | None = None
+    contentMarkdown: str = ""
+    stepId: str | None = None
+    skillId: str | None = None
+    artifactId: str | None = None
+    status: str | None = None
+    createdAt: str
+    streamState: AgentConversationStreamState = "final"
+
+
 class AgentContextSnapshot(BaseModel):
     experimentId: str
     experimentName: str
@@ -1092,6 +1434,8 @@ class AgentRunEvent(BaseModel):
     skillId: str | None = None
     artifactId: str | None = None
     status: str | None = None
+    conversationItemId: str | None = None
+    payload: dict[str, Any] | None = None
 
 
 class AgentRunRequest(BaseModel):
@@ -1104,6 +1448,7 @@ class AgentRunRequest(BaseModel):
     selectedVisualId: str | None = None
     selectedAnomalyTime: str | None = None
     autoExecute: bool = True
+    llm: AgentLlmConfig | None = None
 
 
 class AgentRunResponse(BaseModel):
@@ -1137,15 +1482,36 @@ class AgentRunDetail(BaseModel):
     plan: list[AgentPlanStep] = Field(default_factory=list)
     events: list[AgentRunEvent] = Field(default_factory=list)
     messages: list[AgentMessage] = Field(default_factory=list)
+    conversation: list[AgentConversationItem] = Field(default_factory=list)
     skillInvocations: list[AgentSkillInvocation] = Field(default_factory=list)
     artifacts: list[AgentArtifact] = Field(default_factory=list)
     availableSkills: list[AgentSkillDefinition] = Field(default_factory=list)
     estimatedDuration: str | None = None
     risks: list[str] = Field(default_factory=list)
     summary: str | None = None
+    llmSession: AgentLlmSession | None = None
     canCancel: bool = False
     createdAt: str
     updatedAt: str
+
+
+class AgentStreamEvent(BaseModel):
+    cursor: int = Field(ge=1)
+    runId: str
+    eventType: AgentStreamEventType
+    timestamp: str
+    status: str | None = None
+    stepId: str | None = None
+    skillId: str | None = None
+    artifactId: str | None = None
+    delta: str | None = None
+    warning: str | None = None
+    error: str | None = None
+    title: str | None = None
+    detail: str | None = None
+    conversationItem: AgentConversationItem | None = None
+    planStep: AgentPlanStep | None = None
+    artifact: AgentArtifact | None = None
 
 
 class AgentRunEventsResponse(BaseModel):
@@ -1188,6 +1554,7 @@ class RuntimeEstimateResponse(BaseModel):
 class ExperimentListItem(BaseModel):
     experimentId: str
     experimentName: str
+    analysisType: AnalysisType = "forecast"
     fileName: str
     sheetName: str
     targetColumn: str
@@ -1204,6 +1571,7 @@ class ExperimentListItem(BaseModel):
 class ExperimentDetail(BaseModel):
     experimentId: str
     experimentName: str
+    analysisType: AnalysisType = "forecast"
     fileName: str
     sheetName: str
     targetColumn: str
@@ -1223,6 +1591,11 @@ class ExperimentDetail(BaseModel):
     series: list[dict[str, Any]]
     finalForecast: dict[str, Any] | None
     modelLogs: list[dict[str, Any]]
+    datasetProfile: DatasetProfile | None = None
+    workflowState: dict[str, Any] | None = None
+    analysisArtifacts: list[AgentArtifact] = Field(default_factory=list)
+    parentUploadId: str | None = None
+    sourceExperimentId: str | None = None
     explainability: ExperimentExplainabilityResponse | None = None
     runtime: RuntimeRunDetail | None = None
     attribution: AttributionSnapshot | None = None

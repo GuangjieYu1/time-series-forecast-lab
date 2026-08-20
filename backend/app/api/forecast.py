@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import (
     WorkspaceContext,
+    ensure_experiment_manage_access,
     ensure_progress_scope,
     get_workspace_context,
     get_workspace_experiment,
@@ -553,6 +554,8 @@ def run_forecast(request: ForecastRunRequest, context: WorkspaceContext = Depend
             workspace_id=context.workspace.id,
             created_by_user_id=context.user.id,
             name=name,
+            analysis_type="forecast",
+            parent_upload_id=request.uploadId,
             file_name=metadata["fileName"],
             sheet_name=request.sheetName,
             target_column=first.targetColumn,
@@ -561,6 +564,31 @@ def run_forecast(request: ForecastRunRequest, context: WorkspaceContext = Depend
             model_count=str(len(request.selectedModels)),
             config_json=_dump(request),
             data_profile_json=_dump({"targets": series_profiles}),
+            dataset_profile_json=_dump({
+                "uploadId": request.uploadId,
+                "workspaceId": context.workspace.id,
+                "fileName": metadata["fileName"],
+                "sheetName": request.sheetName,
+                "rowCountApprox": len(df),
+                "columnCount": len(df.columns),
+                "previewRowCount": min(len(df), 100),
+                "columns": [],
+                "typeCounts": {},
+                "timeColumnCandidates": [request.timeColumn],
+                "targetCandidates": request.targetColumns,
+                "groupingCandidates": [],
+                "numericColumns": [],
+                "categoricalColumns": [],
+                "textColumns": [],
+                "issues": [],
+                "recommendations": [],
+                "readinessScore": {
+                    "overall": 80,
+                    "level": "good",
+                    "dimensions": [],
+                    "summary": "预测 workflow 使用已选字段运行。"
+                },
+            }),
             metrics_json=_dump(first.rankedModels),
             backtest_json=_dump(first.backtest),
             diagnostics_json=_dump(first.diagnostics),
@@ -569,6 +597,14 @@ def run_forecast(request: ForecastRunRequest, context: WorkspaceContext = Depend
             model_logs_json=_dump(model_logs),
             runtime_json=None,
             manifest_json=_dump(manifest),
+            workflow_state_json=_dump({
+                "stage": "completed",
+                "analysisType": "forecast",
+                "selectedTimeColumn": request.timeColumn,
+                "selectedTargetColumns": request.targetColumns,
+                "selectedModels": request.selectedModels,
+            }),
+            artifacts_json="[]",
             config_hash=manifest.configHash,
             source_file_sha256=metadata["fileSha256"],
             app_version=APP_VERSION,
@@ -652,6 +688,7 @@ def final_forecast(request: FinalForecastRequest, context: WorkspaceContext = De
     run_id = request.runId or f"run_{uuid.uuid4().hex}"
     try:
         record = get_workspace_experiment(db, request.experimentId, context)
+        ensure_experiment_manage_access(record, context)
         data_profile = json.loads(record.data_profile_json)
         first_profile = data_profile["targets"][0]
         history = json.loads(record.series_json)

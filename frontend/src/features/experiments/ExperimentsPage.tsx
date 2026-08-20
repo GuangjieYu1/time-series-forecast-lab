@@ -1,18 +1,20 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useLabStore } from "../../app/store";
-import { deleteExperiment, fetchExperiments } from "../../shared/api/client";
+import { deleteExperiment, fetchExperiments, moveExperiment } from "../../shared/api/client";
 import { EmptyState, ErrorBanner, LoadingBlock } from "../../shared/components/Status";
 import { Badge, controls, PageHeader, StatCard } from "../../shared/components/Ui";
 import type { ExperimentListItem } from "../../shared/types/api";
 
 export function ExperimentsPage() {
-  const { selectedWorkspaceId, workspaces } = useLabStore();
+  const { currentUser, selectedWorkspaceId, workspaces } = useLabStore();
   const [experiments, setExperiments] = useState<ExperimentListItem[]>([]);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [moveTargets, setMoveTargets] = useState<Record<string, string>>({});
   const selectedWorkspace = workspaces.find((item) => item.workspaceId === selectedWorkspaceId) ?? null;
+  const writableTargets = workspaces.filter((workspace) => workspace.workspaceId !== selectedWorkspaceId && workspace.canWrite && !workspace.isReadOnly);
 
   async function load() {
     setLoading(true);
@@ -42,6 +44,22 @@ export function ExperimentsPage() {
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "删除实验失败。");
+    }
+  }
+
+  function canManage(experiment: ExperimentListItem) {
+    return experiment.createdByUserId === currentUser?.userId || selectedWorkspace?.role === "owner" || selectedWorkspace?.role === "manager" || selectedWorkspace?.role === "admin";
+  }
+
+  async function move(experimentId: string) {
+    const targetWorkspaceId = moveTargets[experimentId];
+    if (!targetWorkspaceId) return;
+    try {
+      await moveExperiment(experimentId, targetWorkspaceId);
+      setMoveTargets((current) => ({ ...current, [experimentId]: "" }));
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "移动项目失败。");
     }
   }
 
@@ -93,14 +111,23 @@ export function ExperimentsPage() {
                 <dd className="mt-1 text-xs font-medium text-slate-700 dark:text-slate-200">{new Date(experiment.createdAt).toLocaleString()}</dd>
               </div>
             </dl>
+            {canManage(experiment) && writableTargets.length ? (
+              <div className="mt-4 flex gap-2">
+                <select className={`${controls.input} min-w-0 flex-1`} value={moveTargets[experiment.experimentId] ?? ""} onChange={(event) => setMoveTargets((current) => ({ ...current, [experiment.experimentId]: event.target.value }))}>
+                  <option value="">移动到…</option>
+                  {writableTargets.map((workspace) => <option key={workspace.workspaceId} value={workspace.workspaceId}>{workspace.name} · {workspace.kind}</option>)}
+                </select>
+                <button className={controls.secondaryButton} disabled={!moveTargets[experiment.experimentId]} onClick={() => void move(experiment.experimentId)}>移动</button>
+              </div>
+            ) : null}
             <div className="mt-5 flex gap-2">
               <Link className={`${controls.primaryButton} flex-1`} to={`/experiments/${experiment.experimentId}`}>
                 打开详情
               </Link>
               <button
                 className={controls.dangerButton}
-                disabled={selectedWorkspace?.isReadOnly}
-                title={selectedWorkspace?.isReadOnly ? "Example 工作区是只读空间，不能删除实验。" : undefined}
+                disabled={!canManage(experiment) || selectedWorkspace?.isReadOnly}
+                title={!canManage(experiment) ? "只有项目创建者、空间 Owner 或组管理员可以删除。" : selectedWorkspace?.isReadOnly ? "只读工作区不能删除实验。" : undefined}
                 onClick={() => void remove(experiment.experimentId)}
               >
                 {selectedWorkspace?.isReadOnly ? "只读" : "删除"}

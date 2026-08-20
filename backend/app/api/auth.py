@@ -14,6 +14,7 @@ from app.db.models import SessionRecord, UserRecord
 from app.db.session import get_db
 from app.schemas import AuthSessionResponse, AuthUser, BootstrapRequest, LoginRequest, RegisterRequest, UsernameAvailabilityResponse
 from app.services.auth_service import count_users, create_user_with_personal_workspace, default_workspace_id, list_workspace_summaries, seed_example_workspace
+from app.services.group_service import create_group_join_requests, notify_group_join_requests
 
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -174,6 +175,13 @@ def register(payload: RegisterRequest, response: Response, db: Session = Depends
             password=payload.password,
             is_admin=False,
         )
+        join_requests = create_group_join_requests(
+            db,
+            user=provisioned.user,
+            group_ids=payload.requestedGroupIds,
+        )
+        db.commit()
+        notify_group_join_requests(db, join_requests)
         db.commit()
         _create_session(db, provisioned.user.id, response)
         refreshed = db.get(UserRecord, provisioned.user.id)

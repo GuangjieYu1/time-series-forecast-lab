@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import agent_runs, auth, experiments, features, feedback, forecast, llm, models, reports, runtime, system, upload, user_groups, users, workbench_agent, workspaces
+from app.api import agent_runs, analysis, auth, experiments, features, feedback, forecast, llm, models, reports, runtime, system, upload, user_groups, users, workbench_agent, workspaces
 from app.core.config import get_settings
 from app.core.constants import APP_VERSION
 from app.core.errors import AppError, error_payload
@@ -64,6 +64,7 @@ def health():
 
 
 app.include_router(upload.router)
+app.include_router(analysis.router)
 app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(user_groups.router)

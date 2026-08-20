@@ -1,11 +1,17 @@
 import type {
   AddWorkspaceMemberRequest,
+  AnalysisAgentRequest,
+  AnalysisAgentResponse,
+  AnalysisRunEventsResponse,
+  AnalysisProfileRequest,
+  AnalysisRouteSuggestionRequest,
   AgentArtifact,
   AgentHistoryItem,
   AgentRunDetail,
   AgentRunEventsResponse,
   AgentRunRequest,
   AgentRunResponse,
+  AgentStreamEvent,
   AuthSessionResponse,
   BootstrapRequest,
   CreateUserRequest,
@@ -14,6 +20,11 @@ import type {
   DeepSeekConnectionResponse,
   DeepSeekSettings,
   DeviceInfo,
+  DatasetProfile,
+  DatasetTransformExecutionRequest,
+  DatasetTransformPlan,
+  DatasetTransformPlanRequest,
+  DatasetTransformResult,
   ExperimentDetail,
   ExperimentExplainabilityResponse,
   FeatureFactoryResponse,
@@ -33,6 +44,11 @@ import type {
   LocalRebuildResponse,
   ModelCapability,
   RegisterRequest,
+  RegistrationGroupSummary,
+  GroupJoinRequestSummary,
+  MyGroupStateResponse,
+  MoveExperimentResponse,
+  RouteSuggestion,
   RuntimeEstimateRequest,
   RuntimeEstimateResponse,
   RuntimeEvent,
@@ -48,6 +64,9 @@ import type {
   UpdateUserRequest,
   UpdateWorkspaceRequest,
   UploadPreviewResponse,
+  UserDirectoryEntry,
+  WorkflowRunDetail,
+  WorkflowStartRequest,
   WorkbenchIdeaAnalyzeRequest,
   WorkbenchIdeaAnalyzeResponse
 } from "../types/api";
@@ -113,6 +132,98 @@ export async function uploadPreview(file: File): Promise<UploadPreviewResponse> 
     await fetch("/api/upload/preview", buildInit({
       method: "POST",
       body: form
+    }))
+  );
+}
+
+export async function fetchAnalysisProfile(request: AnalysisProfileRequest): Promise<DatasetProfile> {
+  return parseResponse<DatasetProfile>(
+    await fetch("/api/analysis/profile", buildInit({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request)
+    }))
+  );
+}
+
+export async function fetchAnalysisRouteSuggestion(request: AnalysisRouteSuggestionRequest): Promise<RouteSuggestion> {
+  return parseResponse<RouteSuggestion>(
+    await fetch("/api/analysis/routes/suggest", buildInit({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request)
+    }))
+  );
+}
+
+export async function analyzeWithPlatformAgent(request: AnalysisAgentRequest): Promise<AnalysisAgentResponse> {
+  return parseResponse<AnalysisAgentResponse>(
+    await fetch("/api/analysis/agent/analyze", buildInit({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request)
+    }))
+  );
+}
+
+export async function planDatasetTransform(request: DatasetTransformPlanRequest): Promise<DatasetTransformPlan> {
+  return parseResponse<DatasetTransformPlan>(
+    await fetch("/api/analysis/transforms/plan", buildInit({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request)
+    }))
+  );
+}
+
+export async function executeDatasetTransform(request: DatasetTransformExecutionRequest): Promise<DatasetTransformResult> {
+  return parseResponse<DatasetTransformResult>(
+    await fetch("/api/analysis/transforms/execute", buildInit({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request)
+    }))
+  );
+}
+
+async function startAnalysisWorkflow(path: string, request: WorkflowStartRequest): Promise<WorkflowRunDetail> {
+  return parseResponse<WorkflowRunDetail>(
+    await fetch(path, buildInit({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request)
+    }))
+  );
+}
+
+export async function startForecastWorkflow(request: WorkflowStartRequest): Promise<WorkflowRunDetail> {
+  return startAnalysisWorkflow("/api/analysis/workflows/forecast/start", request);
+}
+
+export async function startAttributionWorkflow(request: WorkflowStartRequest): Promise<WorkflowRunDetail> {
+  return startAnalysisWorkflow("/api/analysis/workflows/attribution/start", request);
+}
+
+export async function startSupervisedWorkflow(request: WorkflowStartRequest): Promise<WorkflowRunDetail> {
+  return startAnalysisWorkflow("/api/analysis/workflows/supervised-ml/start", request);
+}
+
+export async function startClusteringWorkflow(request: WorkflowStartRequest): Promise<WorkflowRunDetail> {
+  return startAnalysisWorkflow("/api/analysis/workflows/clustering/start", request);
+}
+
+export async function fetchAnalysisRun(runId: string): Promise<WorkflowRunDetail> {
+  return parseResponse<WorkflowRunDetail>(await fetch(buildWorkspaceUrl(`/api/analysis/runs/${encodeURIComponent(runId)}`), buildInit()));
+}
+
+export async function fetchAnalysisRunEvents(runId: string): Promise<AnalysisRunEventsResponse> {
+  return parseResponse<AnalysisRunEventsResponse>(await fetch(buildWorkspaceUrl(`/api/analysis/runs/${encodeURIComponent(runId)}/events`), buildInit()));
+}
+
+export async function cancelAnalysisRun(runId: string): Promise<void> {
+  await parseResponse<{ ok: boolean }>(
+    await fetch(buildWorkspaceUrl(`/api/analysis/runs/${encodeURIComponent(runId)}/cancel`), buildInit({
+      method: "POST"
     }))
   );
 }
@@ -284,6 +395,16 @@ export async function fetchExperiment(experimentId: string): Promise<ExperimentD
   return parseResponse<ExperimentDetail>(await fetch(buildWorkspaceUrl(`/api/experiments/${experimentId}`), buildInit()));
 }
 
+export async function moveExperiment(experimentId: string, targetWorkspaceId: string): Promise<MoveExperimentResponse> {
+  return parseResponse<MoveExperimentResponse>(
+    await fetch(buildWorkspaceUrl(`/api/experiments/${encodeURIComponent(experimentId)}/move`), buildInit({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetWorkspaceId })
+    }))
+  );
+}
+
 export async function fetchExperimentFeatureFactory(experimentId: string): Promise<FeatureFactoryResponse> {
   return parseResponse<FeatureFactoryResponse>(await fetch(buildWorkspaceUrl(`/api/experiments/${encodeURIComponent(experimentId)}/feature-factory`), buildInit()));
 }
@@ -312,6 +433,35 @@ export async function fetchExperimentAgentRunEvents(experimentId: string, runId:
   return parseResponse<AgentRunEventsResponse>(
     await fetch(buildWorkspaceUrl(`/api/experiments/${encodeURIComponent(experimentId)}/agent/runs/${encodeURIComponent(runId)}/events`), buildInit())
   );
+}
+
+export function subscribeExperimentAgentRun(
+  experimentId: string,
+  runId: string,
+  onEvent: (event: AgentStreamEvent) => void,
+  options?: { afterCursor?: number; onError?: () => void }
+): () => void {
+  const source = new EventSource(
+    buildWorkspaceUrl(`/api/experiments/${encodeURIComponent(experimentId)}/agent/runs/${encodeURIComponent(runId)}/stream`, {
+      afterCursor: options?.afterCursor ?? 0
+    })
+  );
+  const handleAgentEvent = (message: MessageEvent<string>) => {
+    const event = JSON.parse(message.data) as AgentStreamEvent;
+    onEvent(event);
+    if (
+      event.eventType === "status"
+      && (event.status === "completed" || event.status === "failed" || event.status === "cancelled")
+    ) {
+      source.close();
+    }
+  };
+  source.addEventListener("agent", handleAgentEvent as EventListener);
+  source.onerror = () => {
+    source.close();
+    options?.onError?.();
+  };
+  return () => source.close();
 }
 
 export async function cancelExperimentAgentRun(experimentId: string, runId: string): Promise<void> {
@@ -481,6 +631,10 @@ export async function fetchUsers(): Promise<UserSummary[]> {
   return parseResponse<UserSummary[]>(await fetch("/api/users", buildInit(undefined, false)));
 }
 
+export async function fetchUserDirectory(): Promise<UserDirectoryEntry[]> {
+  return parseResponse<UserDirectoryEntry[]>(await fetch("/api/users/directory", buildInit(undefined, false)));
+}
+
 export async function createUser(payload: CreateUserRequest): Promise<UserSummary> {
   return parseResponse<UserSummary>(
     await fetch("/api/users", buildInit({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }, false))
@@ -507,6 +661,50 @@ export async function updateUserGroups(userId: string, payload: UpdateUserGroups
 
 export async function fetchUserGroups(): Promise<UserGroupSummary[]> {
   return parseResponse<UserGroupSummary[]>(await fetch("/api/user-groups", buildInit(undefined, false)));
+}
+
+export async function fetchRegistrationGroups(): Promise<RegistrationGroupSummary[]> {
+  return parseResponse<RegistrationGroupSummary[]>(await fetch("/api/user-groups/registration", buildInit(undefined, false)));
+}
+
+export async function fetchMyGroupState(): Promise<MyGroupStateResponse> {
+  return parseResponse<MyGroupStateResponse>(await fetch("/api/user-groups/me", buildInit(undefined, false)));
+}
+
+export async function requestUserGroups(groupIds: string[]): Promise<GroupJoinRequestSummary[]> {
+  return parseResponse<GroupJoinRequestSummary[]>(
+    await fetch("/api/user-groups/requests", buildInit({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ groupIds })
+    }, false))
+  );
+}
+
+export async function cancelUserGroupRequest(requestId: string): Promise<void> {
+  await parseResponse<{ ok: boolean }>(
+    await fetch(`/api/user-groups/requests/${encodeURIComponent(requestId)}`, buildInit({ method: "DELETE" }, false))
+  );
+}
+
+export async function fetchPendingGroupRequests(): Promise<GroupJoinRequestSummary[]> {
+  return parseResponse<GroupJoinRequestSummary[]>(await fetch("/api/user-groups/requests/pending", buildInit(undefined, false)));
+}
+
+export async function reviewUserGroupRequest(requestId: string, decision: "approved" | "rejected"): Promise<GroupJoinRequestSummary> {
+  return parseResponse<GroupJoinRequestSummary>(
+    await fetch(`/api/user-groups/requests/${encodeURIComponent(requestId)}`, buildInit({
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision })
+    }, false))
+  );
+}
+
+export async function leaveUserGroup(groupId: string): Promise<void> {
+  await parseResponse<{ ok: boolean }>(
+    await fetch(`/api/user-groups/${encodeURIComponent(groupId)}/members/me`, buildInit({ method: "DELETE" }, false))
+  );
 }
 
 export async function createUserGroup(payload: CreateUserGroupRequest): Promise<UserGroupSummary> {
@@ -556,6 +754,16 @@ export async function addWorkspaceMember(workspaceId: string, payload: AddWorksp
 export async function removeWorkspaceMember(workspaceId: string, userId: string): Promise<void> {
   await parseResponse<{ ok: boolean }>(
     await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}`, buildInit({ method: "DELETE" }))
+  );
+}
+
+export async function replaceWorkspaceMembers(workspaceId: string, memberUserIds: string[]): Promise<WorkspaceMemberResponse[]> {
+  return parseResponse<WorkspaceMemberResponse[]>(
+    await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/members`, buildInit({
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ memberUserIds })
+    }))
   );
 }
 
