@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useLabStore } from "../../app/store";
 import {
   cancelUserGroupRequest,
@@ -25,6 +25,7 @@ import {
   updateWorkspace,
 } from "../../shared/api/client";
 import { Badge, controls, PageHeader, SectionCard, StatCard, surface } from "../../shared/components/Ui";
+import { SearchableMultiSelect } from "../../shared/components/SearchableMultiSelect";
 import type {
   GroupJoinRequestSummary,
   MyGroupStateResponse,
@@ -37,51 +38,13 @@ import type {
 import { DeepSeekSettingsPanel } from "./DeepSeekSettingsPanel";
 import { LocalMaintenancePanel } from "./LocalMaintenancePanel";
 
-function UserMultiSelect({
-  users,
-  selected,
-  onChange,
-  excludeUserId,
-}: {
-  users: UserDirectoryEntry[];
-  selected: string[];
-  onChange: (userIds: string[]) => void;
-  excludeUserId?: string;
-}) {
-  const [query, setQuery] = useState("");
-  const candidates = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    return users.filter((user) => {
-      if (user.userId === excludeUserId) return false;
-      return !normalized || user.displayName.toLowerCase().includes(normalized) || user.username.toLowerCase().includes(normalized);
-    });
-  }, [excludeUserId, query, users]);
-
-  return (
-    <div className="space-y-3">
-      <input className={controls.input} placeholder="按姓名或用户名搜索" value={query} onChange={(event) => setQuery(event.target.value)} />
-      <div className="grid max-h-64 gap-2 overflow-y-auto sm:grid-cols-2">
-        {candidates.map((user) => {
-          const checked = selected.includes(user.userId);
-          return (
-            <label key={user.userId} className={`${surface.softPanel} flex cursor-pointer items-center gap-3 p-3 text-sm`}>
-              <input
-                type="checkbox"
-                checked={checked}
-                onChange={(event) => onChange(event.target.checked ? [...selected, user.userId] : selected.filter((id) => id !== user.userId))}
-              />
-              <span className="min-w-0">
-                <span className={`block truncate font-medium ${surface.strongText}`}>{user.displayName}</span>
-                <span className={`block truncate text-xs ${surface.mutedText}`}>@{user.username}</span>
-              </span>
-            </label>
-          );
-        })}
-        {!candidates.length ? <div className={`text-sm ${surface.mutedText}`}>没有匹配的活跃用户。</div> : null}
-      </div>
-      <div className={`text-xs ${surface.mutedText}`}>已选择 {selected.length} 人，可跨组协作。</div>
-    </div>
-  );
+function userOptions(users: UserDirectoryEntry[], excludeUserId?: string) {
+  return users.filter((user) => user.userId !== excludeUserId).map((user) => ({
+    value: user.userId,
+    label: user.displayName,
+    description: `@${user.username}`,
+    keywords: user.username,
+  }));
 }
 
 export function ApiSettingsPage() {
@@ -105,6 +68,8 @@ export function ApiSettingsPage() {
   const [groupForm, setGroupForm] = useState({ name: "", description: "", managerUserIds: [] as string[] });
   const [userForm, setUserForm] = useState({ username: "", displayName: "", password: "", isAdmin: false, groupIds: [] as string[] });
   const [passwordDrafts, setPasswordDrafts] = useState<Record<string, string>>({});
+  const [adminUserQuery, setAdminUserQuery] = useState("");
+  const [adminUserPage, setAdminUserPage] = useState(0);
 
   const refreshSessionState = useCallback(async () => {
     const session = await fetchSession();
@@ -163,6 +128,12 @@ export function ApiSettingsPage() {
   const activeGroupIds = new Set(groupState.memberships.map((membership) => membership.groupId));
   const pendingGroupIds = new Set(groupState.requests.filter((request) => request.status === "pending").map((request) => request.groupId));
   const requestableGroups = registrationGroups.filter((group) => !activeGroupIds.has(group.groupId) && !pendingGroupIds.has(group.groupId));
+  const normalizedAdminUserQuery = adminUserQuery.trim().toLowerCase();
+  const filteredAdminUsers = users.filter((user) => !normalizedAdminUserQuery || `${user.displayName} ${user.username}`.toLowerCase().includes(normalizedAdminUserQuery));
+  const adminUserPageSize = 20;
+  const adminUserPageCount = Math.max(1, Math.ceil(filteredAdminUsers.length / adminUserPageSize));
+  const safeAdminUserPage = Math.min(adminUserPage, adminUserPageCount - 1);
+  const visibleAdminUsers = filteredAdminUsers.slice(safeAdminUserPage * adminUserPageSize, (safeAdminUserPage + 1) * adminUserPageSize);
 
   async function runAction(action: () => Promise<void>, fallback: string, refreshSession = false) {
     setSaving(true);
@@ -294,14 +265,15 @@ export function ApiSettingsPage() {
             {requestableGroups.length ? (
               <div className="mt-4 space-y-3 rounded-2xl border border-dashed border-slate-200 p-4 dark:border-white/10">
                 <div className={`text-sm font-semibold ${surface.strongText}`}>继续申请入组</div>
-                <div className="grid gap-2 sm:grid-cols-2">
-                  {requestableGroups.map((group) => (
-                    <label key={group.groupId} className={`${surface.softPanel} flex cursor-pointer gap-3 p-3 text-sm`}>
-                      <input type="checkbox" checked={applyGroupIds.includes(group.groupId)} onChange={(event) => setApplyGroupIds((current) => event.target.checked ? [...current, group.groupId] : current.filter((id) => id !== group.groupId))} />
-                      <span><span className={`block font-medium ${surface.strongText}`}>{group.name}</span>{group.description ? <span className={`text-xs ${surface.mutedText}`}>{group.description}</span> : null}</span>
-                    </label>
-                  ))}
-                </div>
+                <SearchableMultiSelect
+                  options={requestableGroups.map((group) => ({ value: group.groupId, label: group.name, description: group.description ?? undefined }))}
+                  value={applyGroupIds}
+                  onChange={setApplyGroupIds}
+                  placeholder="搜索并选择要申请的用户组"
+                  searchPlaceholder="按组名或说明搜索"
+                  emptyMessage="没有匹配的可申请用户组。"
+                  disabled={saving}
+                />
                 <button className={controls.primaryButton} disabled={!applyGroupIds.length || saving} onClick={() => void handleApplyGroups()}>提交申请</button>
               </div>
             ) : null}
@@ -332,7 +304,7 @@ export function ApiSettingsPage() {
           <SectionCard title="创建 Custom Space" description="从活跃用户目录搜索并多选成员，可跨组组队；Owner 后续可随时调整。">
             <form className="space-y-4" onSubmit={handleCreateCustom}>
               <input className={controls.input} placeholder="Custom Space 名称" value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} />
-              <UserMultiSelect users={directory} selected={customMemberIds} onChange={setCustomMemberIds} excludeUserId={currentUser?.userId} />
+              <SearchableMultiSelect options={userOptions(directory, currentUser?.userId)} value={customMemberIds} onChange={setCustomMemberIds} placeholder="搜索并选择协作成员" searchPlaceholder="按姓名或用户名搜索" emptyMessage="没有匹配的活跃用户。" disabled={saving} />
               <button className={controls.primaryButton} type="submit" disabled={!workspaceName.trim() || saving}>创建 Custom Space</button>
             </form>
           </SectionCard>
@@ -346,7 +318,7 @@ export function ApiSettingsPage() {
                 {selectedWorkspace.kind === "custom" ? (
                   <div className="space-y-4">
                     <div className={`${surface.softPanel} p-4 text-sm ${surface.mutedText}`}>当前 {members.length} 位成员（含 Owner）。</div>
-                    {selectedWorkspace.canManageMembers ? <><form className="flex gap-2" onSubmit={handleRenameCustom}><input className={controls.input} value={renameWorkspaceName} onChange={(event) => setRenameWorkspaceName(event.target.value)} /><button className={controls.secondaryButton} type="submit" disabled={saving}>重命名</button></form><UserMultiSelect users={directory} selected={editMemberIds} onChange={setEditMemberIds} excludeUserId={selectedWorkspace.ownerUserId} /><div className="flex gap-2"><button className={controls.primaryButton} disabled={saving} onClick={() => void handleSaveCustomMembers()}>保存成员</button><button className={controls.dangerButton} disabled={saving} onClick={() => void handleDeleteCustom()}>删除空间</button></div></> : <div className={`${surface.softPanel} p-4 text-sm ${surface.mutedText}`}>只有 Owner 可以调整成员。</div>}
+                    {selectedWorkspace.canManageMembers ? <><form className="flex gap-2" onSubmit={handleRenameCustom}><input className={controls.input} value={renameWorkspaceName} onChange={(event) => setRenameWorkspaceName(event.target.value)} /><button className={controls.secondaryButton} type="submit" disabled={saving}>重命名</button></form><SearchableMultiSelect options={userOptions(directory, selectedWorkspace.ownerUserId)} value={editMemberIds} onChange={setEditMemberIds} placeholder="搜索并调整协作成员" searchPlaceholder="按姓名或用户名搜索" emptyMessage="没有匹配的活跃用户。" disabled={saving} /><div className="flex gap-2"><button className={controls.primaryButton} disabled={saving} onClick={() => void handleSaveCustomMembers()}>保存成员</button><button className={controls.dangerButton} disabled={saving} onClick={() => void handleDeleteCustom()}>删除空间</button></div></> : <div className={`${surface.softPanel} p-4 text-sm ${surface.mutedText}`}>只有 Owner 可以调整成员。</div>}
                   </div>
                 ) : null}
               </div>
@@ -360,7 +332,7 @@ export function ApiSettingsPage() {
               <SectionCard title="全局管理：用户组" description="创建组时指定至少一位组管理员；归档后 Public Space 对原成员只读。">
                 <form className="space-y-4" onSubmit={handleCreateGroup}>
                   <div className="grid gap-3 sm:grid-cols-2"><input className={controls.input} placeholder="组名称" value={groupForm.name} onChange={(event) => setGroupForm((current) => ({ ...current, name: event.target.value }))} /><input className={controls.input} placeholder="说明（可选）" value={groupForm.description} onChange={(event) => setGroupForm((current) => ({ ...current, description: event.target.value }))} /></div>
-                  <div><div className={`mb-2 text-sm font-medium ${surface.strongText}`}>初始组管理员</div><UserMultiSelect users={directory} selected={groupForm.managerUserIds} onChange={(managerUserIds) => setGroupForm((current) => ({ ...current, managerUserIds }))} /></div>
+                  <div><div className={`mb-2 text-sm font-medium ${surface.strongText}`}>初始组管理员</div><SearchableMultiSelect options={userOptions(directory)} value={groupForm.managerUserIds} onChange={(managerUserIds) => setGroupForm((current) => ({ ...current, managerUserIds }))} placeholder="搜索并选择组管理员" searchPlaceholder="按姓名或用户名搜索" emptyMessage="没有匹配的活跃用户。" disabled={saving} /></div>
                   <button className={controls.primaryButton} type="submit" disabled={!groupForm.name.trim() || saving}>创建组与 Public Space</button>
                 </form>
                 <div className="mt-4 space-y-2">{groups.map((group) => <div key={group.groupId} className={`${surface.softPanel} flex items-center justify-between gap-3 p-4`}><div><div className={`font-semibold ${surface.strongText}`}>{group.name}</div><div className={`text-xs ${surface.mutedText}`}>{group.memberCount} 成员 · {group.managerCount} manager {group.isArchived ? "· 已归档" : ""}</div></div>{!group.isArchived ? <button className={controls.dangerButton} disabled={saving} onClick={() => { if (window.confirm(`归档「${group.name}」并将 Public Space 设为只读？`)) void runAction(async () => { await deleteUserGroup(group.groupId); }, "归档失败。", true); }}>归档</button> : <Badge tone="warn">只读</Badge>}</div>)}</div>
@@ -369,10 +341,19 @@ export function ApiSettingsPage() {
               <SectionCard title="全局管理：用户" description="管理员创建用户时可直接批准加入多个组；用户 A 不需要也不应被初始化为管理员。">
                 <form className="space-y-3 rounded-2xl border border-dashed border-slate-200 p-4 dark:border-white/10" onSubmit={handleCreateUser}>
                   <div className="grid gap-3 sm:grid-cols-3"><input className={controls.input} placeholder="用户名" value={userForm.username} onChange={(event) => setUserForm((current) => ({ ...current, username: event.target.value }))} /><input className={controls.input} placeholder="显示名称" value={userForm.displayName} onChange={(event) => setUserForm((current) => ({ ...current, displayName: event.target.value }))} /><input className={controls.input} type="password" placeholder="初始密码" value={userForm.password} onChange={(event) => setUserForm((current) => ({ ...current, password: event.target.value }))} /></div>
-                  <div className="flex flex-wrap gap-2">{groups.filter((group) => !group.isArchived).map((group) => <label key={group.groupId} className={`${surface.softPanel} flex gap-2 p-2 text-sm`}><input type="checkbox" checked={userForm.groupIds.includes(group.groupId)} onChange={(event) => setUserForm((current) => ({ ...current, groupIds: event.target.checked ? [...current.groupIds, group.groupId] : current.groupIds.filter((id) => id !== group.groupId) }))} />{group.name}</label>)}<label className={`${surface.softPanel} flex gap-2 p-2 text-sm`}><input type="checkbox" checked={userForm.isAdmin} onChange={(event) => setUserForm((current) => ({ ...current, isAdmin: event.target.checked }))} />全局管理员</label></div>
+                  <SearchableMultiSelect options={groups.filter((group) => !group.isArchived).map((group) => ({ value: group.groupId, label: group.name }))} value={userForm.groupIds} onChange={(groupIds) => setUserForm((current) => ({ ...current, groupIds }))} placeholder="搜索并选择直接加入的用户组" searchPlaceholder="按组名搜索" emptyMessage="没有匹配的可用用户组。" disabled={saving} />
+                  <label className={`${surface.softPanel} flex gap-2 p-3 text-sm`}><input type="checkbox" checked={userForm.isAdmin} onChange={(event) => setUserForm((current) => ({ ...current, isAdmin: event.target.checked }))} />全局管理员</label>
                   <button className={controls.primaryButton} type="submit" disabled={saving}>创建用户</button>
                 </form>
-                <div className="mt-4 space-y-3">{users.map((user) => <div key={user.userId} className={`${surface.softPanel} space-y-3 p-4`}><div className="flex flex-wrap items-center justify-between gap-2"><div><div className={`font-semibold ${surface.strongText}`}>{user.displayName} <span className={`text-sm font-normal ${surface.mutedText}`}>@{user.username}</span></div><div className="mt-1 flex flex-wrap gap-1">{user.isAdmin ? <Badge tone="warn">Admin</Badge> : null}{user.groups.map((group) => <Badge key={group.groupId} tone={group.role === "manager" ? "info" : "neutral"}>{group.name} · {group.role}</Badge>)}</div></div><button className={user.isActive ? controls.dangerButton : controls.primaryButton} onClick={() => void runAction(async () => { await updateUser(user.userId, { isActive: !user.isActive }); }, "更新用户失败。")}>{user.isActive ? "停用" : "启用"}</button></div><div className="flex flex-wrap gap-2">{groups.filter((group) => !group.isArchived).map((group) => <button key={group.groupId} className={user.groups.some((item) => item.groupId === group.groupId) ? controls.primaryButton : controls.secondaryButton} disabled={saving} onClick={() => void handleToggleUserGroup(user, group.groupId)}>{user.groups.some((item) => item.groupId === group.groupId) ? "已加入" : "加入"} {group.name}</button>)}</div><div className="flex gap-2"><input className={controls.input} type="password" placeholder="新密码" value={passwordDrafts[user.userId] ?? ""} onChange={(event) => setPasswordDrafts((current) => ({ ...current, [user.userId]: event.target.value }))} /><button className={controls.secondaryButton} onClick={() => void handleResetPassword(user.userId)}>重置密码</button></div></div>)}</div>
+                <div className="mt-4 space-y-3">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <input className={controls.input} placeholder="按姓名或用户名筛选用户" value={adminUserQuery} onChange={(event) => { setAdminUserQuery(event.target.value); setAdminUserPage(0); }} />
+                    <div className={`shrink-0 text-xs ${surface.mutedText}`}>匹配 {filteredAdminUsers.length} 人 · 每页最多 {adminUserPageSize} 人</div>
+                  </div>
+                  {visibleAdminUsers.map((user) => <div key={user.userId} className={`${surface.softPanel} space-y-3 p-4`}><div className="flex flex-wrap items-center justify-between gap-2"><div><div className={`font-semibold ${surface.strongText}`}>{user.displayName} <span className={`text-sm font-normal ${surface.mutedText}`}>@{user.username}</span></div><div className="mt-1 flex flex-wrap gap-1">{user.isAdmin ? <Badge tone="warn">Admin</Badge> : null}{user.groups.map((group) => <Badge key={group.groupId} tone={group.role === "manager" ? "info" : "neutral"}>{group.name} · {group.role}</Badge>)}</div></div><button className={user.isActive ? controls.dangerButton : controls.primaryButton} onClick={() => void runAction(async () => { await updateUser(user.userId, { isActive: !user.isActive }); }, "更新用户失败。")}>{user.isActive ? "停用" : "启用"}</button></div><div className="flex flex-wrap gap-2">{groups.filter((group) => !group.isArchived).map((group) => <button key={group.groupId} className={user.groups.some((item) => item.groupId === group.groupId) ? controls.primaryButton : controls.secondaryButton} disabled={saving} onClick={() => void handleToggleUserGroup(user, group.groupId)}>{user.groups.some((item) => item.groupId === group.groupId) ? "已加入" : "加入"} {group.name}</button>)}</div><div className="flex gap-2"><input className={controls.input} type="password" placeholder="新密码" value={passwordDrafts[user.userId] ?? ""} onChange={(event) => setPasswordDrafts((current) => ({ ...current, [user.userId]: event.target.value }))} /><button className={controls.secondaryButton} onClick={() => void handleResetPassword(user.userId)}>重置密码</button></div></div>)}
+                  {!visibleAdminUsers.length ? <div className={`${surface.softPanel} p-4 text-sm ${surface.mutedText}`}>没有匹配的用户。</div> : null}
+                  {adminUserPageCount > 1 ? <div className="flex items-center justify-end gap-2"><button className={controls.secondaryButton} disabled={safeAdminUserPage === 0} onClick={() => setAdminUserPage((current) => Math.max(0, current - 1))}>上一页</button><span className={`text-xs ${surface.mutedText}`}>第 {safeAdminUserPage + 1} / {adminUserPageCount} 页</span><button className={controls.secondaryButton} disabled={safeAdminUserPage >= adminUserPageCount - 1} onClick={() => setAdminUserPage((current) => Math.min(adminUserPageCount - 1, current + 1))}>下一页</button></div> : null}
+                </div>
               </SectionCard>
             </>
           ) : null}

@@ -14,6 +14,7 @@ import { UploadPage } from "../features/upload/UploadPage";
 import { bootstrapAuth, checkUsernameAvailability, fetchDevice, fetchHealth, fetchModels, fetchRegistrationGroups, fetchSession, login, logout, register } from "../shared/api/client";
 import { loadDeepSeekSettings } from "../shared/api/deepseekSettings";
 import { ErrorBanner, LoadingBlock } from "../shared/components/Status";
+import { SearchableMultiSelect } from "../shared/components/SearchableMultiSelect";
 import { Badge, controls, surface } from "../shared/components/Ui";
 import { zhCN } from "../shared/i18n/zhCN";
 import type { AuthSessionResponse, RegistrationGroupSummary, WorkspaceSummary } from "../shared/types/api";
@@ -661,19 +662,16 @@ function AuthScreen({
                 <fieldset className="space-y-3 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
                   <legend className="px-1 text-sm font-medium text-slate-200">申请加入用户组（可多选）</legend>
                   <p className="text-xs leading-5 text-slate-400">申请需要组管理员审批；审批前你只有 Private Space。</p>
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    {registrationGroups.map((group) => (
-                      <label key={group.groupId} className="flex cursor-pointer items-start gap-3 rounded-xl border border-white/10 p-3 text-sm text-slate-200">
-                        <input
-                          className="mt-1"
-                          type="checkbox"
-                          checked={requestedGroupIds.includes(group.groupId)}
-                          onChange={(event) => setRequestedGroupIds((current) => event.target.checked ? [...current, group.groupId] : current.filter((id) => id !== group.groupId))}
-                        />
-                        <span><span className="font-medium">{group.name}</span>{group.description ? <span className="mt-1 block text-xs text-slate-400">{group.description}</span> : null}</span>
-                      </label>
-                    ))}
-                  </div>
+                  <SearchableMultiSelect
+                    options={registrationGroups.map((group) => ({ value: group.groupId, label: group.name, description: group.description ?? undefined }))}
+                    value={requestedGroupIds}
+                    onChange={setRequestedGroupIds}
+                    placeholder="搜索并选择要申请的用户组"
+                    searchPlaceholder="按组名或说明搜索"
+                    emptyMessage="没有匹配的可申请用户组。"
+                    variant="auth"
+                    disabled={submitting || localSubmitting}
+                  />
                 </fieldset>
               ) : null}
               <button
