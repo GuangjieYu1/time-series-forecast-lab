@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { fetchExperiment, manifestDownloadUrl, prepareExperimentRerun } from "../../shared/api/client";
+import { fetchExperiment, manifestDownloadUrl, moveExperiment, prepareExperimentRerun } from "../../shared/api/client";
 import { useLabStore } from "../../app/store";
 import { DataTable } from "../../shared/components/Table";
 import { EmptyState, ErrorBanner, LoadingBlock } from "../../shared/components/Status";
@@ -66,6 +66,49 @@ function asForecastResult(experiment: ExperimentDetail): ForecastRunResponse {
     targetResults: [],
     manifest: experiment.manifest,
   };
+}
+
+function ProjectMoveControl({ experiment }: { experiment: ExperimentDetail }) {
+  const navigate = useNavigate();
+  const { currentUser, workspaces, selectedWorkspaceId, selectWorkspace } = useLabStore();
+  const [targetWorkspaceId, setTargetWorkspaceId] = useState("");
+  const [moving, setMoving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const sourceWorkspace = workspaces.find((workspace) => workspace.workspaceId === selectedWorkspaceId) ?? null;
+  const canManage = sourceWorkspace !== null
+    && sourceWorkspace.kind !== "example"
+    && (sourceWorkspace.isReadOnly
+      ? sourceWorkspace.kind === "public" && (sourceWorkspace.role === "manager" || sourceWorkspace.role === "admin")
+      : experiment.createdByUserId === currentUser?.userId || sourceWorkspace.role === "owner" || sourceWorkspace.role === "manager" || sourceWorkspace.role === "admin");
+  const targets = workspaces.filter((workspace) => workspace.workspaceId !== selectedWorkspaceId && workspace.canWrite && !workspace.isReadOnly);
+
+  if (!canManage || !targets.length) return null;
+
+  async function handleMove() {
+    if (!targetWorkspaceId) return;
+    setMoving(true);
+    setError(null);
+    try {
+      await moveExperiment(experiment.experimentId, targetWorkspaceId);
+      selectWorkspace(targetWorkspaceId);
+      navigate(`/experiments/${experiment.experimentId}`, { replace: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "移动项目失败。");
+    } finally {
+      setMoving(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <select className={`${controls.input} min-w-[180px]`} value={targetWorkspaceId} onChange={(event) => setTargetWorkspaceId(event.target.value)}>
+        <option value="">移动项目到…</option>
+        {targets.map((workspace) => <option key={workspace.workspaceId} value={workspace.workspaceId}>{workspace.name} · {workspace.kind}</option>)}
+      </select>
+      <button className={controls.secondaryButton} disabled={!targetWorkspaceId || moving} onClick={() => void handleMove()}>{moving ? "移动中…" : "移动"}</button>
+      {error ? <span className="text-xs text-rose-400">{error}</span> : null}
+    </div>
+  );
 }
 
 export function ExperimentDetailPage() {
@@ -138,9 +181,12 @@ export function ExperimentDetailPage() {
         title={experiment.experimentName}
         description={`${experiment.fileName} / ${experiment.sheetName} / 目标列：${experiment.targetColumn}`}
         action={
-          <Link className={controls.secondaryButton} to="/experiments">
-            返回历史
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            <Link className={controls.secondaryButton} to="/experiments">
+              返回历史
+            </Link>
+            <ProjectMoveControl experiment={experiment} />
+          </div>
         }
       />
       <ErrorBanner message={actionError} />

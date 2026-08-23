@@ -95,9 +95,11 @@ function ColumnProfilePanel({ columns }: { columns: ColumnProfile[] }) {
 
 export function UploadPage() {
   const navigate = useNavigate();
-  const { upload, selectedSheet, rerunDraft, setUpload, setSelectedSheet, setRerunDraft } = useLabStore();
+  const { upload, selectedSheet, rerunDraft, workspaces, selectedWorkspaceId, selectWorkspace, setUpload, setSelectedSheet, setRerunDraft } = useLabStore();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const selectedWorkspace = workspaces.find((workspace) => workspace.workspaceId === selectedWorkspaceId) ?? null;
+  const writableWorkspaces = workspaces.filter((workspace) => workspace.canWrite && !workspace.isReadOnly);
 
   async function handleFile(file: File | null) {
     if (!file) return;
@@ -138,6 +140,22 @@ export function UploadPage() {
         title="上传工作台"
         description="后端负责解析 CSV / XLS / XLSX、识别 Sheet、推断字段类型；前端只接收前 100 行预览，适合大文件验收。"
       />
+
+      <SectionCard title="选择项目目标空间" description="文件、实验和报告会从创建开始绑定到这个空间，之后也可以在实验页整体移动。">
+        <label className="block space-y-2">
+          <span className={`text-sm font-medium ${surface.strongText}`}>保存到</span>
+          <select className={controls.input} value={selectedWorkspaceId ?? ""} onChange={(event) => selectWorkspace(event.target.value)}>
+            {writableWorkspaces.map((workspace) => (
+              <option key={workspace.workspaceId} value={workspace.workspaceId}>
+                {workspace.kind === "private" ? "我的 Private" : workspace.kind === "public" ? "组 Public" : "协作 Custom"} · {workspace.name}
+              </option>
+            ))}
+          </select>
+          <span className={`block text-xs ${surface.mutedText}`}>
+            {selectedWorkspace?.canWrite && !selectedWorkspace.isReadOnly ? `当前目标：${selectedWorkspace.name}` : "当前空间不可写，请先选择一个可写空间。"}
+          </span>
+        </label>
+      </SectionCard>
 
       <ErrorBanner message={error} />
       {loading ? <LoadingBlock label="正在由后端解析文件预览..." /> : null}
@@ -194,7 +212,7 @@ export function UploadPage() {
               </p>
               <label className={`${controls.primaryButton} mt-6 cursor-pointer`}>
                 上传文件
-                <input className="hidden" type="file" accept=".csv,.xlsx,.xls" onChange={(event) => void handleFile(event.target.files?.[0] ?? null)} />
+                <input className="hidden" type="file" accept=".csv,.xlsx,.xls" disabled={!selectedWorkspace?.canWrite || selectedWorkspace.isReadOnly} onChange={(event) => void handleFile(event.target.files?.[0] ?? null)} />
               </label>
             </div>
           </div>

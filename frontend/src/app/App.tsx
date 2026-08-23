@@ -8,12 +8,13 @@ import { ModelsPage } from "../features/models/ModelsPage";
 import { OverviewPage } from "../features/overview/OverviewPage";
 import { ApiSettingsPage } from "../features/settings/ApiSettingsPage";
 import { UploadPage } from "../features/upload/UploadPage";
-import { bootstrapAuth, checkUsernameAvailability, fetchDevice, fetchHealth, fetchModels, fetchSession, login, logout, register } from "../shared/api/client";
+import { bootstrapAuth, checkUsernameAvailability, fetchDevice, fetchHealth, fetchModels, fetchRegistrationGroups, fetchSession, login, logout, register } from "../shared/api/client";
 import { loadDeepSeekSettings } from "../shared/api/deepseekSettings";
 import { ErrorBanner, LoadingBlock } from "../shared/components/Status";
+import { SearchableMultiSelect } from "../shared/components/SearchableMultiSelect";
 import { Badge, controls, surface } from "../shared/components/Ui";
 import { zhCN } from "../shared/i18n/zhCN";
-import type { AuthSessionResponse, WorkspaceSummary } from "../shared/types/api";
+import type { AuthSessionResponse, RegistrationGroupSummary, WorkspaceSummary } from "../shared/types/api";
 import { useLabStore } from "./store";
 
 const navItems = [
@@ -139,11 +140,12 @@ function MobileMenuButton({ open, onClick }: { open: boolean; onClick: () => voi
 
 function WorkspaceBadge({ workspace }: { workspace: WorkspaceSummary | null }) {
   if (!workspace) return null;
+  const kindLabel = workspace.kind === "private" ? "Private" : workspace.kind === "public" ? "Public" : workspace.kind === "custom" ? "Custom" : "Example";
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <Badge tone={workspace.kind === "example" ? "warn" : workspace.kind === "shared" ? "info" : "good"}>{workspace.name}</Badge>
-      <Badge tone="neutral">{workspace.kind === "personal" ? "Personal" : workspace.kind === "shared" ? "Shared" : "Example"}</Badge>
-      <Badge tone="neutral">{workspace.role === "owner" ? "Owner" : "Member"}</Badge>
+      <Badge tone={workspace.kind === "example" ? "warn" : workspace.kind === "public" ? "info" : "good"}>{workspace.name}</Badge>
+      <Badge tone="neutral">{kindLabel}</Badge>
+      <Badge tone="neutral">{workspace.role}</Badge>
       {workspace.isReadOnly ? <Badge tone="warn">只读</Badge> : null}
     </div>
   );
@@ -172,6 +174,12 @@ function TopStatusBar({
   const [deepSeekConfigured, setDeepSeekConfigured] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const selectedWorkspace = workspaces.find((item) => item.workspaceId === selectedWorkspaceId) ?? null;
+  const groupedWorkspaces = [
+    { label: "我的 Private", kinds: ["private"] },
+    { label: "组 Public", kinds: ["public"] },
+    { label: "协作 Custom", kinds: ["custom"] },
+    { label: "示例", kinds: ["example"] },
+  ].map((group) => ({ ...group, items: workspaces.filter((workspace) => group.kinds.includes(workspace.kind)) })).filter((group) => group.items.length > 0);
 
   useEffect(() => {
     void fetchHealth()
@@ -224,10 +232,14 @@ function TopStatusBar({
                 value={selectedWorkspaceId ?? ""}
                 onChange={(event) => onWorkspaceChange(event.target.value)}
               >
-                {workspaces.map((workspace) => (
-                  <option key={workspace.workspaceId} value={workspace.workspaceId} className="text-slate-950">
-                    {workspace.name} · {workspace.kind} · {workspace.role}
-                  </option>
+                {groupedWorkspaces.map((group) => (
+                  <optgroup key={group.label} label={group.label} className="text-slate-950">
+                    {group.items.map((workspace) => (
+                      <option key={workspace.workspaceId} value={workspace.workspaceId} className="text-slate-950">
+                        {workspace.name} · {workspace.role}{workspace.isReadOnly ? " · 只读" : ""}
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
               </select>
             </label>
@@ -349,6 +361,8 @@ function AuthScreen({
   const [usernameAvailability, setUsernameAvailability] = useState<UsernameAvailabilityState>("idle");
   const [usernameAvailabilityMessage, setUsernameAvailabilityMessage] = useState<string | null>(null);
   const [lastCheckedUsername, setLastCheckedUsername] = useState("");
+  const [registrationGroups, setRegistrationGroups] = useState<RegistrationGroupSummary[]>([]);
+  const [requestedGroupIds, setRequestedGroupIds] = useState<string[]>([]);
   const [touched, setTouched] = useState({ username: false, displayName: false, password: false });
   const usernameCheckRequestRef = useRef(0);
   const canRegister = !bootstrapRequired;
@@ -359,6 +373,13 @@ function AuthScreen({
   const displayNameValid = displayName.trim().length > 0;
   const passwordRegisterValid = passwordMeetsRegisterRule(password);
   const passwordStrength = getPasswordStrength(password);
+
+  useEffect(() => {
+    if (!isRegistering) return;
+    void fetchRegistrationGroups()
+      .then(setRegistrationGroups)
+      .catch(() => setRegistrationGroups([]));
+  }, [isRegistering]);
 
   function resetRegisterValidationState() {
     setPendingRegisterSession(null);
@@ -447,7 +468,7 @@ function AuthScreen({
     if ((touched.displayName || submitAttempted) && !displayNameValid) {
       return <span className="text-rose-300">显示名称不能为空。</span>;
     }
-    return <span>显示名称会用于你的 Personal Workspace 名称。</span>;
+    return <span>显示名称会用于你的 Private Space 名称。</span>;
   }
 
   function passwordHelper() {
@@ -478,7 +499,7 @@ function AuthScreen({
         if (!usernameLocallyValid || !displayNameValid || !passwordRegisterValid || usernameAvailability === "checking" || usernameAvailability === "taken" || usernameAvailability === "invalid") {
           return;
         }
-        const session = await register({ username, displayName, password });
+        const session = await register({ username, displayName, password, requestedGroupIds });
         setPendingRegisterSession(session);
         setMode("register_success");
         return;
@@ -517,7 +538,7 @@ function AuthScreen({
           </div>
           <div className="grid gap-3 sm:grid-cols-3">
             {[
-              ["工作区隔离", "每个用户默认拥有 Personal Workspace，也可加入 Shared Workspace。"],
+              ["工作区隔离", "每个用户自动拥有 Private Space，审批入组后自动获得组 Public Space。"],
               ["浏览器 API 设置", "DeepSeek / API Key 继续只保存在当前浏览器，并按 userId 做隔离。"],
               ["只读 Example", "系统初始化后会自动附带 1 个 walkthrough Example Workspace。"]
             ].map(([title, detail]) => (
@@ -541,10 +562,10 @@ function AuthScreen({
               {bootstrapRequired
                 ? "检测到当前数据库还没有任何用户。先完成 bootstrap 创建第一个管理员账号，后续普通用户即可自行注册，管理员也可以在系统内直接创建账号。"
                 : isRegisterSuccess
-                  ? "账号已创建，Personal Workspace 已就绪。Example Workspace 也已共享给你。"
+                  ? "账号已创建，Private Space 已就绪。入组申请审批通过后会自动出现 Public Space。"
                 : isRegistering
                   ? "注册完成后会先进入成功过渡页，再由你手动进入系统。"
-                  : "请输入用户名和密码进入你的 Personal Workspace，或切换到被共享给你的空间。"}
+                  : "请输入用户名和密码进入 Private、组 Public 或受邀的 Custom Space。"}
             </p>
           </div>
 
@@ -580,8 +601,10 @@ function AuthScreen({
           {isRegisterSuccess ? (
             <div className="space-y-5 rounded-3xl border border-emerald-400/20 bg-emerald-400/8 p-5">
               <div className="space-y-2">
-                <div className="text-lg font-semibold text-white">账号已创建，Personal Workspace 已就绪</div>
-                <p className="text-sm leading-6 text-slate-300">Example Workspace 也已共享给你。</p>
+                <div className="text-lg font-semibold text-white">账号已创建，Private Space 已就绪</div>
+                <p className="text-sm leading-6 text-slate-300">
+                  {requestedGroupIds.length ? `已提交 ${requestedGroupIds.length} 个入组申请，审批前不会看到组 Public Space。` : "你可以稍后在设置中申请加入用户组。"}
+                </p>
               </div>
               <button
                 className={`${controls.primaryButton} w-full`}
@@ -631,6 +654,22 @@ function AuthScreen({
                 placeholder="至少 8 位"
                 helper={passwordHelper()}
               />
+              {isRegistering && registrationGroups.length ? (
+                <fieldset className="space-y-3 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                  <legend className="px-1 text-sm font-medium text-slate-200">申请加入用户组（可多选）</legend>
+                  <p className="text-xs leading-5 text-slate-400">申请需要组管理员审批；审批前你只有 Private Space。</p>
+                  <SearchableMultiSelect
+                    options={registrationGroups.map((group) => ({ value: group.groupId, label: group.name, description: group.description ?? undefined }))}
+                    value={requestedGroupIds}
+                    onChange={setRequestedGroupIds}
+                    placeholder="搜索并选择要申请的用户组"
+                    searchPlaceholder="按组名或说明搜索"
+                    emptyMessage="没有匹配的可申请用户组。"
+                    variant="auth"
+                    disabled={submitting || localSubmitting}
+                  />
+                </fieldset>
+              ) : null}
               <button
                 className={`${controls.primaryButton} w-full`}
                 type="submit"

@@ -27,6 +27,10 @@ import type {
   LocalRebuildResponse,
   ModelCapability,
   RegisterRequest,
+  RegistrationGroupSummary,
+  GroupJoinRequestSummary,
+  MyGroupStateResponse,
+  MoveExperimentResponse,
   RuntimeEstimateRequest,
   RuntimeEstimateResponse,
   RuntimeEvent,
@@ -42,6 +46,7 @@ import type {
   UpdateUserRequest,
   UpdateWorkspaceRequest,
   UploadPreviewResponse,
+  UserDirectoryEntry,
   WorkbenchIdeaAnalyzeRequest,
   WorkbenchIdeaAnalyzeResponse
 } from "../types/api";
@@ -278,6 +283,16 @@ export async function fetchExperiment(experimentId: string): Promise<ExperimentD
   return parseResponse<ExperimentDetail>(await fetch(buildWorkspaceUrl(`/api/experiments/${experimentId}`), buildInit()));
 }
 
+export async function moveExperiment(experimentId: string, targetWorkspaceId: string): Promise<MoveExperimentResponse> {
+  return parseResponse<MoveExperimentResponse>(
+    await fetch(buildWorkspaceUrl(`/api/experiments/${encodeURIComponent(experimentId)}/move`), buildInit({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetWorkspaceId })
+    }))
+  );
+}
+
 export async function fetchExperimentFeatureFactory(experimentId: string): Promise<FeatureFactoryResponse> {
   return parseResponse<FeatureFactoryResponse>(await fetch(buildWorkspaceUrl(`/api/experiments/${encodeURIComponent(experimentId)}/feature-factory`), buildInit()));
 }
@@ -433,6 +448,10 @@ export async function fetchUsers(): Promise<UserSummary[]> {
   return parseResponse<UserSummary[]>(await fetch("/api/users", buildInit(undefined, false)));
 }
 
+export async function fetchUserDirectory(): Promise<UserDirectoryEntry[]> {
+  return parseResponse<UserDirectoryEntry[]>(await fetch("/api/users/directory", buildInit(undefined, false)));
+}
+
 export async function createUser(payload: CreateUserRequest): Promise<UserSummary> {
   return parseResponse<UserSummary>(
     await fetch("/api/users", buildInit({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }, false))
@@ -461,6 +480,50 @@ export async function fetchUserGroups(): Promise<UserGroupSummary[]> {
   return parseResponse<UserGroupSummary[]>(await fetch("/api/user-groups", buildInit(undefined, false)));
 }
 
+export async function fetchRegistrationGroups(): Promise<RegistrationGroupSummary[]> {
+  return parseResponse<RegistrationGroupSummary[]>(await fetch("/api/user-groups/registration", buildInit(undefined, false)));
+}
+
+export async function fetchMyGroupState(): Promise<MyGroupStateResponse> {
+  return parseResponse<MyGroupStateResponse>(await fetch("/api/user-groups/me", buildInit(undefined, false)));
+}
+
+export async function requestUserGroups(groupIds: string[]): Promise<GroupJoinRequestSummary[]> {
+  return parseResponse<GroupJoinRequestSummary[]>(
+    await fetch("/api/user-groups/requests", buildInit({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ groupIds })
+    }, false))
+  );
+}
+
+export async function cancelUserGroupRequest(requestId: string): Promise<void> {
+  await parseResponse<{ ok: boolean }>(
+    await fetch(`/api/user-groups/requests/${encodeURIComponent(requestId)}`, buildInit({ method: "DELETE" }, false))
+  );
+}
+
+export async function fetchPendingGroupRequests(): Promise<GroupJoinRequestSummary[]> {
+  return parseResponse<GroupJoinRequestSummary[]>(await fetch("/api/user-groups/requests/pending", buildInit(undefined, false)));
+}
+
+export async function reviewUserGroupRequest(requestId: string, decision: "approved" | "rejected"): Promise<GroupJoinRequestSummary> {
+  return parseResponse<GroupJoinRequestSummary>(
+    await fetch(`/api/user-groups/requests/${encodeURIComponent(requestId)}`, buildInit({
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision })
+    }, false))
+  );
+}
+
+export async function leaveUserGroup(groupId: string): Promise<void> {
+  await parseResponse<{ ok: boolean }>(
+    await fetch(`/api/user-groups/${encodeURIComponent(groupId)}/members/me`, buildInit({ method: "DELETE" }, false))
+  );
+}
+
 export async function createUserGroup(payload: CreateUserGroupRequest): Promise<UserGroupSummary> {
   return parseResponse<UserGroupSummary>(
     await fetch("/api/user-groups", buildInit({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }, false))
@@ -468,7 +531,7 @@ export async function createUserGroup(payload: CreateUserGroupRequest): Promise<
 }
 
 export async function deleteUserGroup(groupId: string): Promise<void> {
-  await parseResponse<{ ok: boolean }>(
+  await parseResponse<UserGroupSummary>(
     await fetch(`/api/user-groups/${encodeURIComponent(groupId)}`, buildInit({ method: "DELETE" }, false))
   );
 }
@@ -508,6 +571,16 @@ export async function addWorkspaceMember(workspaceId: string, payload: AddWorksp
 export async function removeWorkspaceMember(workspaceId: string, userId: string): Promise<void> {
   await parseResponse<{ ok: boolean }>(
     await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}`, buildInit({ method: "DELETE" }))
+  );
+}
+
+export async function replaceWorkspaceMembers(workspaceId: string, memberUserIds: string[]): Promise<WorkspaceMemberResponse[]> {
+  return parseResponse<WorkspaceMemberResponse[]>(
+    await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/members`, buildInit({
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ memberUserIds })
+    }))
   );
 }
 

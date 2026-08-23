@@ -36,12 +36,16 @@ export interface AuthUser {
 export interface WorkspaceSummary {
   workspaceId: string;
   name: string;
-  kind: "personal" | "shared" | "example";
-  role: "owner" | "member";
+  kind: "private" | "public" | "custom" | "example";
+  role: "owner" | "manager" | "member" | "admin";
   isReadOnly: boolean;
   ownerUserId: string;
+  groupId: string | null;
   isPersonal: boolean;
   isOwner: boolean;
+  isArchived: boolean;
+  canWrite: boolean;
+  canManageMembers: boolean;
   createdAt: string;
 }
 
@@ -75,6 +79,7 @@ export interface RegisterRequest {
   username: string;
   displayName: string;
   password: string;
+  requestedGroupIds: string[];
 }
 
 export interface CreateUserRequest {
@@ -82,6 +87,7 @@ export interface CreateUserRequest {
   displayName: string;
   password: string;
   isAdmin: boolean;
+  groupIds: string[];
 }
 
 export interface UpdateUserRequest {
@@ -96,6 +102,8 @@ export interface UpdateUserPasswordRequest {
 export interface UserGroupRef {
   groupId: string;
   name: string;
+  role: "member" | "manager";
+  isArchived: boolean;
 }
 
 export interface UserSummary {
@@ -113,12 +121,56 @@ export interface UserGroupSummary {
   name: string;
   description: string | null;
   memberCount: number;
+  managerCount: number;
+  publicWorkspaceId: string | null;
+  isArchived: boolean;
   createdAt: string;
 }
 
 export interface CreateUserGroupRequest {
   name: string;
   description?: string;
+  managerUserIds?: string[];
+}
+
+export interface RegistrationGroupSummary {
+  groupId: string;
+  name: string;
+  description: string | null;
+}
+
+export interface GroupMembershipSummary {
+  groupId: string;
+  name: string;
+  role: "member" | "manager";
+  publicWorkspaceId: string;
+  isArchived: boolean;
+}
+
+export interface GroupJoinRequestSummary {
+  requestId: string;
+  groupId: string;
+  groupName: string;
+  userId: string;
+  username: string;
+  displayName: string;
+  status: "pending" | "approved" | "rejected" | "cancelled";
+  reviewedByUserId: string | null;
+  reviewedAt: string | null;
+  notifyStatus: "pending" | "sent" | "failed" | "skipped";
+  notifyError: string | null;
+  createdAt: string;
+}
+
+export interface MyGroupStateResponse {
+  memberships: GroupMembershipSummary[];
+  requests: GroupJoinRequestSummary[];
+}
+
+export interface UserDirectoryEntry {
+  userId: string;
+  username: string;
+  displayName: string;
 }
 
 export interface UpdateUserGroupsRequest {
@@ -127,6 +179,7 @@ export interface UpdateUserGroupsRequest {
 
 export interface CreateWorkspaceRequest {
   name: string;
+  memberUserIds: string[];
 }
 
 export interface UpdateWorkspaceRequest {
@@ -137,13 +190,19 @@ export interface WorkspaceMemberResponse {
   userId: string;
   username: string;
   displayName: string;
-  role: "owner" | "member";
+  role: "owner" | "manager" | "member";
   isActive: boolean;
   createdAt: string;
 }
 
 export interface AddWorkspaceMemberRequest {
   userId: string;
+}
+
+export interface MoveExperimentResponse {
+  ok: boolean;
+  workspaceId: string;
+  workspaceName: string;
 }
 
 export interface ModelCapability {
