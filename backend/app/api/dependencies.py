@@ -21,15 +21,19 @@ from app.services.runtime_tracker import runtime_tracker
 class WorkspaceContext:
     user: UserRecord
     workspace: WorkspaceRecord
-    membership: WorkspaceMembershipRecord
+    membership: WorkspaceMembershipRecord | None
 
     @property
     def is_owner(self) -> bool:
-        return self.membership.role == "owner"
+        return self.membership is not None and self.membership.role == "owner"
 
     @property
     def role(self) -> str:
-        return self.membership.role
+        if self.membership is not None:
+            return self.membership.role
+        if self.user.is_admin and self.workspace.kind == "public":
+            return "admin"
+        return "member"
 
 
 def _session_cookie_value(
@@ -87,6 +91,21 @@ def _requested_workspace_id(
     return (x_workspace_id or workspace_query_id or "").strip() or None
 
 
+def resolve_workspace_context(db: Session, current_user: UserRecord, workspace_id: str) -> WorkspaceContext:
+    workspace = db.get(WorkspaceRecord, workspace_id)
+    if workspace is None:
+        raise AppError("当前工作区不存在或你没有访问权限。", 403, "WORKSPACE_FORBIDDEN")
+    membership = db.scalar(
+        select(WorkspaceMembershipRecord).where(
+            WorkspaceMembershipRecord.user_id == current_user.id,
+            WorkspaceMembershipRecord.workspace_id == workspace_id,
+        )
+    )
+    if membership is None and not (current_user.is_admin and workspace.kind == "public"):
+        raise AppError("当前工作区不存在或你没有访问权限。", 403, "WORKSPACE_FORBIDDEN")
+    return WorkspaceContext(user=current_user, workspace=workspace, membership=membership)
+
+
 def get_workspace_context(
     current_user: UserRecord = Depends(require_current_user),
     db: Session = Depends(get_db),
@@ -99,34 +118,50 @@ def get_workspace_context(
         requested_id = default_workspace_id(workspaces)
     if not requested_id:
         raise AppError("当前用户还没有可用工作区。", 403, "WORKSPACE_NOT_AVAILABLE")
-    row = db.execute(
-        select(WorkspaceMembershipRecord, WorkspaceRecord)
-        .join(WorkspaceRecord, WorkspaceRecord.id == WorkspaceMembershipRecord.workspace_id)
-        .where(
-            WorkspaceMembershipRecord.user_id == current_user.id,
-            WorkspaceMembershipRecord.workspace_id == requested_id,
-        )
-    ).first()
-    if row is None:
-        raise AppError("当前工作区不存在或你没有访问权限。", 403, "WORKSPACE_FORBIDDEN")
-    membership, workspace = row
-    return WorkspaceContext(user=current_user, workspace=workspace, membership=membership)
+    return resolve_workspace_context(db, current_user, requested_id)
 
 
 def require_workspace_write_access(context: WorkspaceContext = Depends(get_workspace_context)) -> WorkspaceContext:
     if context.workspace.is_read_only:
-        raise AppError("当前工作区是只读 Example 空间，不能执行写操作。", 403, "WORKSPACE_READ_ONLY")
+        raise AppError("当前工作区是只读空间，不能执行普通写操作。", 403, "WORKSPACE_READ_ONLY")
     return context
 
 
 def require_workspace_owner(context: WorkspaceContext = Depends(get_workspace_context)) -> WorkspaceContext:
-    if context.workspace.kind != "shared":
-        raise AppError("只有共享工作区支持成员管理。", 403, "WORKSPACE_OWNER_REQUIRED")
+    if context.workspace.kind != "custom":
+        raise AppError("只有自建协作空间支持成员管理。", 403, "WORKSPACE_OWNER_REQUIRED")
     if not context.is_owner:
         raise AppError("只有工作区 owner 可以执行此操作。", 403, "WORKSPACE_OWNER_REQUIRED")
     if context.workspace.is_read_only:
         raise AppError("Example 工作区是只读空间，不能执行此操作。", 403, "WORKSPACE_READ_ONLY")
     return context
+
+
+def ensure_experiment_manage_access(
+    record: ExperimentRecord,
+    context: WorkspaceContext,
+    *,
+    allow_archived_governance: bool = False,
+) -> None:
+    if context.workspace.kind == "example":
+        raise AppError("Example 工作区是只读空间。", 403, "WORKSPACE_READ_ONLY")
+    if context.workspace.is_read_only:
+        if (
+            allow_archived_governance
+            and context.workspace.kind == "public"
+            and (context.user.is_admin or context.role == "manager")
+        ):
+            return
+        raise AppError("归档组的 Public Space 只允许管理员执行治理操作。", 403, "WORKSPACE_READ_ONLY")
+    if record.created_by_user_id == context.user.id:
+        return
+    if context.workspace.kind == "private" and context.is_owner:
+        return
+    if context.workspace.kind == "public" and (context.user.is_admin or context.role == "manager"):
+        return
+    if context.workspace.kind == "custom" and context.is_owner:
+        return
+    raise AppError("只有项目创建者或空间管理员可以修改该项目。", 403, "EXPERIMENT_MANAGE_FORBIDDEN")
 
 
 def get_workspace_experiment(db: Session, experiment_id: str, context: WorkspaceContext) -> ExperimentRecord:

@@ -1,19 +1,25 @@
 from __future__ import annotations
 
-import uuid
-
 from fastapi import APIRouter, Depends
-from sqlalchemy import delete, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import invalidate_user_sessions, require_admin
+from app.api.dependencies import invalidate_user_sessions, require_admin, require_current_user
 from app.core.errors import AppError, as_http_error
-from app.core.security import utc_now
 from app.core.security import password_hash
 from app.db.models import UserGroupMembershipRecord, UserGroupRecord, UserRecord
 from app.db.session import get_db
-from app.schemas import CreateUserRequest, UpdateUserGroupsRequest, UpdateUserPasswordRequest, UpdateUserRequest, UserGroupRef, UserSummary
+from app.schemas import (
+    CreateUserRequest,
+    UpdateUserGroupsRequest,
+    UpdateUserPasswordRequest,
+    UpdateUserRequest,
+    UserDirectoryEntry,
+    UserGroupRef,
+    UserSummary,
+)
 from app.services.auth_service import create_user_with_personal_workspace
+from app.services.group_service import get_group_membership, grant_group_membership, remove_group_membership
 
 
 router = APIRouter(prefix="/api/users", tags=["users"])
@@ -23,14 +29,22 @@ def _load_group_refs_by_user(db: Session, user_ids: list[str]) -> dict[str, list
     if not user_ids:
         return {}
     rows = db.execute(
-        select(UserGroupMembershipRecord.user_id, UserGroupRecord.id, UserGroupRecord.name)
+        select(
+            UserGroupMembershipRecord.user_id,
+            UserGroupRecord.id,
+            UserGroupRecord.name,
+            UserGroupMembershipRecord.role,
+            UserGroupRecord.archived_at,
+        )
         .join(UserGroupRecord, UserGroupRecord.id == UserGroupMembershipRecord.group_id)
         .where(UserGroupMembershipRecord.user_id.in_(user_ids))
         .order_by(UserGroupRecord.name.asc())
     ).all()
     mapping: dict[str, list[UserGroupRef]] = {user_id: [] for user_id in user_ids}
-    for user_id, group_id, group_name in rows:
-        mapping.setdefault(user_id, []).append(UserGroupRef(groupId=group_id, name=group_name))
+    for user_id, group_id, group_name, role, archived_at in rows:
+        mapping.setdefault(user_id, []).append(
+            UserGroupRef(groupId=group_id, name=group_name, role=role, isArchived=archived_at is not None)
+        )
     return mapping
 
 
@@ -46,11 +60,53 @@ def _serialize_user(user: UserRecord, groups: list[UserGroupRef] | None = None) 
     )
 
 
+def _ensure_not_last_active_group_manager(db: Session, user: UserRecord) -> None:
+    managed_memberships = db.scalars(
+        select(UserGroupMembershipRecord).where(
+            UserGroupMembershipRecord.user_id == user.id,
+            UserGroupMembershipRecord.role == "manager",
+        )
+    ).all()
+    for membership in managed_memberships:
+        other_active_manager_count = int(
+            db.scalar(
+                select(func.count())
+                .select_from(UserGroupMembershipRecord)
+                .join(UserRecord, UserRecord.id == UserGroupMembershipRecord.user_id)
+                .where(
+                    UserGroupMembershipRecord.group_id == membership.group_id,
+                    UserGroupMembershipRecord.role == "manager",
+                    UserGroupMembershipRecord.user_id != user.id,
+                    UserRecord.is_active.is_(True),
+                )
+            )
+            or 0
+        )
+        if other_active_manager_count == 0:
+            group = db.get(UserGroupRecord, membership.group_id)
+            group_name = group.name if group is not None else membership.group_id
+            raise AppError(
+                f"不能停用用户：其仍是用户组「{group_name}」最后一名活跃管理员。",
+                409,
+                "LAST_ACTIVE_GROUP_MANAGER",
+            )
+
+
 @router.get("", response_model=list[UserSummary])
 def list_users(_: UserRecord = Depends(require_admin), db: Session = Depends(get_db)):
     users = db.scalars(select(UserRecord).order_by(UserRecord.created_at.asc())).all()
     groups_by_user = _load_group_refs_by_user(db, [user.id for user in users])
     return [_serialize_user(user, groups_by_user.get(user.id, [])) for user in users]
+
+
+@router.get("/directory", response_model=list[UserDirectoryEntry])
+def user_directory(_: UserRecord = Depends(require_current_user), db: Session = Depends(get_db)):
+    users = db.scalars(
+        select(UserRecord)
+        .where(UserRecord.is_active.is_(True))
+        .order_by(UserRecord.display_name.asc(), UserRecord.username.asc())
+    ).all()
+    return [UserDirectoryEntry(userId=user.id, username=user.username, displayName=user.display_name) for user in users]
 
 
 @router.post("", response_model=UserSummary)
@@ -66,8 +122,16 @@ def create_user(payload: CreateUserRequest, _: UserRecord = Depends(require_admi
             password=payload.password,
             is_admin=payload.isAdmin,
         )
+        group_ids = list(dict.fromkeys(group_id.strip() for group_id in payload.groupIds if group_id.strip()))
+        groups = db.scalars(select(UserGroupRecord).where(UserGroupRecord.id.in_(group_ids))).all() if group_ids else []
+        if len(groups) != len(group_ids):
+            raise AppError("存在无效的用户分组。", 404, "USER_GROUP_NOT_FOUND")
+        groups_by_id = {group.id: group for group in groups}
+        for group_id in group_ids:
+            grant_group_membership(db, group=groups_by_id[group_id], user=created.user)
         db.commit()
-        return _serialize_user(created.user)
+        groups_by_user = _load_group_refs_by_user(db, [created.user.id])
+        return _serialize_user(created.user, groups_by_user.get(created.user.id, []))
     except AppError as exc:
         db.rollback()
         raise as_http_error(exc) from exc
@@ -82,6 +146,8 @@ def update_user(user_id: str, payload: UpdateUserRequest, _: UserRecord = Depend
         if payload.displayName is not None:
             user.display_name = payload.displayName.strip()
         if payload.isActive is not None:
+            if user.is_active and not payload.isActive:
+                _ensure_not_last_active_group_manager(db, user)
             user.is_active = payload.isActive
             if not user.is_active:
                 invalidate_user_sessions(db, user.id)
@@ -104,29 +170,26 @@ def update_user_groups(
         user = db.get(UserRecord, user_id)
         if user is None:
             raise AppError("用户不存在。", 404, "USER_NOT_FOUND")
-
-        normalized_group_ids = list(dict.fromkeys(group_id.strip() for group_id in payload.groupIds if group_id.strip()))
-        groups: list[UserGroupRecord] = []
-        if normalized_group_ids:
-            groups = db.scalars(select(UserGroupRecord).where(UserGroupRecord.id.in_(normalized_group_ids))).all()
-            if len(groups) != len(normalized_group_ids):
-                raise AppError("存在无效的用户分组。", 404, "USER_GROUP_NOT_FOUND")
+        group_ids = list(dict.fromkeys(group_id.strip() for group_id in payload.groupIds if group_id.strip()))
+        groups = db.scalars(select(UserGroupRecord).where(UserGroupRecord.id.in_(group_ids))).all() if group_ids else []
+        if len(groups) != len(group_ids):
+            raise AppError("存在无效的用户分组。", 404, "USER_GROUP_NOT_FOUND")
         groups_by_id = {group.id: group for group in groups}
-
-        db.execute(delete(UserGroupMembershipRecord).where(UserGroupMembershipRecord.user_id == user_id))
-        now = utc_now()
-        for group_id in normalized_group_ids:
-            db.add(
-                UserGroupMembershipRecord(
-                    id=f"ugm_{uuid.uuid4().hex[:12]}",
-                    group_id=group_id,
-                    user_id=user_id,
-                    created_at=now,
-                )
-            )
+        current_memberships = db.scalars(
+            select(UserGroupMembershipRecord).where(UserGroupMembershipRecord.user_id == user_id)
+        ).all()
+        requested = set(group_ids)
+        for membership in current_memberships:
+            if membership.group_id not in requested:
+                group = db.get(UserGroupRecord, membership.group_id)
+                if group is not None:
+                    remove_group_membership(db, group=group, user=user)
+        for group_id in group_ids:
+            if get_group_membership(db, group_id, user_id) is None:
+                grant_group_membership(db, group=groups_by_id[group_id], user=user)
         db.commit()
-        ordered_refs = [UserGroupRef(groupId=group_id, name=groups_by_id[group_id].name) for group_id in normalized_group_ids]
-        return _serialize_user(user, ordered_refs)
+        groups_by_user = _load_group_refs_by_user(db, [user.id])
+        return _serialize_user(user, groups_by_user.get(user.id, []))
     except AppError as exc:
         db.rollback()
         raise as_http_error(exc) from exc

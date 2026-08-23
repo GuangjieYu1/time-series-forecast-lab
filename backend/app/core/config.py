@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     local_rebuild_password_file: Path | None = None
     local_rebuild_allowed_hosts: list[str] = Field(default_factory=lambda: ["127.0.0.1", "::1", "localhost"])
     wecom_feedback_webhook_url: str | None = None
+    wecom_group_request_webhook_url: str | None = None
     feedback_notification_timeout_seconds: float = 5.0
     session_cookie_name: str = "tsfl_session"
     session_ttl_days: int = 30

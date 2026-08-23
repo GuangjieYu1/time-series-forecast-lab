@@ -8,7 +8,13 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import WorkspaceContext, get_workspace_context, get_workspace_experiment, require_workspace_write_access
+from app.api.dependencies import (
+    WorkspaceContext,
+    ensure_experiment_manage_access,
+    get_workspace_context,
+    get_workspace_experiment,
+    resolve_workspace_context,
+)
 from app.core.errors import AppError, as_http_error
 from app.core.storage import assert_upload_ownership, read_upload_metadata
 from app.db.models import ExperimentRecord, ReportRecord, UserRecord, WorkspaceRecord
@@ -22,6 +28,7 @@ from app.schemas import (
     ExperimentRerunRequest,
     ExperimentRerunResponse,
     FeatureFactoryResponse,
+    MoveExperimentRequest,
 )
 from app.services.explainability import load_experiment_explainability
 from app.services.data_health import build_data_health_report, extract_detected_frequency
@@ -247,14 +254,45 @@ def download_experiment_manifest(experiment_id: str, context: WorkspaceContext =
         raise as_http_error(exc) from exc
 
 
-@router.delete("/{experiment_id}")
-def delete_experiment(experiment_id: str, context: WorkspaceContext = Depends(require_workspace_write_access), db: Session = Depends(get_db)):
+@router.post("/{experiment_id}/move")
+def move_experiment(
+    experiment_id: str,
+    request: MoveExperimentRequest,
+    context: WorkspaceContext = Depends(get_workspace_context),
+    db: Session = Depends(get_db),
+):
     try:
         record = get_workspace_experiment(db, experiment_id, context)
+        ensure_experiment_manage_access(record, context, allow_archived_governance=True)
+        target = resolve_workspace_context(db, context.user, request.targetWorkspaceId)
+        if target.workspace.is_read_only:
+            raise AppError("目标空间是只读空间，不能移入项目。", 403, "WORKSPACE_READ_ONLY")
+        if target.workspace.id == context.workspace.id:
+            return {"ok": True, "workspaceId": target.workspace.id, "workspaceName": target.workspace.name}
+        record.workspace_id = target.workspace.id
+        for report in db.scalars(select(ReportRecord).where(ReportRecord.experiment_id == experiment_id)).all():
+            report.workspace_id = target.workspace.id
+        db.commit()
+        return {"ok": True, "workspaceId": target.workspace.id, "workspaceName": target.workspace.name}
+    except AppError as exc:
+        db.rollback()
+        raise as_http_error(exc) from exc
+
+
+@router.delete("/{experiment_id}")
+def delete_experiment(
+    experiment_id: str,
+    context: WorkspaceContext = Depends(get_workspace_context),
+    db: Session = Depends(get_db),
+):
+    try:
+        record = get_workspace_experiment(db, experiment_id, context)
+        ensure_experiment_manage_access(record, context, allow_archived_governance=True)
         for report in db.scalars(select(ReportRecord).where(ReportRecord.experiment_id == experiment_id, ReportRecord.workspace_id == context.workspace.id)).all():
             db.delete(report)
         db.delete(record)
         db.commit()
         return {"ok": True}
     except AppError as exc:
+        db.rollback()
         raise as_http_error(exc) from exc

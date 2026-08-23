@@ -27,6 +27,7 @@ class UserGroupRecord(Base):
     name: Mapped[str] = mapped_column(String(120), unique=True, nullable=False, index=True)
     description: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_by_user_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
 
 
@@ -37,6 +38,21 @@ class UserGroupMembershipRecord(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True, index=True)
     group_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     user_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="member")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
+class UserGroupJoinRequestRecord(Base):
+    __tablename__ = "user_group_join_requests"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, index=True)
+    group_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
+    reviewed_by_user_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    notify_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    notify_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
 
 
@@ -47,6 +63,7 @@ class WorkspaceRecord(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     owner_user_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    group_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
     is_read_only: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
 

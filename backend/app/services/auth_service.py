@@ -69,9 +69,10 @@ def create_user_with_personal_workspace(
 
     personal_workspace = WorkspaceRecord(
         id=f"ws_{uuid.uuid4().hex[:12]}",
-        name=f"{user.display_name} · Personal",
-        kind="personal",
+        name=f"{user.display_name} · Private",
+        kind="private",
         owner_user_id=user.id,
+        group_id=None,
         is_read_only=False,
         created_at=now,
     )
@@ -126,21 +127,33 @@ def list_workspace_memberships_query(user_id: str) -> Select[tuple[WorkspaceMemb
 
 def list_workspace_summaries(db: Session, user: UserRecord) -> list[WorkspaceSummary]:
     rows = db.execute(list_workspace_memberships_query(user.id)).all()
-    summaries = [
-        WorkspaceSummary(
-            workspaceId=workspace.id,
-            name=workspace.name,
-            kind=workspace.kind,
-            role=membership.role,
-            isReadOnly=workspace.is_read_only,
-            ownerUserId=workspace.owner_user_id,
-            isPersonal=workspace.kind == "personal",
-            isOwner=membership.role == "owner",
-            createdAt=workspace.created_at.isoformat(),
+    by_workspace_id = {workspace.id: (membership, workspace) for membership, workspace in rows}
+    if user.is_admin:
+        for workspace in db.scalars(select(WorkspaceRecord).where(WorkspaceRecord.kind == "public")).all():
+            by_workspace_id.setdefault(workspace.id, (None, workspace))
+
+    summaries: list[WorkspaceSummary] = []
+    for membership, workspace in by_workspace_id.values():
+        role = "admin" if user.is_admin and workspace.kind == "public" else membership.role if membership else "member"
+        summaries.append(
+            WorkspaceSummary(
+                workspaceId=workspace.id,
+                name=workspace.name,
+                kind=workspace.kind,
+                role=role,
+                isReadOnly=workspace.is_read_only,
+                ownerUserId=workspace.owner_user_id,
+                groupId=workspace.group_id,
+                isPersonal=workspace.kind == "private",
+                isOwner=role == "owner",
+                isArchived=workspace.kind == "public" and workspace.is_read_only,
+                canWrite=not workspace.is_read_only,
+                canManageMembers=workspace.kind == "custom" and role == "owner",
+                createdAt=workspace.created_at.isoformat(),
+            )
         )
-        for membership, workspace in rows
-    ]
-    summaries.sort(key=lambda item: (0 if item.kind == "personal" else 1 if item.kind == "shared" else 2, item.name.lower()))
+    order = {"private": 0, "public": 1, "custom": 2, "example": 3}
+    summaries.sort(key=lambda item: (order.get(item.kind, 9), item.name.lower()))
     return summaries
 
 
@@ -148,7 +161,7 @@ def default_workspace_id(workspaces: list[WorkspaceSummary]) -> str | None:
     if not workspaces:
         return None
     for workspace in workspaces:
-        if workspace.kind == "personal":
+        if workspace.kind == "private":
             return workspace.workspaceId
     return workspaces[0].workspaceId
 
@@ -174,6 +187,7 @@ def seed_example_workspace(db: Session, *, owner_user_id: str, backend_root: Pat
         name=EXAMPLE_WORKSPACE_NAME,
         kind="example",
         owner_user_id=owner_user_id,
+        group_id=None,
         is_read_only=True,
         created_at=now,
     )

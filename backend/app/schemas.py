@@ -44,12 +44,16 @@ class AuthUser(BaseModel):
 class WorkspaceSummary(BaseModel):
     workspaceId: str
     name: str
-    kind: Literal["personal", "shared", "example"]
-    role: Literal["owner", "member"]
+    kind: Literal["private", "public", "custom", "example"]
+    role: Literal["owner", "manager", "member", "admin"]
     isReadOnly: bool
     ownerUserId: str
+    groupId: str | None = None
     isPersonal: bool
     isOwner: bool
+    isArchived: bool = False
+    canWrite: bool = False
+    canManageMembers: bool = False
     createdAt: str
 
 
@@ -83,6 +87,7 @@ class RegisterRequest(BaseModel):
     username: str = Field(min_length=3, max_length=120)
     displayName: str = Field(min_length=1, max_length=255)
     password: str = Field(min_length=8, max_length=255)
+    requestedGroupIds: list[str] = Field(default_factory=list)
 
 
 class CreateUserRequest(BaseModel):
@@ -90,6 +95,7 @@ class CreateUserRequest(BaseModel):
     displayName: str = Field(min_length=1, max_length=255)
     password: str = Field(min_length=8, max_length=255)
     isAdmin: bool = False
+    groupIds: list[str] = Field(default_factory=list)
 
 
 class UpdateUserRequest(BaseModel):
@@ -104,6 +110,8 @@ class UpdateUserPasswordRequest(BaseModel):
 class UserGroupRef(BaseModel):
     groupId: str
     name: str
+    role: Literal["member", "manager"] = "member"
+    isArchived: bool = False
 
 
 class UserSummary(BaseModel):
@@ -121,20 +129,74 @@ class UserGroupSummary(BaseModel):
     name: str
     description: str | None = None
     memberCount: int = 0
+    managerCount: int = 0
+    publicWorkspaceId: str | None = None
+    isArchived: bool = False
     createdAt: str
 
 
 class CreateUserGroupRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=512)
+    managerUserIds: list[str] = Field(default_factory=list)
 
 
 class UpdateUserGroupsRequest(BaseModel):
     groupIds: list[str] = Field(default_factory=list)
 
 
+class UpdateUserGroupRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=512)
+    managerUserIds: list[str] | None = None
+    archived: bool | None = None
+
+
+class RegistrationGroupSummary(BaseModel):
+    groupId: str
+    name: str
+    description: str | None = None
+
+
+class GroupMembershipSummary(BaseModel):
+    groupId: str
+    name: str
+    role: Literal["member", "manager"]
+    publicWorkspaceId: str
+    isArchived: bool
+
+
+class GroupJoinRequestSummary(BaseModel):
+    requestId: str
+    groupId: str
+    groupName: str
+    userId: str
+    username: str
+    displayName: str
+    status: Literal["pending", "approved", "rejected", "cancelled"]
+    reviewedByUserId: str | None = None
+    reviewedAt: str | None = None
+    notifyStatus: Literal["pending", "sent", "failed", "skipped"]
+    notifyError: str | None = None
+    createdAt: str
+
+
+class MyGroupStateResponse(BaseModel):
+    memberships: list[GroupMembershipSummary] = Field(default_factory=list)
+    requests: list[GroupJoinRequestSummary] = Field(default_factory=list)
+
+
+class CreateGroupJoinRequestsRequest(BaseModel):
+    groupIds: list[str] = Field(min_length=1)
+
+
+class ReviewGroupJoinRequest(BaseModel):
+    decision: Literal["approved", "rejected"]
+
+
 class CreateWorkspaceRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
+    memberUserIds: list[str] = Field(default_factory=list)
 
 
 class UpdateWorkspaceRequest(BaseModel):
@@ -145,13 +207,27 @@ class WorkspaceMemberResponse(BaseModel):
     userId: str
     username: str
     displayName: str
-    role: Literal["owner", "member"]
+    role: Literal["owner", "manager", "member"]
     isActive: bool
     createdAt: str
 
 
 class AddWorkspaceMemberRequest(BaseModel):
     userId: str
+
+
+class ReplaceWorkspaceMembersRequest(BaseModel):
+    memberUserIds: list[str] = Field(default_factory=list)
+
+
+class UserDirectoryEntry(BaseModel):
+    userId: str
+    username: str
+    displayName: str
+
+
+class MoveExperimentRequest(BaseModel):
+    targetWorkspaceId: str
 
 
 class ParsedDateTime(BaseModel):

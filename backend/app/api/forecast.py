@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import (
     WorkspaceContext,
+    ensure_experiment_manage_access,
     ensure_progress_scope,
     get_workspace_context,
     get_workspace_experiment,
@@ -650,6 +651,7 @@ def final_forecast(request: FinalForecastRequest, context: WorkspaceContext = De
     run_id = request.runId or f"run_{uuid.uuid4().hex}"
     try:
         record = get_workspace_experiment(db, request.experimentId, context)
+        ensure_experiment_manage_access(record, context)
         data_profile = json.loads(record.data_profile_json)
         first_profile = data_profile["targets"][0]
         history = json.loads(record.series_json)
