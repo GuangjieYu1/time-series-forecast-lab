@@ -175,7 +175,7 @@ def test_bootstrap_login_logout_and_repeat_bootstrap_rejected(isolated_auth_env)
     bootstrapped = _bootstrap_admin(client)
     assert bootstrapped["authenticated"] is True
     assert bootstrapped["user"]["isAdmin"] is True
-    assert any(workspace["kind"] == "personal" for workspace in bootstrapped["workspaces"])
+    assert any(workspace["kind"] == "private" for workspace in bootstrapped["workspaces"])
     assert any(workspace["kind"] == "example" for workspace in bootstrapped["workspaces"])
 
     repeated = isolated_auth_env.make_client().post(
@@ -219,7 +219,7 @@ def test_register_requires_bootstrap_then_creates_normal_user(isolated_auth_env)
     assert registered["authenticated"] is True
     assert registered["user"]["isAdmin"] is False
     workspace_kinds = {workspace["kind"] for workspace in registered["workspaces"]}
-    assert {"personal", "example"}.issubset(workspace_kinds)
+    assert {"private", "example"}.issubset(workspace_kinds)
 
     duplicate = isolated_auth_env.make_client().post(
         "/api/auth/register",
@@ -291,7 +291,7 @@ def test_register_requires_letter_and_number_password_but_admin_flows_keep_old_r
     assert relogin_after_reset["authenticated"] is True
 
 
-def test_admin_created_user_gets_personal_workspace(isolated_auth_env):
+def test_admin_created_user_gets_private_workspace(isolated_auth_env):
     admin_client = isolated_auth_env.make_client()
     _bootstrap_admin(admin_client)
 
@@ -299,10 +299,10 @@ def test_admin_created_user_gets_personal_workspace(isolated_auth_env):
 
     db = isolated_auth_env.session_local()
     try:
-        personal_count = db.scalar(
+        private_count = db.scalar(
             select(func.count())
             .select_from(WorkspaceRecord)
-            .where(WorkspaceRecord.owner_user_id == created_user["userId"], WorkspaceRecord.kind == "personal")
+            .where(WorkspaceRecord.owner_user_id == created_user["userId"], WorkspaceRecord.kind == "private")
         )
         example_membership_count = db.scalar(
             select(func.count())
@@ -316,13 +316,13 @@ def test_admin_created_user_gets_personal_workspace(isolated_auth_env):
     finally:
         db.close()
 
-    assert personal_count == 1
+    assert private_count == 1
     assert example_membership_count == 1
 
     analyst_client = isolated_auth_env.make_client()
     session = _login(analyst_client, username="analyst", password="password123")
     workspace_kinds = {workspace["kind"] for workspace in session["workspaces"]}
-    assert {"personal", "example"}.issubset(workspace_kinds)
+    assert {"private", "example"}.issubset(workspace_kinds)
 
 
 def test_shared_workspace_membership_and_member_permissions(isolated_auth_env):

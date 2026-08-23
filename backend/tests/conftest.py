@@ -64,16 +64,17 @@ def ensure_test_admin_user() -> tuple[str, str]:
         workspace_id = db.scalar(
             select(WorkspaceRecord.id).where(
                 WorkspaceRecord.owner_user_id == user.id,
-                WorkspaceRecord.kind == "personal",
+                WorkspaceRecord.kind == "private",
             )
         )
         if workspace_id is None:
             now = utc_now()
             workspace = WorkspaceRecord(
                 id=f"ws_{uuid.uuid4().hex[:12]}",
-                name=f"{TEST_DISPLAY_NAME} · Personal",
-                kind="personal",
+                name=f"{TEST_DISPLAY_NAME} · Private",
+                kind="private",
                 owner_user_id=user.id,
+                group_id=None,
                 is_read_only=False,
                 created_at=now,
             )

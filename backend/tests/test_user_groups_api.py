@@ -41,7 +41,7 @@ def _bootstrap_admin(client: TestClient):
     return response.json()
 
 
-def test_admin_can_create_assign_and_delete_user_groups(isolated_client: TestClient):
+def test_admin_can_create_assign_and_archive_user_groups(isolated_client: TestClient):
     _bootstrap_admin(isolated_client)
 
     created_user = isolated_client.post(
@@ -80,17 +80,19 @@ def test_admin_can_create_assign_and_delete_user_groups(isolated_client: TestCli
     listed_groups = isolated_client.get("/api/user-groups")
     assert listed_groups.status_code == 200, listed_groups.text
     group_counts = {group["name"]: group["memberCount"] for group in listed_groups.json()}
-    assert group_counts == {"Data Team": 1, "Ops Team": 1}
+    assert group_counts == {"Data Team": 2, "Ops Team": 2}
 
     deleted = isolated_client.delete(f"/api/user-groups/{data_group_id}")
     assert deleted.status_code == 200, deleted.text
 
     refreshed_groups = isolated_client.get("/api/user-groups")
     assert refreshed_groups.status_code == 200, refreshed_groups.text
-    assert [group["name"] for group in refreshed_groups.json()] == ["Ops Team"]
-    assert refreshed_groups.json()[0]["memberCount"] == 1
+    assert [group["name"] for group in refreshed_groups.json()] == ["Data Team", "Ops Team"]
+    assert refreshed_groups.json()[0]["isArchived"] is True
+    assert refreshed_groups.json()[0]["memberCount"] == 2
 
     refreshed_users = isolated_client.get("/api/users")
     assert refreshed_users.status_code == 200, refreshed_users.text
     analyst_after_delete = next(user for user in refreshed_users.json() if user["userId"] == user_id)
-    assert analyst_after_delete["groups"] == [{"groupId": ops_group_id, "name": "Ops Team"}]
+    assert [group["groupId"] for group in analyst_after_delete["groups"]] == [data_group_id, ops_group_id]
+    assert analyst_after_delete["groups"][0]["isArchived"] is True
