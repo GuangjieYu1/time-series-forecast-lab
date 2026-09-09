@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.core.storage import delete_upload, read_upload_metadata
 from app.main import app
+from app.services.file_parser import read_sheet_dataframe
 
 
 def test_error_contract_for_unsupported_upload(authed_client):
@@ -38,6 +39,33 @@ def test_upload_preview_csv_and_multi_sheet_xlsx(generated_fixtures: Path, authe
     sheet_names = {sheet["sheetName"] for sheet in xlsx_body["sheets"]}
     assert {"domestic", "international"}.issubset(sheet_names)
     delete_upload(xlsx_body["uploadId"])
+
+
+def test_upload_preview_and_read_mixed_delimiter_csv(tmp_path: Path, authed_client):
+    client = authed_client.client
+    csv_path = tmp_path / "mixed_delimiters.csv"
+    csv_path.write_text(
+        "date,value,note\n"
+        "2026-01-01,1,first\n"
+        "2026-01-02;2;second\n"
+        "2026-01-03;3;third\n",
+        encoding="utf-8-sig",
+    )
+
+    with csv_path.open("rb") as handle:
+        response = client.post("/api/upload/preview", files={"file": (csv_path.name, handle, "text/csv")})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    columns = [column["name"] for column in body["sheets"][0]["columns"]]
+    assert columns == ["date", "value", "note"]
+    assert body["sheets"][0]["previewRows"][-1] == {"date": "2026-01-03", "value": "3", "note": "third"}
+
+    df = read_sheet_dataframe(body["uploadId"], "CSV")
+    assert df.shape == (3, 3)
+    assert list(df.columns) == ["date", "value", "note"]
+    assert df.iloc[-1].tolist() == ["2026-01-03", "3", "third"]
+    delete_upload(body["uploadId"])
 
 
 def test_upload_preview_wide_csv_when_sniffer_cannot_determine_delimiter(tmp_path: Path, authed_client):
@@ -203,7 +231,10 @@ def test_raw_multi_sheet_end_to_end_history_and_cleanup(generated_fixtures: Path
         json={"experimentId": experiment_id, "finalModelId": forecast_body["recommendedModelId"], "horizon": 7},
     )
     assert final_response.status_code == 200, final_response.text
-    assert len(final_response.json()["forecast"]) == 7
+    final_body = final_response.json()
+    assert len(final_body["forecast"]) == 7
+    assert final_body["backtestMetrics"] is not None
+    assert final_body["modelInfo"]["supportsPredictionInterval"] is True
 
     list_response = client.get("/api/experiments")
     assert list_response.status_code == 200

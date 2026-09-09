@@ -169,7 +169,7 @@ MODEL_CAPABILITIES: dict[str, ModelCapability] = {
         supportsUnivariate=True,
         supportsMultipleTargets=False,
         supportsCovariates=False,
-        supportsPredictionInterval=False,
+        supportsPredictionInterval=True,
         minHorizon=1,
         maxHorizon=365,
         requiresGpu=False,
@@ -188,7 +188,7 @@ MODEL_CAPABILITIES: dict[str, ModelCapability] = {
         supportsUnivariate=True,
         supportsMultipleTargets=False,
         supportsCovariates=False,
-        supportsPredictionInterval=False,
+        supportsPredictionInterval=True,
         minHorizon=1,
         maxHorizon=365,
         requiresGpu=False,
@@ -207,7 +207,7 @@ MODEL_CAPABILITIES: dict[str, ModelCapability] = {
         supportsUnivariate=True,
         supportsMultipleTargets=False,
         supportsCovariates=False,
-        supportsPredictionInterval=False,
+        supportsPredictionInterval=True,
         minHorizon=1,
         maxHorizon=365,
         requiresGpu=False,
@@ -226,7 +226,7 @@ MODEL_CAPABILITIES: dict[str, ModelCapability] = {
         supportsUnivariate=True,
         supportsMultipleTargets=False,
         supportsCovariates=False,
-        supportsPredictionInterval=False,
+        supportsPredictionInterval=True,
         minHorizon=1,
         maxHorizon=120,
         requiresGpu=False,
@@ -513,6 +513,13 @@ def get_model_capabilities() -> list[ModelCapability]:
     models = []
     for capability in MODEL_CAPABILITIES.values():
         item = capability.model_copy(deep=True)
+        if item.id == "timesfm" and get_settings().model_profile == "standard":
+            item.availabilityStatus = "unavailable"
+            item.installStatus = "not_installed"
+            item.unavailableReason = "轻量配置未启用 TimesFM；请在独立的完整模型环境中使用。"
+            item.installCommand = None
+            models.append(item)
+            continue
         if item.id == "prophet" and not _module_available("prophet"):
             item.availabilityStatus = "unavailable"
             item.installStatus = "not_installed"
@@ -553,6 +560,8 @@ def get_model_capability(model_id: str) -> ModelCapability | None:
 
 
 def create_model(model_id: str, parameters: dict[str, Any] | None = None):
+    if model_id == "timesfm" and get_settings().model_profile == "standard":
+        raise ValueError("轻量配置未启用 TimesFM，请使用完整模型环境。")
     factory = MODEL_FACTORIES.get(model_id)
     if factory is None:
         raise ValueError(f"Unknown model id: {model_id}")

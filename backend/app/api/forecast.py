@@ -36,6 +36,7 @@ from app.schemas import (
     ForecastRunRequest,
     ForecastRunResponse,
     HolidayConfig,
+    MetricValues,
     ModelProgress,
     RuntimeEstimateRequest,
     TargetResult,
@@ -136,6 +137,28 @@ def _validate_run_budget(request: ForecastRunRequest) -> None:
 
 def _dump(value) -> str:
     return json.dumps(jsonable_encoder(value), ensure_ascii=True)
+
+
+def _backtest_metrics_for_model(record: ExperimentRecord, model_id: str) -> MetricValues | None:
+    if not record.metrics_json:
+        return None
+    try:
+        ranked_models = json.loads(record.metrics_json)
+    except Exception:
+        return None
+    for row in ranked_models:
+        if not isinstance(row, dict):
+            continue
+        if row.get("modelId") != model_id:
+            continue
+        metrics = row.get("metrics")
+        if not metrics:
+            return None
+        try:
+            return MetricValues.model_validate(metrics)
+        except Exception:
+            return None
+    return None
 
 
 def _runtime_stage_for_model_event(event: ModelProgressEvent) -> str:
@@ -779,6 +802,7 @@ def final_forecast(request: FinalForecastRequest, context: WorkspaceContext = De
             feature_config=saved_config.get("featureConfig"),
             prepared_features=final_feature_result.prepared,
             progress_callback=report_final_progress,
+            backtest_metrics=_backtest_metrics_for_model(record, request.finalModelId),
         )
         progress_tracker.update_model(
             run_id,

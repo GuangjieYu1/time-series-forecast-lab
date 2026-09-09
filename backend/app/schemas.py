@@ -584,6 +584,7 @@ class FinalForecastResponse(BaseModel):
     history: list[HistoryPoint]
     forecast: list[ForecastPoint]
     modelInfo: dict[str, Any]
+    backtestMetrics: MetricValues | None = None
 
 
 class ModelProgress(BaseModel):

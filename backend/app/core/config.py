@@ -1,11 +1,14 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
+    model_profile: Literal["standard", "full"] = "full"
+    preserve_existing_data: bool = False
     app_name: str = "Time Series Forecast Lab"
     backend_dir: Path = Path(__file__).resolve().parents[2]
     repo_root: Path = Path(__file__).resolve().parents[3]

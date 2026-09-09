@@ -176,6 +176,23 @@ def ensure_backend_python() -> str:
     return str(venv_python)
 
 
+def ensure_standard_python() -> str:
+    uv = shutil.which("uv")
+    if not uv:
+        uv = next((str(p) for p in (Path.home() / ".local/bin/uv", Path.home() / "miniconda3/bin/uv") if p.is_file()), None)
+    if not uv:
+        raise RuntimeError("轻量统一环境需要 uv；请安装 uv 后重试。")
+    environment = BACKEND_DIR / ".venv-standard"
+    python = environment / "bin/python"
+    if not python.exists():
+        run_command([uv, "venv", "--python", "3.11.13", str(environment)], BACKEND_DIR)
+    version = subprocess.check_output([str(python), "-c", "import platform; print(platform.python_version())"], text=True).strip()
+    if version != "3.11.13":
+        raise RuntimeError(f"统一环境需要 Python 3.11.13，当前为 {version}；请另建环境，不要覆盖完整环境。")
+    run_command([uv, "pip", "sync", "--python", str(python), "requirements-standard.lock"], BACKEND_DIR)
+    return str(python)
+
+
 def run_command(command: list[str], cwd: Path, env: dict[str, str] | None = None) -> None:
     log(f"执行：{' '.join(command)}")
     completed = subprocess.run(command, cwd=str(cwd), check=False, env=env)
@@ -242,6 +259,7 @@ def start_detached(command: list[str], cwd: Path, log_path: Path, env: dict[str,
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="一键重建并重启本地 Forecast Lab。")
     parser.add_argument("--delay-seconds", type=int, default=0)
+    parser.add_argument("--profile", choices=["standard", "full"], default="full" if os.name == "nt" else "standard")
     parser.add_argument(
         "--skip-optional-models",
         action="store_true",
@@ -257,23 +275,39 @@ def main() -> int:
         log(f"等待 {args.delay_seconds} 秒后开始重建，以便当前请求先返回。")
         time.sleep(args.delay_seconds)
 
-    backend_python = ensure_backend_python()
+    backend_python = ensure_standard_python() if args.profile == "standard" else ensure_backend_python()
     npm_binary, frontend_env = resolve_node_runtime()
 
-    run_command([backend_python, "-m", "pip", "install", "-r", "requirements.txt"], BACKEND_DIR)
-    if args.skip_optional_models:
-        log("已跳过可选模型依赖安装；模型库中部分模型可能显示为未安装。")
-    else:
-        run_command([backend_python, "-m", "pip", "install", "-r", "requirements-optional.txt"], BACKEND_DIR)
-    run_command([npm_binary, "install"], FRONTEND_DIR, env=frontend_env)
+    if args.profile == "full":
+        run_command([backend_python, "-m", "pip", "install", "-r", "requirements.txt"], BACKEND_DIR)
+        if not args.skip_optional_models:
+            run_command([backend_python, "-m", "pip", "install", "-r", "requirements-optional.txt"], BACKEND_DIR)
+    run_command([npm_binary, "ci"], FRONTEND_DIR, env=frontend_env)
     run_command([npm_binary, "run", "build"], FRONTEND_DIR, env=frontend_env)
 
+    label = "com.time-series-forecast-lab.backend.local"
+    if sys.platform == "darwin":
+        subprocess.run(["launchctl", "remove", label], check=False, capture_output=True)
+        for _ in range(20):
+            if subprocess.run(["launchctl", "list", label], capture_output=True).returncode != 0:
+                break
+            time.sleep(0.5)
     kill_port(8100)
     kill_port(5173)
     if os.name != "nt":
         time.sleep(1)
 
-    start_detached([backend_python, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8100"], BACKEND_DIR, BACKEND_LOG)
+    backend_env = os.environ.copy()
+    backend_env.update({"MODEL_PROFILE": args.profile, "PRESERVE_EXISTING_DATA": str((BACKEND_DIR / "data/forecast_lab.sqlite").is_file()).lower()})
+    for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS", "TORCH_NUM_THREADS"):
+        backend_env[key] = "1"
+    backend_command = [backend_python, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8100"]
+    if sys.platform == "darwin":
+        managed_env = [f"PYTHONPATH={BACKEND_DIR}", f"MODEL_PROFILE={args.profile}", f"PRESERVE_EXISTING_DATA={backend_env['PRESERVE_EXISTING_DATA']}"]
+        managed_env.extend(f"{key}=1" for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS", "TORCH_NUM_THREADS"))
+        run_command(["launchctl", "submit", "-l", label, "-o", str(BACKEND_LOG), "-e", str(BACKEND_LOG), "--", "/usr/bin/env", *managed_env, *backend_command], BACKEND_DIR)
+    else:
+        start_detached(backend_command, BACKEND_DIR, BACKEND_LOG, env=backend_env)
     start_detached([npm_binary, "run", "dev", "--", "--host", "127.0.0.1"], FRONTEND_DIR, FRONTEND_LOG, env=frontend_env)
 
     log("已启动后台服务：后端 http://127.0.0.1:8100 ，前端 http://127.0.0.1:5173")

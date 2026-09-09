@@ -41,6 +41,10 @@ def _needs_workspace_model_migration(sqlite_path) -> bool:
 def bootstrap_database(engine: Engine) -> None:
     settings = get_settings()
     sqlite_path = settings.data_dir / "forecast_lab.sqlite"
+    if settings.preserve_existing_data:
+        if not sqlite_path.is_file():
+            raise RuntimeError("PRESERVE_EXISTING_DATA requires an existing database; initialize it explicitly first.")
+        return
     has_legacy_experiments = _has_table(sqlite_path, "experiments")
     has_users = _has_table(sqlite_path, "users")
     if has_legacy_experiments and not has_users:

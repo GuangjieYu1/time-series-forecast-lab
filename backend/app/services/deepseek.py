@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import httpx
@@ -9,6 +10,9 @@ from app.core.errors import AppError
 from app.schemas import DeepSeekConnectionResponse, ReportOptions
 from app.services.auto_tuning.service import describe_tuning_profile
 from app.services.model_registry import MODEL_CAPABILITIES
+
+
+logger = logging.getLogger(__name__)
 
 
 FEATURE_FAMILY_LABELS = {
@@ -33,7 +37,18 @@ def _sanitize_error(exc: Exception) -> str:
     if isinstance(exc, httpx.TimeoutException):
         return "连接超时，请检查网络或稍后重试。"
     if isinstance(exc, httpx.HTTPStatusError):
-        return f"DeepSeek 返回 HTTP {exc.response.status_code}，请检查 API Key、模型名称或账户额度。"
+        status_code = exc.response.status_code
+        if status_code == 400:
+            return "DeepSeek 拒绝了请求（HTTP 400），请检查模型名称或请求参数。"
+        if status_code == 401:
+            return "DeepSeek API Key 无效或没有访问权限（HTTP 401）。"
+        if status_code == 402:
+            return "DeepSeek 账户余额不足（HTTP 402），请充值后重试。"
+        if status_code == 429:
+            return "DeepSeek 请求过于频繁（HTTP 429），请稍后重试。"
+        if status_code >= 500:
+            return f"DeepSeek 服务暂时不可用（HTTP {status_code}），请稍后重试。"
+        return f"DeepSeek 返回 HTTP {status_code}，请检查 API Key、模型名称或账户额度。"
     if isinstance(exc, httpx.RequestError):
         return "无法连接 DeepSeek，请检查 Base URL 或网络连接。"
     return "DeepSeek 调用失败，请检查 API Key、模型名称、余额或网络连接。"
@@ -114,6 +129,7 @@ def test_deepseek_connection(api_key: str, base_url: str, model: str) -> DeepSee
         ],
         "temperature": 0,
         "max_tokens": 16,
+        "thinking": {"type": "disabled"},
         "stream": False,
     }
     try:
@@ -122,6 +138,7 @@ def test_deepseek_connection(api_key: str, base_url: str, model: str) -> DeepSee
             response.raise_for_status()
         return DeepSeekConnectionResponse(success=True, model=model, message="连接成功")
     except Exception as exc:
+        logger.warning("DeepSeek connection test failed: %s", type(exc).__name__)
         return DeepSeekConnectionResponse(
             success=False,
             model=model,
@@ -131,7 +148,11 @@ def test_deepseek_connection(api_key: str, base_url: str, model: str) -> DeepSee
 
 
 def build_report_context(experiment: dict[str, Any]) -> dict[str, Any]:
-    ranked_models = experiment.get("rankedModels", [])
+    ranked_models = [
+        _compact_model_entry(model)
+        for model in _as_list(experiment.get("rankedModels"))
+        if isinstance(model, dict)
+    ]
     diagnostics = experiment.get("diagnostics", {})
     backtest = experiment.get("backtest", {})
     final_forecast = experiment.get("finalForecast")
@@ -177,7 +198,6 @@ def build_report_context(experiment: dict[str, Any]) -> dict[str, Any]:
         "config": experiment.get("config", {}),
         "diagnostics": diagnostics,
         "dataHealth": experiment.get("dataHealth"),
-        "rankedModels": ranked_models,
         "targets": targets,
         "featurePipeline": feature_pipeline,
         "runtimeSummary": runtime_summary,
@@ -185,9 +205,21 @@ def build_report_context(experiment: dict[str, Any]) -> dict[str, Any]:
         "modelRecommendation": model_recommendation,
         "autoTuning": auto_tuning,
         "chartInsights": chart_insights,
-        "topResidualPoints": top_residuals[:12],
+        "topResidualPoints": top_residuals[:8],
         "finalForecastSummary": _forecast_summary(final_forecast),
-        "modelLogs": experiment.get("modelLogs", []),
+        "modelLogs": [
+            {
+                "targetColumn": row.get("targetColumn"),
+                "modelId": row.get("modelId"),
+                "modelName": row.get("modelName"),
+                "status": row.get("status"),
+                "warnings": _as_list(row.get("warnings"))[:3],
+                "error": row.get("error"),
+                "runtime": row.get("runtime"),
+            }
+            for row in _as_list(experiment.get("modelLogs"))
+            if isinstance(row, dict)
+        ],
     }
 
 
@@ -691,13 +723,15 @@ def _forecast_summary(final_forecast: dict[str, Any] | None) -> dict[str, Any] |
 
 
 def build_report_prompt(context: dict[str, Any], options: ReportOptions) -> list[dict[str, str]]:
-    compact_context = json.dumps(context, ensure_ascii=False, indent=2)
-    required_sections: list[str] = []
+    compact_context = json.dumps(context, ensure_ascii=False, separators=(",", ":"))
+    required_sections: list[str] = [
+        "通俗业务解读（放在报告最前面）：面向不熟悉模型和统计的业务负责人，用 3-6 句话先说清楚：未来预测是涨、跌还是大致持平，波动大不大，这个预测有多可信，平均误差大概是多少，以及业务上建议怎么做。"
+    ]
     if options.includeFeaturePipeline:
-        required_sections.append("特征管线（Feature Pipeline）：说明 featureConfig、covariates、聚合/对齐/补值策略，以及哪些模型会消费这些特征。")
+        required_sections.append("特征管线（Feature Pipeline）：用通俗语言说明系统自动使用了哪些历史规律和外部信息来帮助预测，不要直接堆 featureConfig、covariates、lag、rolling 等术语。")
     if options.includeWorkflowReport:
-        required_sections.append("实验工作流（Workflow Report）：说明数据模式、频率、Holdout 切分、run profile、自动优化开关，以及最终预测是否已生成。")
-    required_sections.append("运行时透明度摘要：说明状态机、关键阶段、总耗时/预计耗时以及当前或历史 runtime 轨迹。")
+        required_sections.append("实验工作流（Workflow Report）：说明数据模式、频率、Holdout 切分、运行配置、自动优化开关，以及最终预测是否已生成；这部分允许保留必要的技术标签，但必须配一句业务解释。")
+    required_sections.append("运行时透明度摘要：说明实验是否完整跑完、各阶段是否正常、总耗时和预计耗时，以及这些是否影响结论可信度。")
     required_sections.append("数据健康与清洁概览。")
     if options.includeModelComparison:
         required_sections.append("模型对比结论。")
@@ -710,32 +744,49 @@ def build_report_prompt(context: dict[str, Any], options: ReportOptions) -> list
         required_sections.append("残差分析。")
     if options.includeFinalForecast:
         required_sections.append("最终预测结果。")
-    required_sections.extend(["业务解释。", "建议。", "风险与限制。"])
+    required_sections.extend(["建议。", "风险与限制。"])
     section_lines = "\n".join(f"{index}. {section}" for index, section in enumerate(required_sections, start=1))
+
+    style_label = "业务解读" if options.style == "business" else "技术分析"
+    length_label = {"short": "简短", "medium": "标准", "long": "详细"}.get(options.length, options.length)
+    style_guidance = (
+        "本次报告风格为业务解读。全文必须像写给业务负责人看的经营分析，而不是算法验收报告：先给结论，再给原因，最后给建议。技术细节只能作为辅助证据压缩在对应小节或末尾，不能成为主要篇幅。每出现一个技术指标，都必须立刻用日常语言说明它在业务上代表什么。避免使用 Feature Pipeline、Workflow、Runtime、SHAP、残差、Holdout 等词却不解释；如果必须出现，也要立刻翻译成业务语言。"
+        if options.style == "business"
+        else "本次报告风格为技术分析，可以保留更多技术细节；但最前面的“通俗业务解读”章节仍必须使用业务人员能看懂的语言，技术指标也要给中文解释。"
+    )
+
     system = (
-        "你是资深时间序列预测分析师。请基于给定实验摘要生成中文 Markdown 报告。"
-        "不要声称看过原始文件或完整业务明细；只使用摘要、指标、残差、调参记录和预测结果。"
+        "你是资深时间序列预测分析师，同时擅长把统计结果翻译成业务负责人能直接听懂的话。"
+        "默认读者是不熟悉模型和统计的业务人员，不要假设读者知道 MAE、Holdout、特征工程、残差这些词的含义。"
+        "请基于给定实验摘要生成中文 Markdown 报告；不要声称看过原始文件或完整业务明细，只使用摘要、指标、残差、调参记录和预测结果。"
         "残差定义必须保持为 residual = actual - predicted。"
         "如果启用了自动优化，必须解释优化策略、候选参数变化与指标变化的关系，以及最终参数为何被选中。"
-        "如果上下文里提供了 featurePipeline、workflowReport、runtimeSummary、modelRecommendation、chartInsights，请在正文中准确引用。"
+        "如果上下文里提供了 featurePipeline、workflowReport、runtimeSummary、modelRecommendation、chartInsights，请在正文中准确引用，但必须转成业务人员能理解的说法。"
     )
     user = f"""
-请生成一份{options.style}风格、{options.length}长度的中文时间序列预测分析报告。
+请生成一份{style_label}、{length_label}长度的中文时间序列预测分析报告。
+
+{style_guidance}
 
 报告必须包含：
 {section_lines}
 
 写作要求：
 - 使用 Markdown，并优先使用二级、三级标题组织结构。
-- 保留 MAE、MSE、RMSE、WAPE、Residual、Holdout 等术语，并给中文解释。
-- 明确说明 residual = actual - predicted，正残差代表模型低估，负残差代表模型高估。
-- 如果提供了 Data Health，请解释健康分、关键 warnings，以及这些问题如何影响模型可信度。
-- 如果某些模型失败，要解释为单模型失败，不影响其他模型比较。
-- 如果有自动调参记录，要分析候选参数如何影响 MAE / RMSE / WAPE，并解释最终选型逻辑。
-- 如果上下文提供了模型推荐摘要，要解释推荐模型、第二名、MAE 差值、是否使用自动优化，以及启用的特征管线如何影响最终推荐。
-- 如果上下文提供了 chartInsights，要把“图中说明了什么”写清楚，尤其是回测对比图、残差图和最终预测图，不要只复述有图这一事实。
-- 如果上下文提供了 feature pipeline / workflow / runtime summary，请把它们写成正文独立小节，而不是只在结尾一笔带过。
-- 可以使用 Markdown 表格总结关键候选，但不要把整段 JSON 原样重复到正文里。
+- 正文先回答业务人员最关心的问题：未来大概会怎样？预测靠不靠谱？平均会差多少？我们应该怎么做？
+- 技术指标第一次出现时必须给通俗解释，建议使用这些说法：
+  - Holdout 回测 = 从历史里留出一段时间，假装它是未来，用来检验模型考得好不好；
+  - MAE = 平均每次预测差多少，数值越小越准；
+  - RMSE = 放大较大误差后的偏差，仍然用原始业务单位理解，数值越小越准；
+  - WAPE = 总误差占实际总量的比例，越小说明整体越准；
+  - Residual = 实际值减预测值，正数表示预测低了，负数表示预测高了；
+  - 预测区间 = 模型认为未来大概率会落在这个范围，区间越宽说明越不确定。
+- 模型对比不要只列模型名和参数，要直接说：哪个模型更准、平均差多少、比第二名好多少、这个差距在业务上是否重要。
+- 图表解读必须用业务语言，例如“回测图里两条线贴得近，说明模型在模拟考试里跟实际走势比较接近”；“最终预测区间变宽，说明越往后越不确定”，不要只复述“图里有曲线”。
+- 数据健康、数据清洁、模型失败和自动优化等话题，都要落到一句业务结论上：这些因素会不会影响预测可信度、影响有多大。
+- Feature pipeline、workflow、runtime summary 等透明化信息可以保留技术标签，但要解释成“系统做了哪些自动处理、过程是否可追踪、结果是否可复现”，不要大段照搬 JSON。
+- 建议要可执行，尽量结合备货、排班、预算、库存、预警等具体业务动作，而不是只写“继续监控”。
+- 可以使用 Markdown 表格总结关键数字，但不要把整段 JSON 原样重复到正文里。
 - 不要输出 API Key、不要编造不存在的原始明细。
 - 如果某个可选章节未开启，就不要输出该章节。
 
@@ -756,30 +807,39 @@ def _report_max_tokens(length: str) -> int:
 
 
 def _request_completion(
-    *,
-    api_key: str,
-    base_url: str,
-    model: str,
-    messages: list[dict[str, str]],
-    max_tokens: int,
+    *, api_key: str, base_url: str, model: str,
+    messages: list[dict[str, str]], max_tokens: int,
 ) -> tuple[str, str | None]:
     payload = {
-        "model": model,
-        "messages": messages,
-        "temperature": 0.2,
-        "max_tokens": max_tokens,
-        "stream": False,
+        "model": model, "messages": messages, "temperature": 0.2,
+        "max_tokens": max_tokens, "thinking": {"type": "disabled"}, "stream": False,
     }
-    with httpx.Client(timeout=90) as client:
-        response = client.post(_endpoint(base_url), headers=_headers(api_key), json=payload)
-        response.raise_for_status()
-    body = response.json()
-    choice = body["choices"][0]
-    content = choice["message"]["content"]
-    finish_reason = choice.get("finish_reason")
-    if not isinstance(content, str) or not content.strip():
-        raise AppError("DeepSeek returned an empty report.", code="DEEPSEEK_EMPTY_REPORT")
-    return content.strip(), finish_reason
+    for attempt in range(2):
+        with httpx.Client(timeout=90) as client:
+            response = client.post(_endpoint(base_url), headers=_headers(api_key), json=payload)
+            response.raise_for_status()
+        try:
+            body = response.json()
+        except ValueError:
+            raise AppError("DeepSeek 返回了无法解析的响应，请稍后重试。", code="DEEPSEEK_INVALID_RESPONSE") from None
+        choices = body.get("choices") if isinstance(body, dict) else None
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise AppError("DeepSeek 响应缺少有效的 choices，请检查接口地址。", code="DEEPSEEK_INVALID_RESPONSE")
+        choice = choices[0]
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            raise AppError("DeepSeek 响应缺少有效的 message。", code="DEEPSEEK_INVALID_RESPONSE")
+        content = message.get("content")
+        finish = choice.get("finish_reason")
+        safe_finish = finish if finish in ("stop", "length", "content_filter", "tool_calls", "insufficient_system_resource") else "unknown"
+        if isinstance(content, str) and content.strip():
+            return content.strip(), safe_finish
+        logger.warning("DeepSeek empty content attempt=%s finish=%s has_reasoning=%s", attempt + 1, safe_finish, bool(message.get("reasoning_content")))
+        if safe_finish == "content_filter":
+            raise AppError("DeepSeek 未生成正文：内容被上游过滤。", code="DEEPSEEK_CONTENT_FILTERED")
+        if attempt == 0:
+            payload["messages"] = [*messages, {"role": "user", "content": "请直接输出报告正文，不要返回空内容。"}]
+    raise AppError("DeepSeek 连续两次未返回报告正文，请稍后重试。", code="DEEPSEEK_EMPTY_REPORT", details={"finishReason": safe_finish})
 
 
 def _overlap_size(left: str, right: str) -> int:
@@ -1229,8 +1289,8 @@ def generate_deepseek_report(api_key: str, base_url: str, model: str, context: d
     last_finish_reason: str | None = None
 
     try:
-        for _attempt in range(4):
-            messages = base_messages
+        fallback_requested = False
+        for _attempt in range(6):
             if chunks:
                 messages = [
                     *base_messages,
@@ -1240,6 +1300,17 @@ def generate_deepseek_report(api_key: str, base_url: str, model: str, context: d
                         "content": "你上一条 Markdown 报告被截断了。请从上文最后未完成的位置继续，禁止重复已经写过的内容，必须补齐剩余章节、附录和结束段落后自然收尾。",
                     },
                 ]
+            elif fallback_requested:
+                messages = [
+                    *base_messages,
+                    {
+                        "role": "user",
+                        "content": "请直接输出完整的 Markdown 报告正文，不要只输出思考过程或空回复。第一段必须是通俗业务解读。",
+                    },
+                ]
+            else:
+                messages = base_messages
+
             content, last_finish_reason = _request_completion(
                 api_key=api_key,
                 base_url=base_url,
@@ -1247,9 +1318,23 @@ def generate_deepseek_report(api_key: str, base_url: str, model: str, context: d
                 messages=messages,
                 max_tokens=_report_max_tokens(options.length),
             )
-            chunks.append(content)
-            if last_finish_reason != "length":
-                break
+            if content:
+                chunks.append(content)
+                fallback_requested = False
+                if last_finish_reason != "length":
+                    break
+                continue
+
+            # DeepSeek reasoning models may spend the whole token budget on
+            # reasoning_content and return an empty content field, especially
+            # when finish_reason is "length".  Continue once so the model can
+            # emit the actual report.  A stop with empty content is retried
+            # with an explicit direct-output instruction.
+            if last_finish_reason == "length":
+                if not chunks:
+                    fallback_requested = True
+                continue
+            fallback_requested = True
 
         narrative = _combine_chunks(chunks)
         if not narrative:
@@ -1276,4 +1361,5 @@ def generate_deepseek_report(api_key: str, base_url: str, model: str, context: d
     except AppError:
         raise
     except Exception as exc:
+        logger.warning("DeepSeek report generation failed: %s", type(exc).__name__)
         raise AppError(_sanitize_error(exc), code="DEEPSEEK_REPORT_FAILED") from exc

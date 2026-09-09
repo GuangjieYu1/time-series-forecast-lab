@@ -411,7 +411,7 @@ def _seed_example_artifacts(
                 "finalModelId": "naive",
                 "history": history[-30:],
                 "forecast": [],
-                "modelInfo": {"name": "Naive", "supportsPredictionInterval": False},
+                "modelInfo": {"name": "Naive", "supportsPredictionInterval": True},
             }
         ),
         model_logs_json=serialize_json(

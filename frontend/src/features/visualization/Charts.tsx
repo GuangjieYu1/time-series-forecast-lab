@@ -318,15 +318,61 @@ export function NormalizedMetricChart({ result }: { result: ForecastRunResponse 
   return <EChart option={{ ...baseOption(zhCN.charts.normalizedMetric), xAxis: { type: "category", data: successful.map((model) => model.modelName), axisLabel: { color: "#94A3B8" } }, yAxis: { ...valueAxis(), max: 1 }, series: series as EChartsOption["series"] }} />;
 }
 
+function finalMetricText(value: number | null | undefined) {
+  if (value === null || value === undefined || Number.isNaN(value)) return "-";
+  return value < 1 ? value.toFixed(4) : value.toFixed(2);
+}
+
 export function FinalForecastChart({ finalForecast }: { finalForecast: FinalForecastResponse | null }) {
-  if (!finalForecast) {
+  if (finalForecast === null) {
     return (
       <div className="flex h-[360px] items-center justify-center rounded-lg border border-dashed border-slate-300 bg-white text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-400">
         选择最终模型后，这里会显示未来预测曲线和置信区间。
       </div>
     );
   }
-  return <EChart option={buildFinalForecastOption(finalForecast)} />;
+  const metrics = finalForecast.backtestMetrics;
+  const hasInterval = finalForecast.forecast.some((point) => point.lower !== null && point.upper !== null);
+  return (
+    <div className="space-y-4">
+      <EChart option={buildFinalForecastOption(finalForecast)} />
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        {metrics ? (
+          <>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900">
+              <div className="text-xs text-slate-500 dark:text-slate-400">Holdout MAE</div>
+              <div className="mt-1 text-xl font-semibold text-slate-800 dark:text-slate-100">{finalMetricText(metrics.mae)}</div>
+              <div className="text-xs text-slate-400 dark:text-slate-500">越低越好</div>
+            </div>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900">
+              <div className="text-xs text-slate-500 dark:text-slate-400">Holdout RMSE</div>
+              <div className="mt-1 text-xl font-semibold text-slate-800 dark:text-slate-100">{finalMetricText(metrics.rmse)}</div>
+              <div className="text-xs text-slate-400 dark:text-slate-500">与目标同量纲</div>
+            </div>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900">
+              <div className="text-xs text-slate-500 dark:text-slate-400">Holdout WAPE</div>
+              <div className="mt-1 text-xl font-semibold text-slate-800 dark:text-slate-100">{finalMetricText(metrics.wape)}</div>
+              <div className="text-xs text-slate-400 dark:text-slate-500">总绝对误差占比</div>
+            </div>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900">
+              <div className="text-xs text-slate-500 dark:text-slate-400">Holdout MSE</div>
+              <div className="mt-1 text-xl font-semibold text-slate-800 dark:text-slate-100">{finalMetricText(metrics.mse)}</div>
+              <div className="text-xs text-slate-400 dark:text-slate-500">平方误差均值</div>
+            </div>
+          </>
+        ) : (
+          <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-3 text-xs text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400 md:col-span-2 xl:col-span-4">
+            当前最终预测没有保存该模型的 Holdout 回测误差指标；可重新运行回测后再生成最终预测。
+          </div>
+        )}
+      </div>
+      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs leading-5 text-slate-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
+        {hasInterval
+          ? "图中上下虚线为预测区间（95%）。区间越宽表示不确定性越大；历史 Holdout 误差指标用于判断该模型在测试集上的整体表现。"
+          : "当前模型未提供预测区间。图中仅有未来预测曲线；请结合 Holdout 误差指标判断预测可信度。"}
+      </div>
+    </div>
+  );
 }
 
 export function buildFinalForecastOption(

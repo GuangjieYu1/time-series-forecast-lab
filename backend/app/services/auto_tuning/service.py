@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any, Callable
 
 from pydantic import BaseModel
+from app.core.config import get_settings
 
 from app.models.seasonal_naive import SEASONAL_PERIODS
 from app.schemas import MetricValues, ModelTuning, TuningTrial
@@ -52,7 +53,9 @@ def describe_tuning_profile(run_profile: str) -> dict[str, float | int]:
     profile = run_profile if run_profile in PROFILE_LIMITS else "balanced"
     return {
         "candidateLimit": PROFILE_LIMITS[profile],
-        "timeBudgetSeconds": PROFILE_BUDGET_SECONDS[profile],
+        # A zero budget means candidate-count-only stopping. This avoids different
+        # parameter choices on a fast laptop versus a small CPU server.
+        "timeBudgetSeconds": 0.0 if get_settings().model_profile == "standard" else PROFILE_BUDGET_SECONDS[profile],
     }
 
 
@@ -519,7 +522,7 @@ def _resolve_tree_model_with_optuna(
         study.optimize(
             objective,
             n_trials=candidate_limit,
-            timeout=budget_seconds,
+            timeout=budget_seconds if budget_seconds > 0 else None,
             catch=(Exception,),
         )
     except Exception as exc:
@@ -534,7 +537,7 @@ def _resolve_tree_model_with_optuna(
                 trial.selected = True
                 selected_marked = True
         candidate_count = len(trials) if trials else len(success_trials)
-        stopped_early = bool(candidate_count < candidate_limit and time.perf_counter() - start >= budget_seconds)
+        stopped_early = bool(budget_seconds > 0 and candidate_count < candidate_limit and time.perf_counter() - start >= budget_seconds)
         if stopped_early:
             warnings.append(f"达到 {run_profile} 模式时间预算，已提前结束 Optuna 搜索。")
         return _build_model_tuning(
@@ -819,7 +822,7 @@ def resolve_model_parameters(
                 params=normalized_candidate,
                 best_metric=best_metric,
             )
-        if time.perf_counter() - start >= budget_seconds and tried >= 1:
+        if budget_seconds > 0 and time.perf_counter() - start >= budget_seconds and tried >= 1:
             warnings.append(f"达到 {run_profile} 模式时间预算，已提前停止搜索。")
             stopped_early = tried < len(candidates)
             break

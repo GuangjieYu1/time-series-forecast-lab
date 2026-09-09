@@ -32,7 +32,8 @@ app.add_middleware(
 def on_startup() -> None:
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
-    startup_cleanup()
+    if not settings.preserve_existing_data:
+        startup_cleanup()
     bootstrap_database(engine)
 
 
@@ -60,7 +61,8 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "app": settings.app_name, "version": APP_VERSION}
+    from app.core.build_info import build_info
+    return {"ok": True, "app": settings.app_name, "version": APP_VERSION, **build_info(), "modelProfile": settings.model_profile}
 
 
 app.include_router(upload.router)

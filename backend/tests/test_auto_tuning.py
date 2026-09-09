@@ -329,9 +329,11 @@ def test_tree_model_auto_tuning_falls_back_when_optuna_is_unavailable(monkeypatc
     assert any("Optuna" in warning for warning in result.warnings)
 
 
-def test_tree_model_auto_tuning_uses_optuna_when_available():
+def test_tree_model_auto_tuning_uses_optuna_when_available(monkeypatch):
     pytest.importorskip("optuna")
     pytest.importorskip("sklearn")
+    # Test Optuna integration independent of CPU speed and first-import overhead.
+    monkeypatch.setattr(tuning_service, "describe_tuning_profile", lambda _: {"candidateLimit": 4, "timeBudgetSeconds": 0.0})
 
     result = tuning_service.resolve_model_parameters(
         model_id="random_forest",

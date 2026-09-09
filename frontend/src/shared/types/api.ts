@@ -502,6 +502,7 @@ export interface FinalForecastResponse {
     name: string;
     supportsPredictionInterval: boolean;
   };
+  backtestMetrics?: MetricValues | null;
 }
 
 export type ForecastProgressStatus = "running" | "completed" | "failed";

@@ -7,7 +7,7 @@ from typing import Callable, Literal, TYPE_CHECKING
 import pandas as pd
 
 from app.core.errors import AppError
-from app.schemas import CovariateConfig, FinalForecastResponse, ForecastPoint, HistoryPoint, HolidayConfig
+from app.schemas import CovariateConfig, FinalForecastResponse, ForecastPoint, HistoryPoint, HolidayConfig, MetricValues
 from app.services.covariate_flow import build_future_covariate_rows
 from app.services.model_executor import fit_model_instance, predict_model_instance, run_isolated_fit_predict, should_isolate_model
 from app.services.model_registry import MODEL_CAPABILITIES, create_model, validate_horizon
@@ -41,6 +41,7 @@ def run_final_forecast(
     feature_config: dict[str, bool] | None = None,
     prepared_features: "PreparedFeatureMatrix | None" = None,
     progress_callback: FinalProgressCallback | None = None,
+    backtest_metrics: MetricValues | None = None,
 ) -> FinalForecastResponse:
     if final_model_id not in MODEL_CAPABILITIES:
         raise AppError(f"Unknown model id: {final_model_id}.")
@@ -145,4 +146,5 @@ def run_final_forecast(
         history=[HistoryPoint(time=point["time"], value=float(point["value"])) for point in history],
         forecast=forecast,
         modelInfo={"name": capability.name, "supportsPredictionInterval": capability.supportsPredictionInterval},
+        backtestMetrics=backtest_metrics,
     )

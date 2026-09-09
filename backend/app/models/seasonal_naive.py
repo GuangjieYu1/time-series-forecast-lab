@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import numpy as np
+
 from app.models.base import ForecastOutput
 
 
@@ -23,16 +25,27 @@ class SeasonalNaiveModel:
         self.period = 1
         self.period_override = period
         self.warnings: list[str] = []
+        self.residual_scale = 0.0
 
     def fit(self, times: list[datetime], values: list[float], frequency: str) -> None:
+        self.residual_scale = 0.0
+        self.warnings = []
         self.values = [float(value) for value in values]
         self.period = self.period_override or SEASONAL_PERIODS.get(frequency, 1)
         if len(self.values) < self.period:
             self.warnings.append("Not enough history for a full seasonal period; fell back to naive repetition.")
             self.period = 1
+        if len(self.values) > self.period:
+            residuals = [
+                self.values[index] - self.values[index - self.period]
+                for index in range(self.period, len(self.values))
+            ]
+            self.residual_scale = float(np.std(residuals, ddof=1)) if len(residuals) >= 2 else float(abs(residuals[0]))
 
     def predict(self, horizon: int) -> ForecastOutput:
         predictions = []
         for step in range(horizon):
             predictions.append(self.values[-self.period + (step % self.period)])
-        return ForecastOutput(predictions=predictions, warnings=self.warnings)
+        lower = [value - 1.96 * self.residual_scale for value in predictions]
+        upper = [value + 1.96 * self.residual_scale for value in predictions]
+        return ForecastOutput(predictions=predictions, lower=lower, upper=upper, warnings=self.warnings)
