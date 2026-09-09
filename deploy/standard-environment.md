@@ -21,6 +21,8 @@ Random Forest, XGBoost and LightGBM. TimesFM is explicitly unavailable even if
 its package happens to be installed. Other planned model adapters remain planned.
 In standard mode auto-tuning completes its fixed candidate count instead of
 stopping on elapsed time, so machine speed does not change the candidate budget.
+Standard XGBoost uses CPU histogram trees and full row/column sampling; this avoids
+the cross-compiler sampling differences observed with the full profile's 0.9 fractions.
 Keep the same input, aggregation, frequency, seed and model parameters when comparing.
 Native floating-point arithmetic, Prophet uncertainty sampling and external LLM
 sampling can still produce small numerical or textual differences across platforms.

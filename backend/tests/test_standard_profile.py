@@ -41,3 +41,14 @@ def test_standard_tuning_uses_candidate_limits_not_wall_clock(monkeypatch):
     assert tuning.describe_tuning_profile('fast') == {'candidateLimit': 4, 'timeBudgetSeconds': 0.0}
     monkeypatch.setattr(tuning, 'get_settings', lambda: SimpleNamespace(model_profile='full'))
     assert tuning.describe_tuning_profile('fast')['timeBudgetSeconds'] == 3.0
+
+
+def test_standard_xgboost_disables_platform_dependent_sampling(monkeypatch):
+    pytest.importorskip('xgboost')
+    from app.core import config
+    from app.models.ml_regression import XGBoostModel
+    monkeypatch.setattr(config, 'get_settings', lambda: SimpleNamespace(model_profile='standard'))
+    params = XGBoostModel().build_model().get_params()
+    assert params['subsample'] == params['colsample_bytree'] == 1.0
+    assert params['device'] == 'cpu'
+    assert params['tree_method'] == 'hist'

@@ -277,13 +277,16 @@ class XGBoostModel(LagFeatureRegressor):
             from xgboost import XGBRegressor
         except Exception as exc:
             raise RuntimeError(self.unavailable_message) from exc
+        from app.core.config import get_settings
+        standard = get_settings().model_profile == "standard"
         return XGBRegressor(
             objective="reg:squarederror",
             n_estimators=self.n_estimators,
             max_depth=self.max_depth,
             learning_rate=self.learning_rate,
-            subsample=0.9,
-            colsample_bytree=0.9,
+            subsample=1.0 if standard else 0.9,
+            colsample_bytree=1.0 if standard else 0.9,
+            **({"device": "cpu", "tree_method": "hist"} if standard else {}),
             random_state=DEFAULT_RANDOM_SEED,
             n_jobs=WEB_WORKER_N_JOBS,
             verbosity=0,
