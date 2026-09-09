@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import time
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -305,7 +306,10 @@ def main() -> int:
     if sys.platform == "darwin":
         managed_env = [f"PYTHONPATH={BACKEND_DIR}", f"MODEL_PROFILE={args.profile}", f"PRESERVE_EXISTING_DATA={backend_env['PRESERVE_EXISTING_DATA']}"]
         managed_env.extend(f"{key}=1" for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS", "TORCH_NUM_THREADS"))
-        run_command(["launchctl", "submit", "-l", label, "-o", str(BACKEND_LOG), "-e", str(BACKEND_LOG), "--", "/usr/bin/env", *managed_env, *backend_command], BACKEND_DIR)
+        # launchd may not open logs inside macOS protected Documents folders.
+        managed_log = Path(tempfile.gettempdir()) / "time-series-forecast-lab-backend-8100.log"
+        run_command(["launchctl", "submit", "-l", label, "-o", str(managed_log), "-e", str(managed_log), "--", "/usr/bin/env", *managed_env, *backend_command], BACKEND_DIR)
+        log(f"托管后端日志：{managed_log}")
     else:
         start_detached(backend_command, BACKEND_DIR, BACKEND_LOG, env=backend_env)
     start_detached([npm_binary, "run", "dev", "--", "--host", "127.0.0.1"], FRONTEND_DIR, FRONTEND_LOG, env=frontend_env)
